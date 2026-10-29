@@ -98,6 +98,31 @@ def _iso(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
+def execution_price(order: dict, action: str) -> float | None:
+    """Net fill from execution legs. Positive debit for a buy, positive credit for a sell.
+
+    The order's ``price`` field is the limit we asked for, not the fill.
+    """
+    legs = {leg.get("legId"): leg for leg in order.get("orderLegCollection") or []}
+    lots = float(order.get("filledQuantity") or 0)
+    if lots <= 0:
+        return None
+    paid = 0.0
+    seen = False
+    for activity in order.get("orderActivityCollection") or []:
+        for fill in activity.get("executionLegs") or []:
+            leg = legs.get(fill.get("legId"))
+            if not leg:
+                continue
+            sign = 1.0 if str(leg.get("instruction", "")).startswith("BUY") else -1.0
+            paid += sign * float(fill["price"]) * float(fill["quantity"])
+            seen = True
+    if not seen:
+        return None
+    net = paid / lots
+    return round(net if action == "BUY" else -net, 4)
+
+
 class SchwabBroker(Broker):
     def __init__(self, cfg, client: SchwabClient | None = None, order_guard: guard.OrderGuard | None = None,
                  clock=_time.monotonic):
@@ -391,7 +416,9 @@ class SchwabBroker(Broker):
         if raw == "FILLED" and filled <= 0:
             filled = qty
         if raw == "FILLED":
-            avg = _num(order.get("price"))
+            avg = execution_price(order, meta.get("action") or "BUY")
+            if avg is None:
+                avg = _num(order.get("price"))
             if avg is None:
                 avg = float(meta["limit"])
             status = "Filled"

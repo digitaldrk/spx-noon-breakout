@@ -128,8 +128,64 @@ def _prices_for(quotes, pos) -> dict | None:
     return spread_prices(long_q, short_q)
 
 
-def _ticket_text(plan) -> str:
-    return "\n".join([
+QUOTE_MAX_AGE_S = 30.0
+
+
+def _quote_stale(quote, now: datetime, max_age: float = QUOTE_MAX_AGE_S) -> bool:
+    ts = getattr(quote, "time", None)
+    if ts is None:
+        return False
+    return (now - ts).total_seconds() > max_age
+
+
+def _plan_quotes_stale(quotes, plan, now: datetime) -> bool:
+    needed = (
+        (plan.long_strike, plan.right),
+        (plan.short_strike, plan.right),
+        (plan.atm, "C"),
+        (plan.atm, "P"),
+    )
+    for strike, right in needed:
+        quote = lookup_quote(quotes, strike, right)
+        if quote is not None and _quote_stale(quote, now):
+            return True
+    return False
+
+
+def _still_in_grace(close_at: datetime, now: datetime, grace: timedelta) -> bool:
+    return now < close_at + grace - timedelta(seconds=1)
+
+
+def _await_terminal(broker, order_id, seconds: float):
+    """Poll until the order is filled or done, or the wait runs out."""
+    status = _safe_state(broker, order_id)
+    if seconds <= 0 or status is None or status.get("done") or _filled(status):
+        return status
+    deadline = broker.now() + timedelta(seconds=seconds)
+    while status and not status.get("done") and not _filled(status) and broker.now() < deadline:
+        broker.sleep(1)
+        status = _safe_state(broker, order_id)
+    return status
+
+
+def _ensure_position_quotes(cfg, broker, pos: dict) -> None:
+    entry = pos.get("entry_close")
+    if isinstance(entry, datetime):
+        expiry = entry.strftime("%Y%m%d")
+    else:
+        expiry = str(pos.get("date") or "").replace("-", "")
+    if not expiry:
+        return
+    spot = float(pos.get("spx") or pos["long_strike"])
+    try:
+        _subscribe(cfg, broker, spot, expiry)
+        broker.ensure_options(expiry, [float(pos["long_strike"]), float(pos["short_strike"])])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not subscribe the open spread: %s", exc)
+
+
+def _ticket_text(plan, account: str = "") -> str:
+    lines = [
         f"{plan.direction} debit vertical  1 spread",
         f"SPX {plan.spot:.2f}   PDH {plan.pdh:.2f}   PDL {plan.pdl:.2f}",
         f"expected move {plan.em:.2f}   width {plan.width}",
@@ -138,7 +194,10 @@ def _ticket_text(plan) -> str:
         f"mid {plan.mid:.2f}   natural {plan.natural:.2f}   slippage {plan.slippage_per_side:.3f}/side",
         f"limit {plan.limit:.2f}   target {plan.limit * 1.30:.2f} then flat at {time_exit_deadline(plan.entry_close):%H:%M} ET",
         "No stop. Live send still needs yes <ticket>.",
-    ])
+    ]
+    if account:
+        lines.append(f"account ending {str(account)[-3:]}")
+    return "\n".join(lines)
 
 
 def _base_row(pos, mode: str) -> dict:
@@ -229,12 +288,16 @@ def _rest_target(cfg, broker, pos: dict) -> None:
         return
     limit = float(pos["tp_limit"])
     try:
-        pos["tp_order_id"] = broker.place_combo(
+        order_id = broker.place_combo(
             pos["legs"], "SELL", 1, limit, pos["account"], str(pos["ref"]) + "X", tif="GTC")
-        _persist(cfg, pos)
     except Exception:  # noqa: BLE001
         log.exception("take-profit order was not accepted; watching the bid instead")
-        pos["tp_order_id"] = None
+        return
+    pos["tp_order_id"] = order_id
+    try:
+        _persist(cfg, pos)
+    except Exception:  # noqa: BLE001
+        log.exception("take-profit %s is working but was not saved", order_id)
 
 
 def _open_position(cfg, broker, notifier, state: _State, working: dict, fill: float) -> None:
@@ -250,16 +313,23 @@ def _open_position(cfg, broker, notifier, state: _State, working: dict, fill: fl
         ticket=working.get("ticket"),
         entry_order_id=working["id"],
         mode=cfg.mode,
+        had_fill=True,
     )
     state.working = None
     state.done_for_day = True
     state.position = pos
     _persist(cfg, pos)
+    _ensure_position_quotes(cfg, broker, pos)
     _rest_target(cfg, broker, pos)
+    parked = (
+        f"GTC close at {tp_limit:.2f}"
+        if pos.get("tp_order_id")
+        else f"watching the bid for {tp_limit:.2f}"
+    )
     notifier.alert(
         "Noon filled",
         f"{pos['direction']} filled {fill:.2f} (mid was {plan.mid:.2f}). "
-        f"GTC close at {tp_limit:.2f}. Flat at {pos['deadline']:%H:%M} ET. No stop.",
+        f"{parked}. Flat at {pos['deadline']:%H:%M} ET. No stop.",
         toast=cfg.mode != "dry",
     )
 
@@ -302,35 +372,69 @@ def _record_exit(cfg, broker, notifier, out: Outputs, state: _State, exit_fill: 
 
 def _flatten(cfg, broker, notifier, out, state, reason: str, prices: dict | None) -> bool:
     pos = state.position
+    if int(pos.get("exit_attempts") or 0) >= 3:
+        if not pos.get("flat_gave_up"):
+            pos["flat_gave_up"] = True
+            notifier.alert(
+                "Noon flatten stuck",
+                "three exit attempts failed; no further sells. Close the spread by hand.",
+                toast=True,
+            )
+            try:
+                _persist(cfg, pos)
+            except Exception:  # noqa: BLE001
+                log.exception("could not save the flatten stop")
+        return False
+    existing = pos.get("exit_order_id")
+    if existing:
+        status = _await_terminal(broker, existing, 0)
+        if _filled(status):
+            _record_exit(cfg, broker, notifier, out, state, status["avg_price"], reason, prices)
+            return True
+        if status and not status.get("done"):
+            log.info("flatten %s is still working; not sending another sell", existing)
+            return False
     bid = None if prices is None else prices.get("close_bid")
     if bid is None or bid <= 0:
         if broker.now() < pos["deadline"] + timedelta(seconds=cfg.exit_wait_s):
             log.info("waiting for a positive spread bid to flatten")
             return False
+        if not pos.get("flat_alerted"):
+            pos["flat_alerted"] = True
+            notifier.alert("Noon flatten", "no positive bid at the deadline; one last 0.05 sell", toast=True)
         limit = 0.05
     else:
         limit = max(0.05, floor_tick(bid))
-    order_id = broker.place_combo(
-        pos["legs"], "SELL", 1, limit, pos["account"], pos["ref"] + "F", tif="DAY")
-    wait_until = broker.now() + timedelta(seconds=cfg.exit_wait_s)
-    while True:
-        status = broker.order_state(order_id)
-        if _filled(status):
-            fresh = _prices_for(broker.option_quotes(), pos)
-            _record_exit(cfg, broker, notifier, out, state, status["avg_price"], reason, fresh or prices)
-            return True
-        if broker.now() >= wait_until:
-            break
-        broker.sleep(1)
+    pos["exit_attempts"] = int(pos.get("exit_attempts") or 0) + 1
     try:
-        broker.cancel(order_id)
+        order_id = broker.place_combo(
+            pos["legs"], "SELL", 1, limit, pos["account"], pos["ref"] + "F", tif="DAY")
     except Exception:  # noqa: BLE001
-        log.warning("cancel flatten failed", exc_info=True)
-    status = _safe_state(broker, order_id)
+        log.exception("flatten order was not accepted")
+        return False
+    pos["exit_order_id"] = order_id
+    try:
+        _persist(cfg, pos)
+    except Exception:  # noqa: BLE001
+        log.exception("flatten %s is working but was not saved", order_id)
+    status = _await_terminal(broker, order_id, cfg.exit_wait_s)
     if _filled(status):
-        _record_exit(cfg, broker, notifier, out, state, status["avg_price"], reason, prices)
+        fresh = _prices_for(broker.option_quotes(), pos)
+        _record_exit(cfg, broker, notifier, out, state, status["avg_price"], reason, fresh or prices)
         return True
+    if not (status and status.get("done")):
+        try:
+            broker.cancel(order_id)
+        except Exception:  # noqa: BLE001
+            log.warning("cancel flatten failed", exc_info=True)
+        status = _await_terminal(broker, order_id, cfg.exit_wait_s)
+        if _filled(status):
+            _record_exit(cfg, broker, notifier, out, state, status["avg_price"], reason, prices)
+            return True
+        if status and not status.get("done"):
+            return False
     log.warning("flatten order %s did not fill at %.2f", order_id, limit)
+    pos["exit_order_id"] = None
     return False
 
 
@@ -338,6 +442,7 @@ def _manage_position(cfg, broker, notifier, out, state: _State) -> bool:
     """Return True when the spread is flat."""
     pos = state.position
     now = broker.now()
+    _ensure_position_quotes(cfg, broker, pos)
     prices = _prices_for(broker.option_quotes(), pos)
     tp_id = pos.get("tp_order_id")
     tp_state = _safe_state(broker, tp_id)
@@ -352,10 +457,13 @@ def _manage_position(cfg, broker, notifier, out, state: _State) -> bool:
                 broker.cancel(tp_id)
             except Exception:  # noqa: BLE001
                 log.warning("cancel target failed", exc_info=True)
-            tp_state = _safe_state(broker, tp_id)
+            tp_state = _await_terminal(broker, tp_id, cfg.exit_wait_s)
             if _filled(tp_state):
                 _record_exit(cfg, broker, notifier, out, state, tp_state["avg_price"], "target", prices)
                 return True
+            if tp_state and not tp_state.get("done"):
+                log.warning("target %s still working; not sending another sell", tp_id)
+                return False
         return _flatten(cfg, broker, notifier, out, state, reason, prices)
     return False
 
@@ -372,14 +480,33 @@ def _poll_working(cfg, broker, notifier, out, state: _State) -> None:
         broker.cancel(working["id"])
     except Exception:  # noqa: BLE001
         log.warning("cancel entry failed", exc_info=True)
-    status = _safe_state(broker, working["id"])
+    status = _await_terminal(broker, working["id"], cfg.exit_wait_s)
     if _filled(status):
         _open_position(cfg, broker, notifier, state, working, status["avg_price"])
+        return
+    if status is None or not status.get("done"):
+        working["cancel_after"] = broker.now() + timedelta(seconds=max(cfg.exit_wait_s, 5))
+        log.warning("entry %s still working after cancel; keeping it", working["id"])
         return
     out.append_trade(_row_from_plan(working["plan"], cfg.mode, "skip_no_fill"))
     notifier.alert("Noon no fill", f"entry {working['ref']} cancelled unfilled. Not chasing.", toast=False)
     state.working = None
     resume.mark_closed(cfg.state_dir)
+
+
+def _revalidate(cfg, broker, breakout, spot: float, expiry: str):
+    """Rebuild the plan from fresh quotes after the operator approves."""
+    try:
+        _subscribe(cfg, broker, spot, expiry)
+        quotes = broker.option_quotes()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("revalidate quotes failed: %s", exc)
+        return None
+    fresh_spot = broker.spx_px().value or spot
+    plan, _reason = build_order_plan(breakout, quotes, float(fresh_spot))
+    if plan is None or _plan_quotes_stale(quotes, plan, broker.now()):
+        return None
+    return plan
 
 
 def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: str, closes) -> None:
@@ -425,10 +552,15 @@ def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: s
             log.warning("chain unavailable: %s", exc)
             return
         plan, reason = build_order_plan(breakout, quotes, float(spot))
-        state.consumed.add(close_at)
-        if plan is None:
-            log.info("no order at %s: %s", close_at.strftime("%H:%M"), reason)
+        stale = plan is not None and _plan_quotes_stale(quotes, plan, broker.now())
+        if plan is None or stale:
+            if _still_in_grace(close_at, broker.now(), grace):
+                log.info("waiting on quotes for %s (%s)", close_at.strftime("%H:%M"), reason or "stale")
+                return
+            state.consumed.add(close_at)
+            log.info("giving up on %s: %s", close_at.strftime("%H:%M"), reason or "stale")
             continue
+        state.consumed.add(close_at)
         if plan.skip:
             out.append_trade(_row_from_plan(plan, cfg.mode, "skip_slippage"))
             notifier.alert(
@@ -454,7 +586,7 @@ def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: s
             except Exception as exc:  # noqa: BLE001
                 log.warning("preview failed: %s", exc)
                 preview = {"ok": False, "rejects": [str(exc)]}
-            notifier.alert("Noon ticket " + ticket, _ticket_text(plan))
+            notifier.alert("Noon ticket " + ticket, _ticket_text(plan, account))
             if not preview.get("ok", False):
                 out.append_trade(_row_from_plan(plan, cfg.mode, "skip_preview"))
                 continue
@@ -463,6 +595,16 @@ def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: s
                 out.append_trade(_row_from_plan(plan, cfg.mode, "skip_approval"))
                 notifier.alert("Noon skipped", f"{ticket} {why}", toast=False)
                 continue
+            if broker.now() > close_at + grace:
+                out.append_trade(_row_from_plan(plan, cfg.mode, "skip_stale"))
+                notifier.alert("Noon skipped", f"{ticket} decision window closed", toast=False)
+                continue
+            fresh = _revalidate(cfg, broker, breakout, float(spot), expiry)
+            if fresh is None or fresh.skip:
+                out.append_trade(_row_from_plan(plan, cfg.mode, "skip_stale"))
+                notifier.alert("Noon skipped", f"{ticket} quotes moved or went stale", toast=False)
+                continue
+            plan = fresh
             broker.approve_ticket(ticket, plan.limit)
         ref = f"SPXNOON-{close_at:%Y%m%d}-{state.seq}"
         state.seq += 1
@@ -545,8 +687,11 @@ def _load_saved(cfg, broker, state: _State, saved: dict) -> None:
             return
         resume.mark_closed(cfg.state_dir)
         return
+    if pos.get("fill_price"):
+        pos["had_fill"] = True
     state.done_for_day = True
     state.position = pos
+    _ensure_position_quotes(cfg, broker, pos)
     if pos.get("tp_order_id") and _filled(_safe_state(broker, pos["tp_order_id"])):
         return
     if not pos.get("tp_order_id") and broker.now() < pos["deadline"]:
@@ -630,8 +775,18 @@ def run_session(cfg, broker, approver=None, notifier=None) -> int:
             return 0
         if cfg.broker == "ibkr":
             _assert_paper_accounts(broker)
+        starter = getattr(broker, "start_streams", None)
+        if callable(starter):
+            try:
+                starter()
+            except Exception:  # noqa: BLE001
+                log.exception("quote stream did not start")
+                return 1
         account = _resolve_account(cfg, broker)
         state = _State()
+        if resume.already_filled(cfg.state_dir, day):
+            log.info("already filled today; no second entry")
+            state.done_for_day = True
         saved = resume.load_open(cfg.state_dir, day)
         if saved:
             _load_saved(cfg, broker, state, saved)

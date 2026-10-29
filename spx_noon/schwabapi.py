@@ -191,13 +191,9 @@ class SchwabClient:
     def account_hash(self, last3: str | None = None) -> str:
         if self._acct_hash is None:
             accounts = self.get("/trader/v1/accounts/accountNumbers") or []
-            if last3:
-                accounts = [a for a in accounts if str(a.get("accountNumber", "")).endswith(last3)]
-            if not accounts:
-                suffix = f" ending {last3}" if last3 else ""
-                raise RuntimeError(f"no Schwab account{suffix} on this token")
-            self._acct_hash = accounts[0]["hashValue"]
-            self.acct_last3 = str(accounts[0]["accountNumber"])[-3:]
+            chosen = select_account(accounts, last3)
+            self._acct_hash = chosen["hashValue"]
+            self.acct_last3 = str(chosen["accountNumber"])[-3:]
         return self._acct_hash
 
     def account(self, positions: bool = True) -> dict:
@@ -249,6 +245,17 @@ class SchwabClient:
         self.order_guard.authorize("cancel", ticket_id, order_id)
         hashed = self.account_hash()
         self._do("DELETE", f"/trader/v1/accounts/{hashed}/orders/{order_id}")
+
+
+def select_account(accounts, last3: str | None) -> dict:
+    """The configured suffix must match exactly one account."""
+    rows = list(accounts or [])
+    if last3:
+        rows = [row for row in rows if str(row.get("accountNumber", "")).endswith(str(last3))]
+    if len(rows) != 1:
+        suffix = f" ending {last3}" if last3 else ""
+        raise RuntimeError(f"expected exactly one Schwab account{suffix}, found {len(rows)}")
+    return rows[0]
 
 
 def _order_id_from(headers: dict) -> str:

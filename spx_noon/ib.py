@@ -73,6 +73,8 @@ class IBBroker(Broker):
             cfg.host, PAPER_PORT, clientId=cfg.client_id, timeout=cfg.connect_timeout_s,
             readonly=bool(cfg.dry_run), account=cfg.account or "")
         self.ib.reqMarketDataType(1)
+        self._streams_started = False
+        self.start_streams()
 
     def ensure_connected(self) -> bool:
         if self.ib.isConnected():
@@ -87,6 +89,7 @@ class IBBroker(Broker):
         if bad:
             raise SafetyError(f"after reconnect, non-paper account(s) {bad}")
         self._opt_tickers.clear()
+        self._streams_started = False
         self.start_streams()
         return True
 
@@ -127,8 +130,11 @@ class IBBroker(Broker):
         return (contract.liquidHours or contract.tradingHours), contract.timeZoneId
 
     def start_streams(self):
+        if getattr(self, "_streams_started", False):
+            return
         self._qualify_spx()
         self._spx_t = self.ib.reqMktData(self.spx, "", False, False)
+        self._streams_started = True
 
     def _px(self, ticker) -> Px:
         if ticker is None:

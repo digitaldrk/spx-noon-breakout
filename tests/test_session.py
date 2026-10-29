@@ -1,12 +1,14 @@
 """One simulated day: skip, single fill, target, time flat, and a restart."""
 import csv
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from spx_noon.broker import SimBroker
 from spx_noon.config import Config
 from spx_noon.pricing import trade_pnl
-from spx_noon.runner import run_session
+from spx_noon.logbook import Outputs
+from spx_noon.notify import Notifier
+from spx_noon.runner import _State, _flatten, _maybe_enter, _poll_working, _rest_target, run_session
 from spx_noon.strategy import Bar, OptQuote
 
 from test_rules import DAY, levels, today_call_bars
@@ -95,7 +97,6 @@ def test_target_exit_and_only_one_entry(tmp_path):
     assert done[0]["direction"] == "CALL"
     assert float(done[0]["width"]) == 30
     assert float(done[0]["long_strike"]) == 6950
-    assert sells and all(order["tif"] == "GTC" or order["action"] == "SELL" for order in sells)
     assert any(order["tif"] == "GTC" for order in sells)
 
 
@@ -154,9 +155,10 @@ def test_restart_manages_the_open_spread_and_does_not_enter_again(tmp_path):
     save(cfg.state_dir, payload)
     bars = levels()[0] + today_call_bars()
     start = datetime(2026, 10, 28, 13, 30, tzinfo=ET)
-    broker = SimBroker(start, bars, _quotes("dip"), spot=7000)
+    broker = _Watch(start, bars, _quotes("dip"), spot=7000)
     assert run_session(cfg, broker) == 0
     assert [order for order in broker.placed if order["action"] == "BUY"] == []
+    assert any(6950.0 in strikes and 6980.0 in strikes for _expiry, strikes in broker.ensured)
     with (tmp_path / "state" / "trades.csv").open() as fh:
         rows = list(csv.DictReader(fh))
     assert rows[-1]["exit_reason"] == "time"
@@ -166,6 +168,168 @@ def test_restart_manages_the_open_spread_and_does_not_enter_again(tmp_path):
 def round_money(value: float) -> float:
     text = f"{value:.4f}".rstrip("0").rstrip(".")
     return float(text)
+
+
+class _Watch(SimBroker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ensured = []
+        self.streams = 0
+
+    def ensure_options(self, expiry, strikes):
+        self.ensured.append((expiry, [float(strike) for strike in strikes]))
+
+    def start_streams(self):
+        self.streams += 1
+
+
+class _Warm(SimBroker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ready_at = None
+
+    def option_quotes(self):
+        if self.ready_at is None:
+            self.ready_at = self.now() + timedelta(seconds=2)
+        if self.now() < self.ready_at:
+            return {}
+        return super().option_quotes()
+
+
+class _Sticky(SimBroker):
+    def order_state(self, handle):
+        return {"status": "Submitted", "filled": 0, "remaining": 1, "avg_price": 0.0, "done": False}
+
+    def cancel(self, handle):
+        self.cancelled.append(handle)
+
+
+def test_empty_quotes_retry_inside_the_grace_window(tmp_path):
+    bars = levels()[0] + today_call_bars()
+    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
+    broker = _Warm(start, bars, _quotes("target"), spot=7000)
+    assert run_session(_cfg(tmp_path), broker) == 0
+    buys = [order for order in broker.placed if order["action"] == "BUY"]
+    assert len(buys) == 1
+
+
+def test_closed_fill_blocks_a_second_entry_after_restart(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.ensure_dirs()
+    from spx_noon.resume import save
+    save(cfg.state_dir, {"date": DAY.isoformat(), "status": "closed", "had_fill": True, "fill_price": 12.0})
+    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
+    broker = SimBroker(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
+    assert run_session(cfg, broker) == 0
+    assert broker.placed == []
+
+
+def test_unconfirmed_cancel_keeps_the_working_entry(tmp_path):
+    cfg = _cfg(tmp_path, exit_wait_s=2)
+    broker = _Sticky(datetime(2026, 10, 28, 13, 0, tzinfo=ET), [], _book(), spot=7000)
+    state = _State()
+    state.working = {
+        "id": 7,
+        "cancel_after": datetime(2026, 10, 28, 12, 1, tzinfo=ET),
+        "ref": "SPXNOON-20261028-1",
+    }
+    _poll_working(cfg, broker, None, None, state)
+    assert state.working["id"] == 7
+    assert broker.cancelled == [7]
+    assert state.working["cancel_after"] > broker.now() - timedelta(seconds=1)
+
+
+def test_known_target_id_is_kept_when_the_save_fails(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cfg.ensure_dirs()
+    broker = SimBroker(datetime(2026, 10, 28, 12, 5, tzinfo=ET), [], _book(), spot=7000)
+    pos = {
+        "legs": [(69501, 1), (69801, -1)],
+        "account": "DU999001",
+        "ref": "SPXNOON-20261028-1",
+        "tp_limit": 15.6,
+        "tp_order_id": None,
+        "deadline": datetime(2026, 10, 28, 14, 0, tzinfo=ET),
+    }
+
+    def boom(_cfg, _pos):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("spx_noon.runner._persist", boom)
+    _rest_target(cfg, broker, pos)
+    assert pos["tp_order_id"]
+    assert any(order["tif"] == "GTC" for order in broker.placed)
+
+
+class _NoSell(SimBroker):
+    def _try_fill(self, handle):
+        order = self.orders.get(handle)
+        if order and order["action"] == "SELL":
+            return
+        super()._try_fill(handle)
+
+
+def test_flatten_stops_after_three_failed_attempts(tmp_path):
+    cfg = _cfg(tmp_path, exit_wait_s=1)
+    cfg.ensure_dirs()
+    broker = _NoSell(datetime(2026, 10, 28, 14, 0, tzinfo=ET), [], _book(), spot=7000)
+    pos = {
+        "legs": [(69501, 1), (69801, -1)],
+        "account": "DU999001",
+        "ref": "SPXNOON-20261028-1",
+        "deadline": datetime(2026, 10, 28, 14, 0, tzinfo=ET),
+        "fill_price": 12.0,
+        "long_strike": 6950,
+        "short_strike": 6980,
+        "right": "C",
+    }
+    state = _State()
+    state.position = pos
+    notifier = Notifier(tmp_path / "logs", toast=False)
+    out = Outputs(cfg.state_dir)
+    for _ in range(3):
+        assert _flatten(cfg, broker, notifier, out, state, "time", {"close_bid": 12.0}) is False
+    placed = len(broker.placed)
+    assert placed == 3
+    assert _flatten(cfg, broker, notifier, out, state, "time", {"close_bid": 12.0}) is False
+    assert len(broker.placed) == placed
+
+
+class _LateYes:
+    def __init__(self, broker, when):
+        self.broker = broker
+        self.when = when
+
+    def ask(self, ticket, timeout):
+        self.broker.t = self.when
+        return True, "yes"
+
+
+def test_approval_after_the_grace_window_sends_nothing(tmp_path):
+    cfg = Config(
+        broker="schwab", mode="live", account="705", base_dir=str(tmp_path),
+        loop_interval_s=60, decision_grace_s=90,
+    )
+    cfg.ensure_dirs()
+    noon = datetime(2026, 10, 28, 12, 0, tzinfo=ET)
+    broker = SimBroker(noon, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
+    state = _State()
+    _maybe_enter(
+        cfg, broker, Notifier(tmp_path / "logs", toast=False),
+        _LateYes(broker, noon + timedelta(seconds=120)),
+        Outputs(cfg.state_dir), state, "705", [noon],
+    )
+    assert broker.placed == []
+    with (tmp_path / "state" / "trades.csv").open() as fh:
+        rows = list(csv.DictReader(fh))
+    assert rows[-1]["exit_reason"] == "skip_stale"
+
+
+def test_session_starts_the_quote_stream(tmp_path):
+    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
+    broker = _Watch(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
+    assert run_session(_cfg(tmp_path, mode="dry"), broker) == 0
+    assert broker.streams == 1
 
 
 def test_holiday_does_not_trade(tmp_path):

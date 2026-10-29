@@ -21,6 +21,14 @@ def load(state_dir: Path) -> dict | None:
         return None
 
 
+def already_filled(state_dir: Path, day: date) -> bool:
+    """True after a fill has been closed. A skip does not set this."""
+    data = load(state_dir)
+    if not data or data.get("date") != day.isoformat():
+        return False
+    return bool(data.get("had_fill")) and data.get("status") == "closed"
+
+
 def load_open(state_dir: Path, day: date) -> dict | None:
     data = load(state_dir)
     if not data or data.get("status") not in ("open", "working"):

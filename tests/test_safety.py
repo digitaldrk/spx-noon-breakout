@@ -7,7 +7,8 @@ import pytest
 from spx_noon.config import ORDER_PREFIX, Config, SafetyError, load_config
 from spx_noon.guard import GuardError, OrderGuard
 from spx_noon.ib import paper_send_allowed
-from spx_noon.schwab import SchwabBroker, build_vertical_order
+from spx_noon.schwab import SchwabBroker, build_vertical_order, execution_price
+from spx_noon.schwabapi import select_account
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -123,6 +124,34 @@ def test_live_schwab_refuses_without_tod_approval(tmp_path):
                        client=_FakeSchwab())
     with pytest.raises(SafetyError):
         dry.place_combo(_legs(), "BUY", 1, 12.10, "705", "SPXNOON-20261028-1")
+
+
+def test_schwab_fill_comes_from_executions_not_the_limit():
+    order = {
+        "price": "12.10",
+        "filledQuantity": 1,
+        "orderLegCollection": [
+            {"legId": 1, "instruction": "BUY_TO_OPEN"},
+            {"legId": 2, "instruction": "SELL_TO_OPEN"},
+        ],
+        "orderActivityCollection": [{
+            "executionLegs": [
+                {"legId": 1, "price": 40.0, "quantity": 1},
+                {"legId": 2, "price": 28.2, "quantity": 1},
+            ],
+        }],
+    }
+    assert execution_price(order, "BUY") == 11.8
+
+
+def test_two_schwab_accounts_with_the_same_suffix_are_refused():
+    accounts = [
+        {"accountNumber": "111705", "hashValue": "aaa"},
+        {"accountNumber": "222705", "hashValue": "bbb"},
+    ]
+    with pytest.raises(RuntimeError, match="exactly one"):
+        select_account(accounts, "705")
+    assert select_account(accounts[:1], "705")["hashValue"] == "aaa"
 
 
 def test_guard_refuses_when_not_live():
