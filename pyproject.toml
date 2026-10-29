@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spx-noon-breakout"
+version = "1.0.0"
+description = "SPX 0DTE noon breakout (plan v2 version B). Mac: IBKR paper. Windows: Schwab."
+requires-python = ">=3.11"
+dependencies = ["ib_async>=2.1.0", "tzdata"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+toast = ["win11toast"]
+
+[tool.setuptools]
+packages = ["spx_noon"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
