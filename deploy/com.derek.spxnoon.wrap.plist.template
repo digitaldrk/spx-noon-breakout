@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  End-of-day note. Weekdays 16:20 local time. Read-only: it summarizes state/trades.csv
+  and does not place orders. __HOME__ is replaced by install_launchd.sh.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.derek.spxnoon.wrap</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HOME__/Documents/spx-noon-breakout/run_wrap.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SPX_NOON_HOME</key><string>__HOME__/Documents/spx-noon-breakout</string>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>20</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>20</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/spx-noon-breakout/wrap.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/spx-noon-breakout/wrap.err.log</string>
+</dict>
+</plist>

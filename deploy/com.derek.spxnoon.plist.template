@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Noon Breakout — weekdays 11:45 local time. launchd uses the Mac's local clock, which is
+  America/New_York on Derek's Mac, so this is 11:45 AM ET. __HOME__ is replaced by install_launchd.sh.
+  The job runs run.sh, which follows config.json. The example config is dry.
+  Pass paper by setting the mode in config.json, or run ./run.sh paper by hand.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.derek.spxnoon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HOME__/Documents/spx-noon-breakout/run.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SPX_NOON_HOME</key><string>__HOME__/Documents/spx-noon-breakout</string>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/spx-noon-breakout/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/spx-noon-breakout/launchd.err.log</string>
+</dict>
+</plist>
