@@ -18,4 +18,4 @@ if [ "${1:-}" = "paper" ] || [ "${1:-}" = "dry" ] || [ "${1:-}" = "alerts" ]; th
   EXTRA=(--mode "$1")
 fi
 echo "$(date) starting Noon Breakout (TZ $(date +%Z)) ${EXTRA[*]:-}" >> "$LOG"
-exec /usr/bin/caffeinate -i "$BASE/.venv/bin/python" -m spx_noon --config "$BASE/config.json" "${EXTRA[@]}" >> "$LOG" 2>&1
+exec /usr/bin/caffeinate -i "$BASE/.venv/bin/python" -m spx_noon --config "$BASE/config.json" ${EXTRA[@]+"${EXTRA[@]}"} >> "$LOG" 2>&1
