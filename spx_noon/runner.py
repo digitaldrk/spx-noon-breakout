@@ -223,6 +223,20 @@ def _pos_from_plan(plan, fill, **extra) -> dict:
     return pos
 
 
+def _rest_target(cfg, broker, pos: dict) -> None:
+    """Park the GTC take-profit. If the broker rejects it, the session still sells when the bid gets there."""
+    if not cfg.sends_orders() or pos.get("tp_order_id") or broker.now() >= pos["deadline"]:
+        return
+    limit = float(pos["tp_limit"])
+    try:
+        pos["tp_order_id"] = broker.place_combo(
+            pos["legs"], "SELL", 1, limit, pos["account"], str(pos["ref"]) + "X", tif="GTC")
+        _persist(cfg, pos)
+    except Exception:  # noqa: BLE001
+        log.exception("take-profit order was not accepted; watching the bid instead")
+        pos["tp_order_id"] = None
+
+
 def _open_position(cfg, broker, notifier, state: _State, working: dict, fill: float) -> None:
     plan = working["plan"]
     tp_limit = take_profit_limit(fill)
@@ -241,10 +255,7 @@ def _open_position(cfg, broker, notifier, state: _State, working: dict, fill: fl
     state.done_for_day = True
     state.position = pos
     _persist(cfg, pos)
-    if cfg.sends_orders():
-        pos["tp_order_id"] = broker.place_combo(
-            pos["legs"], "SELL", 1, tp_limit, pos["account"], pos["ref"] + "X", tif="GTC")
-        _persist(cfg, pos)
+    _rest_target(cfg, broker, pos)
     notifier.alert(
         "Noon filled",
         f"{pos['direction']} filled {fill:.2f} (mid was {plan.mid:.2f}). "
@@ -538,11 +549,9 @@ def _load_saved(cfg, broker, state: _State, saved: dict) -> None:
     state.position = pos
     if pos.get("tp_order_id") and _filled(_safe_state(broker, pos["tp_order_id"])):
         return
-    if cfg.sends_orders() and not pos.get("tp_order_id") and broker.now() < pos["deadline"]:
+    if not pos.get("tp_order_id") and broker.now() < pos["deadline"]:
         pos["tp_limit"] = pos.get("tp_limit") or take_profit_limit(pos["fill_price"])
-        pos["tp_order_id"] = broker.place_combo(
-            pos["legs"], "SELL", 1, float(pos["tp_limit"]), pos["account"], str(pos["ref"]) + "X", tif="GTC")
-        _persist(cfg, pos)
+        _rest_target(cfg, broker, pos)
 
 
 class _PlanShim:
