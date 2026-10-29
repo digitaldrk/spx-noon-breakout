@@ -1,0 +1,15 @@
+{
+  "_comment": "Windows + Schwab. Copy to config.json. The PC is the broker: this file cannot select IBKR. run_session.ps1 defaults to dry. -Mode live is the only send mode, and each order still needs yes <ticketID> in that window.",
+  "mode": "dry",
+  "dry_run": true,
+  "account": "705",
+  "token_path": "~/schwab/tokens.json",
+  "base_dir": "C:/spx-noon-breakout",
+  "approval_timeout_secs": 300,
+  "start_not_before": "11:45:00",
+  "decision_grace_s": 90,
+  "loop_interval_s": 5,
+  "chain_band_pts": 150,
+  "_rules": "Version B only. 15m closes 12:00–1:00 PM ET, first qualifying bar, 1 spread. Long nearest 75 delta. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. GTC close at debit x 1.30. Flat 2 hours after the entry bar. No stop.",
+  "_wrap": "Read-only log summary: python -m spx_noon wrap (run_wrap.ps1). It does not send orders."
+}

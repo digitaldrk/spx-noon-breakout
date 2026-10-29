@@ -9,7 +9,7 @@ import math
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .pricing import floor_tick
+from .pricing import TICK
 from .strategy import Bar, Px
 
 ET = ZoneInfo("America/New_York")
@@ -164,11 +164,9 @@ class SimBroker(Broker):
         order = self.orders.get(handle)
         if order is None or order["status"] != "Submitted":
             return
-        mid, natural, close_bid = self._combo(order["legs"])
-        # A buy posted at the floored mid fills at that limit. We never fill a buy through its limit.
-        if order["action"] == "BUY" and (
-            order["limit"] + 1e-9 >= floor_tick(mid) or order["limit"] + 1e-9 >= natural
-        ):
+        mid, _natural, close_bid = self._combo(order["legs"])
+        # A buy posted at the floored mid is within one nickel of mid. Fill it at the limit.
+        if order["action"] == "BUY" and order["limit"] + TICK + 1e-9 >= mid:
             order.update(status="Filled", filled=order["qty"], avg=order["limit"])
         elif order["action"] == "SELL" and close_bid + 1e-9 >= order["limit"]:
             order.update(status="Filled", filled=order["qty"], avg=order["limit"])
