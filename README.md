@@ -15,7 +15,7 @@ A config file cannot switch brokers. The bot trades version B only: the first qu
 
 ## Configuration
 
-`config.json` holds local overrides. Defaults are the fields on `Config` in `spx_noon/config.py`. Leave a key out and that default stays. Keys the loader does not know are ignored, including the `_comment`, `_rules`, and `_wrap` notes. The machine chooses the broker. A `broker` key in the file is ignored.
+`config.json` holds local overrides. Defaults are the fields on `Config` in `spx_noon/config.py`. Leave a key out and that default stays. Keys the loader does not know are ignored, including the `_comment`, `_rules`, and `_wrap` notes. The machine chooses the broker. A `broker` key in the file is ignored. A `dry_run` key is ignored too; `mode` is the only send setting.
 
 Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` and `tokens.json`. Schwab app key and secret stay in `SCHWAB_APP_KEY` and `SCHWAB_APP_SECRET`. The token file and any service-account json stay out of git.
 
@@ -30,7 +30,7 @@ The 75-delta rule, the width, the $0.20 skip, the +30% target, and the two-hour 
 
 | Key | In the examples | Role |
 | --- | --- | --- |
-| `mode`, `dry_run` | `dry`, `true` | Mac: `dry`, `alerts`, or `paper`. Windows: `dry`, `alerts`, or `live`. `dry` and `alerts` never send. |
+| `mode` | `dry` | Mac: `dry`, `alerts`, or `paper`. Windows: `dry`, `alerts`, or `live`. `dry` and `alerts` never send. `paper` (Mac) and `live` (Windows) can. |
 | `host`, `port`, `client_id` | `127.0.0.1`, `7497`, `41` | Mac TWS paper. Host must be localhost. Port must be 7497. Client 41 leaves Candle (77) and Fly (31) alone. |
 | `account` | `""` (Mac), `"705"` (Windows) | Mac: paper account id (starts with `D`). Blank uses the first account TWS shows. Windows: last digits, and they must match exactly one account. |
 | `base_dir` | `~/Documents/spx-noon-breakout` or `C:/spx-noon-breakout` | State, logs, and reports. |
