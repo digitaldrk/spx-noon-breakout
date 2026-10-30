@@ -1,7 +1,6 @@
 {
   "_comment": "Mac + IBKR paper. Copy to config.json. The Mac is the broker: this file cannot select Schwab. Port 7497 only. Orders go out only when mode is paper. mode dry stays dry. ./run.sh paper sets paper for one launch.",
   "mode": "dry",
-  "dry_run": true,
   "host": "127.0.0.1",
   "port": 7497,
   "client_id": 41,

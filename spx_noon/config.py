@@ -174,6 +174,7 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
     """Load config.json over the defaults, then apply keyword overrides.
 
     A ``broker`` key inside the file is ignored. Tests may pass ``broker=``.
+    A ``dry_run`` key inside the file is ignored. ``mode`` sets that flag.
     """
     data: dict = {}
     if path is None:
@@ -188,7 +189,7 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
     kwargs = {
         k: (tuple(v) if isinstance(v, list) else v)
         for k, v in data.items()
-        if k in known and k != "broker" and not str(k).startswith("_")
+        if k in known and k not in ("broker", "dry_run") and not str(k).startswith("_")
     }
     if "broker" not in overrides and sys.platform not in ("darwin", "win32"):
         overrides["broker"] = "ibkr"

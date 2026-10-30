@@ -23,6 +23,7 @@ def test_examples_are_dry_and_carry_no_secrets():
 
 def test_mac_example_is_paper_port_and_ignores_a_broker_key(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
+    assert "dry_run" not in (ROOT / "config.example.json").read_text()
     cfg = load_config(ROOT / "config.example.json")
     assert cfg.broker == "ibkr" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.port == 7497 and cfg.client_id == 41 and not cfg.live and not cfg.paper
@@ -33,10 +34,37 @@ def test_mac_example_is_paper_port_and_ignores_a_broker_key(tmp_path, monkeypatc
 
 def test_windows_example_stays_schwab_and_does_not_send(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
+    assert "dry_run" not in (ROOT / "config.windows.example.json").read_text()
     cfg = load_config(ROOT / "config.windows.example.json")
     assert cfg.broker == "schwab" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.live is False
     assert cfg.sends_orders() is False
+
+
+def test_mode_sets_dry_run_and_a_file_key_cannot_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    paper = load_config(_write(tmp_path, "paper.json", '{"mode": "paper", "port": 7497}'))
+    assert paper.mode == "paper" and paper.dry_run is False and paper.sends_orders()
+    alerts = load_config(_write(tmp_path, "alerts.json", '{"mode": "alerts", "port": 7497}'))
+    assert alerts.mode == "alerts" and alerts.dry_run is True and not alerts.sends_orders()
+    held = load_config(_write(tmp_path, "held.json", '{"mode": "paper", "dry_run": true, "port": 7497}'))
+    assert held.mode == "paper" and held.dry_run is False and held.sends_orders()
+    blocked = load_config(_write(tmp_path, "blocked.json", '{"mode": "dry", "dry_run": false, "port": 7497}'))
+    assert blocked.mode == "dry" and blocked.dry_run is True and not blocked.sends_orders()
+    leftover = load_config(_write(tmp_path, "leftover.json", '{"dry_run": false, "port": 7497}'))
+    assert leftover.mode == "dry" and leftover.dry_run is True and not leftover.sends_orders()
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    live = load_config(_write(tmp_path, "live.json", '{"mode": "live", "dry_run": true, "account": "705"}'))
+    assert live.mode == "live" and live.dry_run is False and live.sends_orders()
+    quiet = load_config(_write(tmp_path, "quiet.json", '{"mode": "alerts", "dry_run": false, "account": "705"}'))
+    assert quiet.mode == "alerts" and quiet.dry_run is True and not quiet.sends_orders()
+
+
+def _write(tmp_path, name, text):
+    path = tmp_path / name
+    path.write_text(text)
+    return path
 
 
 def test_mac_refuses_live_and_a_non_paper_port(monkeypatch):

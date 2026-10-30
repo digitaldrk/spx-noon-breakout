@@ -1,7 +1,6 @@
 {
   "_comment": "Windows + Schwab. Copy to config.json. The PC is the broker: this file cannot select IBKR. run_session.ps1 defaults to dry. -Mode live is the only send mode, and each order still needs yes <ticketID> in that window.",
   "mode": "dry",
-  "dry_run": true,
   "account": "705",
   "token_path": "~/schwab/tokens.json",
   "base_dir": "C:/spx-noon-breakout",
