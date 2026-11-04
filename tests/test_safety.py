@@ -32,12 +32,15 @@ def test_mac_example_is_paper_port_and_ignores_a_broker_key(tmp_path, monkeypatc
     assert load_config(flipped).broker == "ibkr"
 
 
-def test_windows_example_stays_schwab_and_does_not_send(monkeypatch):
+def test_windows_example_stays_tasty_and_does_not_send(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    assert "dry_run" not in (ROOT / "config.windows.example.json").read_text()
+    text = (ROOT / "config.windows.example.json").read_text()
+    assert "dry_run" not in text
+    assert "tasty_allow_production_orders" not in text
     cfg = load_config(ROOT / "config.windows.example.json")
-    assert cfg.broker == "schwab" and cfg.mode == "dry" and cfg.dry_run is True
-    assert cfg.live is False
+    assert cfg.broker == "tasty" and cfg.mode == "dry" and cfg.dry_run is True
+    assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
+    assert cfg.live is False and cfg.real_money is False and cfg.confirms_orders is False
     assert cfg.sends_orders() is False
 
 
@@ -83,12 +86,14 @@ def test_mac_refuses_live_and_a_non_paper_port(monkeypatch):
 
 def test_windows_live_is_off_unless_asked(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    assert Config().mode == "dry" and not Config().live
-    assert Config(mode="live", account="705").live
+    assert Config().broker == "tasty" and Config().mode == "dry" and not Config().live
+    live = Config(mode="live")
+    assert live.broker == "tasty" and live.live and live.sends_orders()
+    assert live.confirms_orders is False and live.real_money is False
     with pytest.raises(SafetyError):
-        Config(mode="live", account="").validate()
+        Config(broker="schwab", mode="live", account="").validate()
     with pytest.raises(SafetyError):
-        Config(mode="paper", account="705").validate()
+        Config(mode="paper").validate()
 
 
 def test_paper_send_gate():

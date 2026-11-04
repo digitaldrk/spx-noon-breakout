@@ -13,6 +13,11 @@ tokens.json
 *.lock
 .env
 .cursor/
+secrets/
+.sb_secret
+.sb_refresh
+.prod_secret
+.prod_refresh
 .idea/
 graphify-out/
 .DS_Store
