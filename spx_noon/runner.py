@@ -1,8 +1,8 @@
 """One noon session.
 
 Waits for the 12:00–1:00 PM ET closes, takes the first qualifying bar, and
-sends at most one spread. Paper on a Mac goes to TWS 7497. Live on Windows
-waits for `yes <ticketID>` and otherwise does not send.
+sends at most one spread. Paper on a Mac goes to TWS 7497. Tastytrade live
+auto-approves. Schwab live still waits for `yes <ticketID>`.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .calendar import trading_day_status
-from .config import SafetyError, load_config
+from .config import SafetyError, load_config, resolve_broker
 from .logbook import Outputs
 from .notify import ConsoleApprover, Notifier
 from .pricing import floor_tick, take_profit_limit, target_reached, time_exit_deadline, trade_pnl
@@ -59,7 +59,9 @@ def _setup_logging(cfg) -> None:
 def _resolve_account(cfg, broker) -> str:
     if cfg.broker == "schwab":
         return cfg.account
-    accounts = list(broker.managed_accounts() or [])
+    accounts = [str(item) for item in (broker.managed_accounts() or [])]
+    if cfg.broker == "tasty":
+        return _tasty_account(cfg.account, accounts)
     if cfg.account:
         if accounts and cfg.account not in accounts and cfg.broker == "ibkr":
             raise SafetyError(f"account {cfg.account} is not managed by TWS ({accounts})")
@@ -67,6 +69,23 @@ def _resolve_account(cfg, broker) -> str:
     if not accounts:
         raise SafetyError("broker reported no account")
     return str(accounts[0])
+
+
+def _tasty_account(want: str, accounts: list[str]) -> str:
+    if not accounts:
+        raise SafetyError("tastytrade reported no account")
+    want = str(want or "").strip()
+    if not want:
+        if len(accounts) == 1:
+            return accounts[0]
+        raise SafetyError("tastytrade returned more than one account; set account to the one to use")
+    exact = [acct for acct in accounts if acct == want]
+    if len(exact) == 1:
+        return exact[0]
+    suffix = [acct for acct in accounts if acct.endswith(want)]
+    if len(suffix) == 1:
+        return suffix[0]
+    raise SafetyError(f"account {want} does not match exactly one tastytrade account")
 
 
 def _assert_paper_accounts(broker) -> None:
@@ -184,7 +203,11 @@ def _ensure_position_quotes(cfg, broker, pos: dict) -> None:
         log.warning("could not subscribe the open spread: %s", exc)
 
 
-def _ticket_text(plan, account: str = "") -> str:
+def _ticket_text(plan, account: str = "", *, broker: str = "") -> str:
+    if broker == "tasty":
+        tail = "No stop. Tastytrade live auto-approves this ticket. The price cap is the mid limit."
+    else:
+        tail = "No stop. Live send still needs yes <ticket>."
     lines = [
         f"{plan.direction} debit vertical  1 spread",
         f"SPX {plan.spot:.2f}   PDH {plan.pdh:.2f}   PDL {plan.pdl:.2f}",
@@ -193,7 +216,7 @@ def _ticket_text(plan, account: str = "") -> str:
         f"short {plan.short_strike:.0f}{plan.right} Δ {plan.short_delta if plan.short_delta is not None else float('nan'):.3f}",
         f"mid {plan.mid:.2f}   natural {plan.natural:.2f}   slippage {plan.slippage_per_side:.3f}/side",
         f"limit {plan.limit:.2f}   target {plan.limit * 1.30:.2f} then flat at {time_exit_deadline(plan.entry_close):%H:%M} ET",
-        "No stop. Live send still needs yes <ticket>.",
+        tail,
     ]
     if account:
         lines.append(f"account ending {str(account)[-3:]}")
@@ -573,7 +596,7 @@ def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: s
             out.append_trade(_row_from_plan(plan, cfg.mode, "dry_signal", slippage_vs_mid="", slippage_per_side=""))
             notifier.alert(
                 "Noon signal (not sent)",
-                _ticket_text(plan),
+                _ticket_text(plan, broker=cfg.broker),
                 toast=cfg.mode == "alerts",
             )
             state.done_for_day = True
@@ -586,15 +609,16 @@ def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: s
             except Exception as exc:  # noqa: BLE001
                 log.warning("preview failed: %s", exc)
                 preview = {"ok": False, "rejects": [str(exc)]}
-            notifier.alert("Noon ticket " + ticket, _ticket_text(plan, account))
+            notifier.alert("Noon ticket " + ticket, _ticket_text(plan, account, broker=cfg.broker))
             if not preview.get("ok", False):
                 out.append_trade(_row_from_plan(plan, cfg.mode, "skip_preview"))
                 continue
-            approved, why = approver.ask(ticket, cfg.approval_timeout_secs)
-            if not approved:
-                out.append_trade(_row_from_plan(plan, cfg.mode, "skip_approval"))
-                notifier.alert("Noon skipped", f"{ticket} {why}", toast=False)
-                continue
+            if cfg.confirms_orders:
+                approved, why = approver.ask(ticket, cfg.approval_timeout_secs)
+                if not approved:
+                    out.append_trade(_row_from_plan(plan, cfg.mode, "skip_approval"))
+                    notifier.alert("Noon skipped", f"{ticket} {why}", toast=False)
+                    continue
             if broker.now() > close_at + grace:
                 out.append_trade(_row_from_plan(plan, cfg.mode, "skip_stale"))
                 notifier.alert("Noon skipped", f"{ticket} decision window closed", toast=False)
@@ -840,11 +864,14 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="spx_noon")
     parser.add_argument("--config", default=None)
     parser.add_argument("--mode", choices=["dry", "alerts", "paper", "live"], default=None)
+    parser.add_argument("--broker", default="auto",
+                        help="auto, tasty, tt, tastytrade, ibkr, or schwab. auto is tastytrade on Windows.")
     args = parser.parse_args(argv)
     overrides = {}
     if args.mode:
         overrides["mode"] = args.mode
     try:
+        overrides["broker"] = resolve_broker(args.broker)
         cfg = load_config(args.config, **overrides)
     except (SafetyError, ValueError, TypeError) as exc:
         print(f"refusing to start: {exc}")
@@ -856,6 +883,9 @@ def main(argv=None) -> int:
     elif cfg.broker == "schwab":
         from .schwab import SchwabBroker
         broker = SchwabBroker(cfg)
+    elif cfg.broker == "tasty":
+        from .tasty import TastyBroker
+        broker = TastyBroker(cfg)
     else:
         print(f"refusing to start: no live broker for {cfg.broker}")
         return 2

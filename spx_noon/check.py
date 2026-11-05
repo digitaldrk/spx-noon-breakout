@@ -1,6 +1,8 @@
 """Read-only smoke test. Places no orders.
 
-Mac: TWS paper on 127.0.0.1:7497. Windows: Schwab quotes and the SPXW chain.
+Mac auto: TWS paper on 127.0.0.1:7497.
+Windows auto: tastytrade (quotes, bars, chain, orders host).
+``--broker schwab`` still runs the Schwab check.
 """
 from __future__ import annotations
 
@@ -9,27 +11,43 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from .config import PAPER_PORT, load_config
+from .config import PAPER_PORT, SafetyError, load_config, resolve_broker
 
 ET = ZoneInfo("America/New_York")
 
 
 def main(argv=None) -> int:
-    if sys.platform == "win32":
-        from .check_schwab import main as schwab_main
-        return schwab_main(argv)
-    if sys.platform != "darwin":
-        print("Noon Breakout check runs on Mac (IBKR paper) or Windows (Schwab)")
-        return 2
-    return ib_main(argv)
-
-
-def ib_main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="spx_noon check")
+    parser.add_argument("--broker", default="auto",
+                        help="auto, tasty, tt, tastytrade, ibkr, or schwab")
     parser.add_argument("--client-id", type=int, default=None)
+    parser.add_argument("--preview-sample", action="store_true",
+                        help="Schwab only: previewOrder on a 1-lot vertical. Does not place it.")
     args = parser.parse_args(argv)
+    try:
+        broker = resolve_broker(args.broker)
+    except SafetyError as exc:
+        print(f"refusing: {exc}")
+        return 2
+    if args.broker == "auto" and sys.platform not in ("darwin", "win32"):
+        print("Noon Breakout check runs on Mac (IBKR paper) or Windows (tastytrade). Pass --broker to override.")
+        return 2
+    if broker == "tasty":
+        from .check_tasty import main as tasty_main
+        return tasty_main(["--broker", "tasty"])
+    if broker == "schwab":
+        from .check_schwab import main as schwab_main
+        forwarded = ["--preview-sample"] if args.preview_sample else []
+        return schwab_main(forwarded)
+    if broker == "ibkr":
+        return ib_main(args.client_id)
+    print(f"refusing: check does not run for {broker}")
+    return 2
+
+
+def ib_main(client_id_arg=None) -> int:
     cfg = load_config(broker="ibkr")
-    client_id = args.client_id or cfg.check_client_id
+    client_id = client_id_arg or cfg.check_client_id
     if int(cfg.port) != PAPER_PORT:
         print("refusing: not the paper port")
         return 2

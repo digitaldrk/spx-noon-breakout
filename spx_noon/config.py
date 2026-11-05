@@ -1,8 +1,11 @@
 """Configuration. The computer picks the broker. A config file cannot.
 
 Mac (darwin) is IBKR TWS paper, 127.0.0.1:7497, account ids starting with D.
-Windows is Tod's Schwab account. mode "live" sends only after `yes <ticketID>`.
-mode "dry" (the default) and "alerts" never transmit.
+Windows is tastytrade. ``tasty_data`` (default production) and ``tasty_orders``
+(default sandbox) choose the hosts. There is no env-var toggle.
+``tasty_orders=production`` is real money and requires ``tasty_data=production``.
+Tastytrade orders auto-approve. Schwab, selected with ``--broker schwab``, still
+waits for ``yes <ticketID>``. mode "dry" (the default) and "alerts" never transmit.
 
 Plan v2 version B prices (75 delta, +30%, $0.20/side, 2h flat, 1 spread) live in
 strategy.py. They are not config keys.
@@ -24,6 +27,13 @@ class SafetyError(RuntimeError):
     """A hard safety rule failed. The bot must not send orders."""
 
 
+def _env_name(value, key: str) -> str:
+    text = str(value or "").strip().lower()
+    if text not in ("sandbox", "production"):
+        raise SafetyError(f"{key} must be 'sandbox' or 'production' (got {value!r})")
+    return text
+
+
 def _t(value: str) -> time:
     parts = [int(x) for x in str(value).split(":")]
     while len(parts) < 3:
@@ -31,13 +41,37 @@ def _t(value: str) -> time:
     return time(parts[0], parts[1], parts[2])
 
 
+_BROKER_ALIASES = {
+    "tt": "tasty",
+    "tastytrade": "tasty",
+    "tasty": "tasty",
+    "ibkr": "ibkr",
+    "schwab": "schwab",
+    "sim": "sim",
+}
+
+
 def machine_broker() -> str:
     if sys.platform == "darwin":
         return "ibkr"
     if sys.platform == "win32":
-        return "schwab"
+        return "tasty"
     raise SafetyError(
-        f"Noon Breakout runs on Mac (IBKR paper) or Windows (Schwab); this is {sys.platform}")
+        f"Noon Breakout runs on Mac (IBKR paper) or Windows (tastytrade); this is {sys.platform}")
+
+
+def resolve_broker(name: str | None = None) -> str:
+    """``auto`` follows the machine. ``tasty`` / ``tt`` / ``tastytrade`` are one broker."""
+    key = str(name or "auto").strip().lower()
+    if key in ("", "auto"):
+        if sys.platform == "win32":
+            return "tasty"
+        return "ibkr"
+    found = _BROKER_ALIASES.get(key)
+    if found is None:
+        raise SafetyError(
+            f"unknown broker {name!r}; use auto, tasty, tt, tastytrade, ibkr, or schwab")
+    return found
 
 
 @dataclass
@@ -46,6 +80,8 @@ class Config:
     dry_run: bool = True
     mode: str = ""
     account: str = ""
+    tasty_data: str = "production"
+    tasty_orders: str = "sandbox"
 
     host: str = "127.0.0.1"
     port: int = PAPER_PORT
@@ -92,11 +128,14 @@ class Config:
             path.mkdir(parents=True, exist_ok=True)
 
     def __post_init__(self) -> None:
+        self.broker = _BROKER_ALIASES.get(str(self.broker or "").strip().lower(), str(self.broker or "").strip().lower())
+        if self.broker == "auto":
+            self.broker = ""
         if not self.broker:
             if sys.platform == "darwin":
                 self.broker = "ibkr"
             elif sys.platform == "win32":
-                self.broker = "schwab"
+                self.broker = "tasty"
         if self.broker in ("ibkr", "sim"):
             if not self.mode:
                 self.mode = "dry" if self.dry_run else "paper"
@@ -104,7 +143,7 @@ class Config:
                 self.dry_run = True
             elif self.mode == "paper":
                 self.dry_run = False
-        elif self.broker == "schwab":
+        elif self.broker in ("schwab", "tasty"):
             if not self.mode:
                 self.mode = "dry" if self.dry_run else "live"
             if self.mode in ("dry", "alerts"):
@@ -118,8 +157,18 @@ class Config:
 
     @property
     def live(self) -> bool:
-        """Schwab live. Orders go out only after Tod types yes."""
-        return self.broker == "schwab" and self.mode == "live" and not self.dry_run
+        """Schwab or tastytrade live. Schwab still waits for ``yes``. Tastytrade does not."""
+        return self.broker in ("schwab", "tasty") and self.mode == "live" and not self.dry_run
+
+    @property
+    def confirms_orders(self) -> bool:
+        """Human ``yes <id>`` gate. Tastytrade auto-approves and does not use this."""
+        return self.broker == "schwab" and self.live
+
+    @property
+    def real_money(self) -> bool:
+        """Tastytrade order host is production. Sandbox orders are not real money."""
+        return self.broker == "tasty" and str(self.tasty_orders).strip().lower() == "production"
 
     @property
     def paper(self) -> bool:
@@ -135,6 +184,10 @@ class Config:
         return self.paper or self.live
 
     def validate(self) -> None:
+        self.tasty_data = _env_name(self.tasty_data, "tasty_data")
+        self.tasty_orders = _env_name(self.tasty_orders, "tasty_orders")
+        if self.tasty_orders == "production" and self.tasty_data != "production":
+            raise SafetyError("tasty_orders=production requires tasty_data=production")
         if self.broker == "ibkr":
             if self.mode not in ("dry", "alerts", "paper"):
                 raise SafetyError(f"Mac/IBKR mode must be dry, alerts, or paper (got {self.mode!r})")
@@ -156,11 +209,18 @@ class Config:
                 raise SafetyError("Schwab live needs account set to the account's last digits")
             if self.max_orders_per_min > 10:
                 raise SafetyError("max_orders_per_min cannot exceed Schwab's 10/min")
+        elif self.broker == "tasty":
+            if self.mode not in ("dry", "alerts", "live"):
+                raise SafetyError(f"tastytrade mode must be dry, alerts, or live (got {self.mode!r})")
+            if self.mode != "live" and not self.dry_run:
+                raise SafetyError("dry_run stays on unless mode is 'live'")
+            if self.max_orders_per_min > 10:
+                raise SafetyError("max_orders_per_min cannot exceed 10")
         elif self.broker == "sim":
             if self.mode not in ("dry", "alerts", "paper"):
                 raise SafetyError(f"sim mode must be dry, alerts, or paper (got {self.mode!r})")
         else:
-            raise SafetyError("Noon Breakout runs on Mac (IBKR paper) or Windows (Schwab)")
+            raise SafetyError("Noon Breakout runs on Mac (IBKR paper) or Windows (tastytrade)")
         if self.decision_grace_s <= 0:
             raise ValueError("decision_grace_s must be positive")
         if self.chain_band_pts <= 0:
@@ -191,7 +251,9 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
         for k, v in data.items()
         if k in known and k not in ("broker", "dry_run") and not str(k).startswith("_")
     }
-    if "broker" not in overrides and sys.platform not in ("darwin", "win32"):
+    if "broker" in overrides:
+        overrides["broker"] = resolve_broker(overrides["broker"])
+    elif sys.platform not in ("darwin", "win32"):
         overrides["broker"] = "ibkr"
     if os.environ.get("SCHWAB_TOKEN_PATH"):
         kwargs["token_path"] = os.environ["SCHWAB_TOKEN_PATH"]

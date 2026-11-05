@@ -1,14 +1,15 @@
 {
-  "_comment": "Windows + Schwab. Copy to config.json. The PC is the broker: this file cannot select IBKR. run_session.ps1 defaults to dry. -Mode live is the only send mode, and each order still needs yes <ticketID> in that window.",
+  "_comment": "Windows + tastytrade. Copy to config.json. The PC is the broker: this file cannot select IBKR. auto on Windows is tastytrade. tasty_orders=sandbox (the default) sends to api.cert.tastyworks.com. tasty_orders=production is real money and requires tasty_data=production. There is no env toggle. run_session.ps1 defaults to dry. -Mode live auto-approves; it does not ask for yes <ticketID>. --broker schwab is the old confirm-before-send path.",
   "mode": "dry",
-  "account": "705",
-  "token_path": "~/schwab/tokens.json",
+  "account": "",
+  "tasty_data": "production",
+  "tasty_orders": "sandbox",
   "base_dir": "C:/spx-noon-breakout",
-  "approval_timeout_secs": 300,
+  "max_orders_per_min": 10,
   "start_not_before": "11:45:00",
   "decision_grace_s": 90,
   "loop_interval_s": 5,
   "chain_band_pts": 150,
-  "_rules": "Version B only. 15m closes 12:00–1:00 PM ET, first qualifying bar, 1 spread. Long nearest 75 delta. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. GTC close at debit x 1.30. Flat 2 hours after the entry bar. No stop.",
+  "_rules": "Version B only. 15m closes 12:00–1:00 PM ET, first qualifying bar, 1 spread. Long nearest 75 delta. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. GTC close at debit x 1.30. Flat 2 hours after the entry bar. No stop. Tastytrade does not chase a missed fill.",
   "_wrap": "Read-only log summary: python -m spx_noon wrap (run_wrap.ps1). It does not send orders."
 }
