@@ -26,7 +26,7 @@ Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` 
 
 `python -m spx_noon` with no `--config` uses `SPX_NOON_CONFIG` when that variable is set, otherwise `config.json` in the repo root.
 
-The 75-delta rule, the width, the $0.20 skip, the +30% target, and the two-hour flat are code, not config keys. They are in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md).
+The 75-delta rule, the width, the $0.20 skip, the +30% target, and the two-hour flat are code, not config keys. They are in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). IBKR paper can raise a working entry limit inside a fixed cap; tastytrade and Schwab cannot.
 
 | Key | In the examples | Role |
 | --- | --- | --- |
@@ -38,6 +38,10 @@ The 75-delta rule, the width, the $0.20 skip, the +30% target, and the two-hour 
 | `base_dir` | `~/Documents/spx-noon-breakout` or `C:/spx-noon-breakout` | State, logs, and reports. Tastytrade order ids go in `state/tt_orders-<date>.json`. |
 | `token_path` | `~/schwab/tokens.json` | Schwab token file (`--broker schwab`). `SCHWAB_TOKEN_PATH` replaces this value. |
 | `approval_timeout_secs` | `300` | Schwab live: seconds to type `yes <id>` before that ticket is skipped. Tastytrade does not prompt. |
+| `entry_reprice` | `true` on Mac, `false` on Windows | Paper only. `false` leaves the original mid limit in place. Live tastytrade and Schwab never reprice. |
+| `entry_reprice_max_add` | `0.10` | Most the paper limit may rise above the original floored mid. Also held to the original marketable debit. Values above `0.15` are rejected. |
+| `entry_reprice_secs` | `20` | Minimum seconds between entry modifies. Cannot be set below 15. |
+| `entry_reprice_attempts` | `6` | Modify tries on one entry, including failures. Cannot be set above 6. |
 
 ## Shared account
 
