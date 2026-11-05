@@ -19,6 +19,14 @@ from dataclasses import asdict, dataclass, fields
 from datetime import time
 from pathlib import Path
 
+from .pricing import (
+    PAPER_ENTRY_REPRICE_ATTEMPTS,
+    PAPER_ENTRY_REPRICE_MAX_ADD,
+    PAPER_ENTRY_REPRICE_SECS,
+    REPRICE_MAX_ADD_CEILING,
+    TICK,
+)
+
 PAPER_PORT = 7497
 ORDER_PREFIX = "SPXNOON-"
 
@@ -103,6 +111,11 @@ class Config:
     start_not_before: str = "11:45:00"
     decision_grace_s: float = 90.0
     loop_interval_s: float = 5.0
+    # Paper evaluation only. Live tastytrade and Schwab ignore this flag.
+    entry_reprice: bool = True
+    entry_reprice_max_add: float = PAPER_ENTRY_REPRICE_MAX_ADD
+    entry_reprice_secs: float = PAPER_ENTRY_REPRICE_SECS
+    entry_reprice_attempts: int = PAPER_ENTRY_REPRICE_ATTEMPTS
     exit_wait_s: float = 20.0
     chain_band_pts: float = 150.0
     max_option_lines: int = 120
@@ -175,6 +188,14 @@ class Config:
         """IBKR paper on port 7497. The port and a D-account are the gate."""
         return self.broker == "ibkr" and self.mode == "paper" and not self.dry_run
 
+    def entry_reprice_on(self) -> bool:
+        """True only for a paper session. Live, dry, and alerts never reprice."""
+        if not self.entry_reprice or self.dry_run or self.live:
+            return False
+        if self.broker == "ibkr" and self.paper:
+            return True
+        return self.broker == "sim" and self.mode == "paper"
+
     def sends_orders(self) -> bool:
         """True when this process may hand an order to the broker adapter."""
         if self.mode in ("dry", "alerts"):
@@ -225,6 +246,22 @@ class Config:
             raise ValueError("decision_grace_s must be positive")
         if self.chain_band_pts <= 0:
             raise ValueError("chain_band_pts must be positive")
+        allowance = float(self.entry_reprice_max_add)
+        if allowance < 0:
+            raise ValueError("entry_reprice_max_add cannot be negative")
+        if allowance > REPRICE_MAX_ADD_CEILING + 1e-9:
+            raise SafetyError(
+                "entry_reprice_max_add is above 0.15. "
+                "A walk of 0.40 over the original mid is not enabled.")
+        if abs(allowance / TICK - round(allowance / TICK)) > 1e-6:
+            raise ValueError("entry_reprice_max_add must be a multiple of 0.05")
+        if float(self.entry_reprice_secs) < 15:
+            raise ValueError("entry_reprice_secs must be at least 15")
+        attempts = int(self.entry_reprice_attempts)
+        if attempts < 1 or attempts > PAPER_ENTRY_REPRICE_ATTEMPTS:
+            raise ValueError(
+                f"entry_reprice_attempts must be from 1 to {PAPER_ENTRY_REPRICE_ATTEMPTS}")
+        self.entry_reprice_attempts = attempts
 
     def to_dict(self) -> dict:
         return asdict(self)

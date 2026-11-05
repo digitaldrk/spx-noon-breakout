@@ -11,6 +11,7 @@ from datetime import datetime
 
 from .broker import Broker, to_et
 from .config import ORDER_PREFIX, PAPER_PORT, SafetyError
+from .pricing import require_combo_limit
 from .strategy import Bar, OptQuote, Px
 
 log = logging.getLogger("spx_noon.ib")
@@ -255,10 +256,20 @@ class IBBroker(Broker):
             return False
         return True
 
+    def _find_trade(self, handle):
+        trade = self._trades.get(handle)
+        if trade is not None:
+            return trade
+        for candidate in list(self.ib.trades()) + list(self.ib.reqAllOpenOrders()):
+            if self._matches(candidate, handle):
+                self._trades[handle] = candidate
+                return candidate
+        return None
+
     def cancel(self, handle):
         if self.cfg.dry_run:
             raise SafetyError("cancel called while dry")
-        trade = self._trades.get(handle)
+        trade = self._find_trade(handle)
         if trade is None or not self._is_own(trade):
             log.warning("refusing to cancel order %s: not a Noon order", handle)
             return
@@ -266,12 +277,7 @@ class IBBroker(Broker):
             self.ib.cancelOrder(trade.order)
 
     def order_state(self, handle):
-        trade = self._trades.get(handle)
-        if trade is None:
-            for candidate in list(self.ib.trades()) + list(self.ib.reqAllOpenOrders()):
-                if self._matches(candidate, handle):
-                    trade = self._trades[handle] = candidate
-                    break
+        trade = self._find_trade(handle)
         if trade is None:
             raise KeyError(handle)
         status = trade.orderStatus
@@ -306,5 +312,48 @@ class IBBroker(Broker):
             })
         return out
 
+    def own_entry_refs(self) -> set[str]:
+        """Noon entry order refs seen in this connection's executions.
+
+        A ref means the order got a fill report. Leg prints are not turned into
+        a combo price here; the order status remains the price source.
+        """
+        refs: set[str] = set()
+        for fill in self.ib.fills():
+            execution = getattr(fill, "execution", None)
+            ref = str(getattr(execution, "orderRef", "") or "")
+            if ref.startswith(ORDER_PREFIX) and not ref.endswith(("X", "F")):
+                refs.add(ref)
+        return refs
+
     def modify_combo(self, handle, limit):
-        raise SafetyError("refusing to reprice: noon breakout does not chase")
+        """Replace the limit on one working Noon entry. Limit orders only, paper only."""
+        if not self.cfg.paper:
+            raise SafetyError("refusing to reprice: paper evaluation only")
+        if self.cfg.dry_run:
+            raise SafetyError("modify_combo called while dry")
+        try:
+            price = require_combo_limit(limit)
+        except ValueError as exc:
+            raise SafetyError(str(exc)) from exc
+        trade = self._find_trade(handle)
+        if trade is None or not self._is_own(trade):
+            raise SafetyError(f"refusing to modify order {handle}: not a Noon order")
+        order = trade.order
+        if getattr(order, "orderType", "LMT") not in ("LMT", "Limit"):
+            raise SafetyError("refusing to change a non-limit order")
+        status = getattr(trade.orderStatus, "status", "")
+        filled = float(getattr(trade.orderStatus, "filled", 0) or 0)
+        if trade.isDone() or filled > 0 or status in (
+            "Filled", "Cancelled", "ApiCancelled", "Inactive", "PendingCancel",
+        ):
+            log.info("not modifying %s: status %s filled %.2f", handle, status, filled)
+            return
+        current = float(getattr(order, "lmtPrice", 0) or 0)
+        if price + 1e-9 < current:
+            raise SafetyError(f"refusing to lower entry {handle} from {current:.2f} to {price:.2f}")
+        if abs(price - current) <= 1e-9:
+            return
+        order.lmtPrice = price
+        self.ib.placeOrder(trade.contract, order)
+        log.info("repriced entry %s to %.2f (limit order)", handle, price)

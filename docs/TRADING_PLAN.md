@@ -120,7 +120,7 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
 5. **Long leg:** the strike whose delta is nearest **0.75** (in the money), in 5-point strikes.
 6. **Short leg:** W = max(10, floor(expected_move / 5) × 5) points further out of the money (long + W for calls, long − W for puts).
 7. **Size:** 1 spread on a $10,000 account.
-8. **Order:** a limit order for the debit spread at **mid**. If the fill would be **more than $0.20 per side worse than mid**, skip the trade. Do not chase. (The backtest breaks at $0.30 a side.)
+8. **Order:** a limit order for the debit spread at **mid**. If the fill would be **more than $0.20 per side worse than mid**, skip the trade. Do not chase. (The backtest breaks at $0.30 a side.) IBKR paper may then raise the working limit one nickel at a time, at most $0.10 above that original floored mid, and never above the marketable debit that passed this check. The cap does not move up on a later quote. Tastytrade and Schwab leave the original limit in place.
 9. **Target exit:** right after the fill, place a GTC closing limit at **debit × 1.30**. Exit when the spread **bid ≥ debit × 1.30**.
 10. **Hard time exit:** close at market or near bid **2 hours after entry**. The backtest exits on the close of the 15m bar that ends at entry + 2h (12:00 entry → 2:00 PM). There is **no stop loss**.
 11. **Paper mode first.** For every trade, log: date, timestamp, direction, SPX at entry, PDH/PDL, expected move, W, both strikes, both deltas, spread mid, fill price, **slippage versus mid**, exit time, exit reason (target or time), exit fill, slippage on the exit, and P&L after $0.65 per contract per leg.

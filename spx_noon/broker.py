@@ -40,6 +40,10 @@ class Broker:
     def own_open_orders(self) -> list[dict]:
         return []
 
+    def own_entry_refs(self) -> set[str]:
+        """Entry order refs that already have a fill report. Empty when unknown."""
+        return set()
+
 
 def to_et(dt, naive_tz: str = "US/Central"):
     if dt is None:
@@ -81,6 +85,7 @@ class SimBroker(Broker):
         self._oid = 100
         self.placed: list = []
         self.cancelled: list = []
+        self.modified: list = []
         self.approved: dict = {}
         self.ticket: str | None = None
 
@@ -171,11 +176,30 @@ class SimBroker(Broker):
         elif order["action"] == "SELL" and close_bid + 1e-9 >= order["limit"]:
             order.update(status="Filled", filled=order["qty"], avg=order["limit"])
 
+    def modify_combo(self, handle, limit):
+        order = self.orders.get(handle)
+        if order is None or order["status"] != "Submitted" or order["filled"]:
+            return
+        price = float(limit)
+        if price + 1e-9 < float(order["limit"]):
+            raise ValueError(f"refusing to lower {handle} to {price}")
+        order["limit"] = price
+        self.modified.append({"id": handle, "limit": price})
+        self._try_fill(handle)
+
     def cancel(self, handle):
         self.cancelled.append(handle)
         order = self.orders.get(handle)
         if order and order["status"] != "Filled":
             order["status"] = "Cancelled"
+
+    def own_entry_refs(self) -> set[str]:
+        return {
+            str(order["order_ref"])
+            for order in self.orders.values()
+            if order["action"] == "BUY" and order["filled"] and order.get("order_ref")
+            and not str(order["order_ref"]).endswith(("X", "F"))
+        }
 
     def order_state(self, handle):
         self._try_fill(handle)

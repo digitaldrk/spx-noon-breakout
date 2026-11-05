@@ -16,7 +16,19 @@ from .calendar import trading_day_status
 from .config import SafetyError, load_config, resolve_broker
 from .logbook import Outputs
 from .notify import ConsoleApprover, Notifier
-from .pricing import floor_tick, take_profit_limit, target_reached, time_exit_deadline, trade_pnl
+from .pricing import (
+    entry_reprice_cap,
+    floor_tick,
+    market_data_class,
+    next_entry_limit,
+    quote_price_problem,
+    reprice_quote_block,
+    spread_prices,
+    take_profit_limit,
+    target_reached,
+    time_exit_deadline,
+    trade_pnl,
+)
 from . import resume
 from .strategy import (
     build_order_plan,
@@ -28,8 +40,6 @@ from .strategy import (
     bar_closing_at,
     WINDOW_CLOSES,
 )
-from .pricing import spread_prices
-
 ET = ZoneInfo("America/New_York")
 log = logging.getLogger("spx_noon.runner")
 
@@ -112,6 +122,31 @@ def _connect(cfg, broker) -> None:
 def _filled(state: dict | None) -> bool:
     return bool(state and state.get("status") == "Filled" and float(state.get("filled") or 0) >= 1
                 and float(state.get("avg_price") or 0) > 0)
+
+
+def _fill_price(state: dict | None) -> float | None:
+    """Average price when the broker reports a positive fill. Zero is not a price."""
+    if not state:
+        return None
+    try:
+        filled = float(state.get("filled") or 0)
+        avg = float(state.get("avg_price") or 0)
+    except (TypeError, ValueError):
+        return None
+    if filled > 0 and avg > 0:
+        return avg
+    return None
+
+
+def _remember_fill(working: dict, state: dict | None) -> None:
+    price = _fill_price(state)
+    if price is None:
+        return
+    working["seen_fill"] = price
+    try:
+        working["seen_qty"] = float(state.get("filled") or 0)
+    except (TypeError, ValueError):
+        working["seen_qty"] = 0.0
 
 
 def _safe_state(broker, order_id):
@@ -244,8 +279,8 @@ def _base_row(pos, mode: str) -> dict:
 
 
 def _persist(cfg, pos) -> None:
-    payload = dict(pos)
-    for key in ("entry_close", "deadline", "cancel_after"):
+    payload = {key: value for key, value in pos.items() if key != "plan"}
+    for key in ("entry_close", "deadline", "cancel_after", "placed_at", "last_reprice_at"):
         if isinstance(payload.get(key), datetime):
             payload[key] = payload[key].isoformat()
     resume.save(cfg.state_dir, payload)
@@ -491,30 +526,273 @@ def _manage_position(cfg, broker, notifier, out, state: _State) -> bool:
     return False
 
 
-def _poll_working(cfg, broker, notifier, out, state: _State) -> None:
-    working = state.working
-    status = _safe_state(broker, working["id"])
-    if _filled(status):
-        _open_position(cfg, broker, notifier, state, working, status["avg_price"])
+def _describe_quote(quote) -> str:
+    """Data class plus prices. The receive stamp is not reported as an exchange time."""
+    if quote is None:
+        return "missing"
+    kind = market_data_class(getattr(quote, "mdtype", None))
+    problem = quote_price_problem(quote)
+    stamp = "receive-stamped" if getattr(quote, "time", None) is not None else "no-receive-stamp"
+    text = f"{kind} {stamp} bid {getattr(quote, 'bid', None)} ask {getattr(quote, 'ask', None)}"
+    if problem:
+        text += f" ({problem})"
+    return text
+
+
+def _log_entry_book(broker, plan) -> None:
+    try:
+        quotes = broker.option_quotes()
+    except Exception:  # noqa: BLE001
+        log.warning("entry quote diagnostic failed", exc_info=True)
         return
-    if broker.now() < working["cancel_after"]:
+    long_q = lookup_quote(quotes, plan.long_strike, plan.right)
+    short_q = lookup_quote(quotes, plan.short_strike, plan.right)
+    log.info("entry quotes long %s short %s", _describe_quote(long_q), _describe_quote(short_q))
+
+
+def _note_reprice(working: dict, reason: str) -> None:
+    if working.get("reprice_note") == reason:
         return
+    working["reprice_note"] = reason
+    log.info("entry reprice %s held: %s", working.get("ref") or working.get("id"), reason)
+
+
+def _entry_fill_refs(broker) -> set[str]:
+    finder = getattr(broker, "own_entry_refs", None)
+    if not callable(finder):
+        return set()
+    try:
+        return {str(ref) for ref in (finder() or set()) if ref}
+    except Exception:  # noqa: BLE001
+        log.warning("entry fill lookup failed", exc_info=True)
+        return set()
+
+
+def _claim_existing_entry(cfg, broker, state: _State) -> bool:
+    """Adopt one working Noon entry so a second order is not sent. True when placement must stop."""
+    try:
+        orders = broker.own_open_orders() or []
+    except Exception:  # noqa: BLE001
+        log.warning("could not list open orders; not sending a new entry yet", exc_info=True)
+        return True
+    buys = [
+        order for order in orders
+        if str(order.get("action") or "") == "BUY"
+        and str(order.get("ref") or "").startswith("SPXNOON-")
+        and not str(order.get("ref") or "").endswith(("X", "F"))
+    ]
+    if not buys:
+        return False
+    order = buys[0]
+    limit = order.get("limit")
+    log.warning("entry %s is already working at %s; not sending another", order.get("ref"), limit)
+    state.working = {
+        "id": order.get("order_id"),
+        "entry_order_id": order.get("order_id"),
+        "ref": order.get("ref"),
+        "limit": limit,
+        "original_limit": limit,
+        "reprice_cap": limit,
+        "reprice_attempts": int(cfg.entry_reprice_attempts),
+        "reprice_stopped": "adopted",
+        "status": "working",
+        "account": order.get("account"),
+        "cancel_after": broker.now() + timedelta(seconds=cfg.decision_grace_s),
+        "plan": None,
+    }
+    try:
+        _persist(cfg, state.working)
+    except Exception:  # noqa: BLE001
+        log.warning("could not save the adopted entry", exc_info=True)
+    return True
+
+
+def _open_known_fill(cfg, broker, notifier, state: _State, working: dict, price: float) -> None:
+    if working.get("plan") is None:
+        log.warning(
+            "entry %s filled at %.2f but this process has no spread plan; not sending another order",
+            working.get("id"), price,
+        )
+        state.done_for_day = True
+        state.halt = True
+        state.working = None
+        return
+    _open_position(cfg, broker, notifier, state, working, price)
+
+
+def _maybe_reprice(cfg, broker, working: dict, status: dict | None) -> None:
+    """Raise one working entry toward the current mid, inside the original cap."""
+    if not cfg.entry_reprice_on() or working.get("reprice_stopped") or working.get("plan") is None:
+        return
+    if status is None:
+        _note_reprice(working, "order status unknown")
+        return
+    if status.get("status") in ("PendingCancel", "Cancelled", "ApiCancelled", "Inactive", "Filled"):
+        return
+    if _fill_price(status) is not None:
+        return
+    cap = working.get("reprice_cap")
+    current = working.get("limit")
+    if cap is None or current is None:
+        _note_reprice(working, "no original cap")
+        return
+    attempts = int(working.get("reprice_attempts") or 0)
+    if attempts >= int(cfg.entry_reprice_attempts):
+        _note_reprice(working, "attempt limit")
+        return
+    if float(current) + 1e-9 >= float(cap):
+        _note_reprice(working, f"cap {float(cap):.2f}")
+        return
+    now = broker.now()
+    anchor = working.get("last_reprice_at") or working.get("placed_at")
+    if not isinstance(anchor, datetime):
+        working["placed_at"] = now
+        return
+    if (now - anchor).total_seconds() + 1e-9 < float(cfg.entry_reprice_secs):
+        return
+    plan = working["plan"]
+    try:
+        quotes = broker.option_quotes()
+    except Exception:  # noqa: BLE001
+        log.warning("entry reprice quotes failed", exc_info=True)
+        _note_reprice(working, "quotes unavailable")
+        return
+    long_q = lookup_quote(quotes, plan.long_strike, plan.right)
+    short_q = lookup_quote(quotes, plan.short_strike, plan.right)
+    block = reprice_quote_block(long_q, short_q, now, QUOTE_MAX_AGE_S)
+    if block:
+        _note_reprice(working, block)
+        return
+    prices = spread_prices(long_q, short_q)
+    new = next_entry_limit(float(current), float(cap), prices["mid"], prices["natural"])
+    if new is None:
+        _note_reprice(working, f"mid {prices['mid']:.2f} natural {prices['natural']:.2f} at the limit")
+        return
+    try:
+        broker.modify_combo(working["id"], new)
+    except Exception:  # noqa: BLE001
+        working["reprice_attempts"] = attempts + 1
+        working["last_reprice_at"] = now
+        log.warning(
+            "entry reprice %s to %.2f failed (attempt %s/%s, cap %.2f)",
+            working.get("ref") or working.get("id"), new, attempts + 1,
+            cfg.entry_reprice_attempts, float(cap), exc_info=True,
+        )
+        try:
+            _persist(cfg, working)
+        except Exception:  # noqa: BLE001
+            log.warning("could not save the failed reprice", exc_info=True)
+        return
+    working["limit"] = new
+    working["reprice_attempts"] = attempts + 1
+    working["last_reprice_at"] = now
+    working["reprice_note"] = ""
+    log.info(
+        "entry reprice %s %.2f -> %.2f cap %.2f attempt %s/%s mid %.2f natural %.2f "
+        "original %.2f status %s long %s short %s",
+        working.get("ref"), float(current), new, float(cap), attempts + 1,
+        cfg.entry_reprice_attempts, prices["mid"], prices["natural"],
+        float(working.get("original_limit") or current), status.get("status"),
+        _describe_quote(long_q), _describe_quote(short_q),
+    )
+    try:
+        _persist(cfg, working)
+    except Exception:  # noqa: BLE001
+        log.warning("repriced entry %s was not saved", working.get("id"), exc_info=True)
+
+
+def _finish_entry_cancel(cfg, broker, notifier, out, state: _State, working: dict) -> None:
+    working["reprice_stopped"] = "cancel"
     try:
         broker.cancel(working["id"])
     except Exception:  # noqa: BLE001
         log.warning("cancel entry failed", exc_info=True)
     status = _await_terminal(broker, working["id"], cfg.exit_wait_s)
-    if _filled(status):
-        _open_position(cfg, broker, notifier, state, working, status["avg_price"])
+    _remember_fill(working, status)
+    price = _fill_price(status)
+    if price is not None:
+        _open_known_fill(cfg, broker, notifier, state, working, price)
+        return
+    if working.get("seen_fill") and (status is None or not status.get("done")):
+        log.warning("entry %s showed a fill and the cancel is unconfirmed; keeping it", working.get("id"))
+        working["cancel_after"] = broker.now() + timedelta(seconds=max(cfg.exit_wait_s, 5))
         return
     if status is None or not status.get("done"):
         working["cancel_after"] = broker.now() + timedelta(seconds=max(cfg.exit_wait_s, 5))
         log.warning("entry %s still working after cancel; keeping it", working["id"])
         return
+    if working.get("seen_fill"):
+        log.warning(
+            "entry %s showed a fill then a flat cancel; blocking another entry", working.get("id"),
+        )
+        state.halt = True
+        state.done_for_day = True
+        state.working = None
+        return
+    if working.get("plan") is None:
+        log.warning("cancelled adopted entry %s; not sending another order", working.get("id"))
+        state.halt = True
+        state.working = None
+        return
     out.append_trade(_row_from_plan(working["plan"], cfg.mode, "skip_no_fill"))
-    notifier.alert("Noon no fill", f"entry {working['ref']} cancelled unfilled. Not chasing.", toast=False)
+    notifier.alert(
+        "Noon no fill",
+        f"entry {working['ref']} cancelled unfilled at {float(working.get('limit') or 0):.2f}. "
+        f"Reprice cap {float(working.get('reprice_cap') or working.get('limit') or 0):.2f}.",
+        toast=False,
+    )
     state.working = None
     resume.mark_closed(cfg.state_dir)
+
+
+def _settle_partial(cfg, broker, notifier, state: _State, working: dict) -> None:
+    """A partial entry is a position. Cancel the remainder and do not place another order."""
+    working["reprice_stopped"] = "partial"
+    if not working.get("partial_cancel_sent"):
+        log.warning("entry %s partial fill; cancelling the remainder", working.get("id"))
+        try:
+            broker.cancel(working["id"])
+        except Exception:  # noqa: BLE001
+            log.warning("cancel partial entry failed", exc_info=True)
+        working["partial_cancel_sent"] = True
+        status = _await_terminal(broker, working["id"], cfg.exit_wait_s)
+    else:
+        status = _safe_state(broker, working["id"])
+    _remember_fill(working, status)
+    price = _fill_price(status) or working.get("seen_fill")
+    if price and status and status.get("done"):
+        _open_known_fill(cfg, broker, notifier, state, working, float(price))
+        return
+    if price and _filled(status):
+        _open_known_fill(cfg, broker, notifier, state, working, float(price))
+        return
+    log.warning("entry %s partial fill is not terminal; not sending another order", working.get("id"))
+    working["cancel_after"] = max(
+        working.get("cancel_after") or broker.now(),
+        broker.now() + timedelta(seconds=max(cfg.exit_wait_s, 5)),
+    )
+
+
+def _poll_working(cfg, broker, notifier, out, state: _State) -> None:
+    working = state.working
+    status = _safe_state(broker, working["id"])
+    _remember_fill(working, status)
+    if _filled(status):
+        _open_known_fill(cfg, broker, notifier, state, working, status["avg_price"])
+        return
+    if _fill_price(status) is not None and not (status and status.get("done")):
+        _settle_partial(cfg, broker, notifier, state, working)
+        return
+    if broker.now() >= working["cancel_after"]:
+        _finish_entry_cancel(cfg, broker, notifier, out, state, working)
+        return
+    if status is None:
+        if not working.get("unreconciled_logged"):
+            log.warning("entry %s status unknown; not replacing it", working.get("id"))
+            working["unreconciled_logged"] = True
+        working["reprice_stopped"] = working.get("reprice_stopped") or "unknown"
+        return
+    _maybe_reprice(cfg, broker, working, status)
 
 
 def _revalidate(cfg, broker, breakout, spot: float, expiry: str):
@@ -630,6 +908,10 @@ def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: s
                 continue
             plan = fresh
             broker.approve_ticket(ticket, plan.limit)
+        if _claim_existing_entry(cfg, broker, state):
+            if state.working is None and _still_in_grace(close_at, broker.now(), grace):
+                state.consumed.discard(close_at)
+            return
         ref = f"SPXNOON-{close_at:%Y%m%d}-{state.seq}"
         state.seq += 1
         try:
@@ -644,14 +926,26 @@ def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: s
                     pass
             state.halt = True
             return
+        cap = plan.limit
+        if cfg.entry_reprice_on():
+            cap = entry_reprice_cap(plan.limit, plan.natural, cfg.entry_reprice_max_add)
         working = _pos_from_plan(plan, None, status="working", account=account, ref=ref, ticket=ticket,
                                  entry_order_id=order_id, mode=cfg.mode)
         working["id"] = order_id
         working["plan"] = plan
         working["cancel_after"] = _next_decision(close_at, grace)
+        working["original_limit"] = plan.limit
+        working["original_natural"] = plan.natural
+        working["reprice_cap"] = cap
+        working["reprice_attempts"] = 0
+        working["placed_at"] = broker.now()
         state.working = working
-        _persist(cfg, {k: v for k, v in working.items() if k != "plan"})
-        log.info("working entry %s limit %.2f", ref, plan.limit)
+        _persist(cfg, working)
+        _log_entry_book(broker, plan)
+        log.info(
+            "working entry %s limit %.2f mid %.2f natural %.2f reprice_cap %.2f paper_reprice %s",
+            ref, plan.limit, plan.mid, plan.natural, cap, cfg.entry_reprice_on(),
+        )
         return
 
 
@@ -691,25 +985,49 @@ def _load_saved(cfg, broker, state: _State, saved: dict) -> None:
         pos["cancel_after"] = _restore_dt(pos["cancel_after"])
     pos["legs"] = [tuple(leg) for leg in pos.get("legs") or []]
     pos["fill_price"] = pos.get("fill_price")
+    for key in ("placed_at", "last_reprice_at"):
+        if pos.get(key):
+            pos[key] = _restore_dt(pos[key])
     if pos.get("status") == "working":
-        order_id = pos.get("entry_order_id")
+        order_id = pos.get("entry_order_id") or pos.get("id")
+        if pos.get("reprice_cap") is None:
+            # An order written before repricing has no room to pay up.
+            pos["reprice_cap"] = pos.get("original_limit") or pos.get("limit")
         status = _safe_state(broker, order_id)
+        notifier = Notifier(cfg.home / "logs", toast=False)
         if _filled(status):
-            dummy = {
-                "plan": _plan_shim(pos),
-                "account": pos.get("account"),
-                "ref": pos.get("ref"),
-                "ticket": pos.get("ticket"),
-                "id": order_id,
-            }
-            _open_position(cfg, broker, Notifier(cfg.home / "logs", toast=False), state, dummy, status["avg_price"])
+            pos["id"] = order_id
+            pos["plan"] = _plan_shim(pos)
+            _open_position(cfg, broker, notifier, state, pos, status["avg_price"])
+            return
+        if _fill_price(status) is not None:
+            pos["id"] = order_id
+            pos["plan"] = _plan_shim(pos)
+            pos["seen_fill"] = _fill_price(status)
+            state.working = pos
             return
         if status and not status.get("done"):
             pos["id"] = order_id
             pos["plan"] = _plan_shim(pos)
             state.working = pos
             return
-        resume.mark_closed(cfg.state_dir)
+        if pos.get("ref") and pos.get("ref") in _entry_fill_refs(broker) and pos.get("direction"):
+            log.warning(
+                "restart found a fill report for %s but no combo price; "
+                "not sending another entry and not inventing a take-profit",
+                pos.get("ref"),
+            )
+            state.done_for_day = True
+            state.halt = True
+            return
+        if status and status.get("done"):
+            resume.mark_closed(cfg.state_dir)
+            return
+        log.warning("restart could not reconcile entry %s; no new order until it is resolved", order_id)
+        pos["id"] = order_id
+        pos["plan"] = _plan_shim(pos) if pos.get("direction") else None
+        pos["reprice_stopped"] = "unreconciled"
+        state.working = pos
         return
     if pos.get("fill_price"):
         pos["had_fill"] = True
@@ -772,7 +1090,10 @@ def _write_report(cfg, out: Outputs, day, calendar_status) -> None:
             f"{row.get('exit_reason') or ''} pnl {row.get('pnl') or 'n/a'}"
         )
     lines.append("")
-    lines.append("Version B: 75-delta debit, limit at mid, +30% target, flat two hours after the entry bar.")
+    lines.append(
+        "Version B: 75-delta debit, limit at mid, +30% target, flat two hours after the entry bar. "
+        "IBKR paper may raise a working entry by at most $0.10 over that original limit."
+    )
     out.write_report(day, "\n".join(lines) + "\n")
 
 
@@ -820,6 +1141,16 @@ def run_session(cfg, broker, approver=None, notifier=None) -> int:
                 _record_exit(cfg, broker, notifier, out, state, status["avg_price"], "target", prices)
                 _write_report(cfg, out, day, calendar_status)
                 return 0
+        if state.working is None and state.position is None and not state.done_for_day:
+            refs = _entry_fill_refs(broker)
+            if refs:
+                log.warning(
+                    "entry fill %s is already on the broker; not sending another order",
+                    sorted(refs)[0],
+                )
+                state.done_for_day = True
+            else:
+                _claim_existing_entry(cfg, broker, state)
         start = datetime.combine(day, cfg.t("start_not_before"), ET)
         if broker.now() < start:
             broker.sleep((start - broker.now()).total_seconds())
