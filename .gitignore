@@ -21,3 +21,4 @@ secrets/
 .idea/
 graphify-out/
 .DS_Store
+config.json.bak
