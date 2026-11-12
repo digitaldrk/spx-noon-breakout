@@ -1,19 +1,25 @@
 """One simulated day: skip, single fill, target, time flat, and a restart."""
 import csv
+import json
+import sys
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from spx_noon.broker import SimBroker
-from spx_noon.config import Config
+from spx_noon.config import LIVE_ACCOUNT_ENV, LIVE_ALLOW_ENV, Config
 from spx_noon.pricing import trade_pnl
 from spx_noon.logbook import Outputs
 from spx_noon.notify import Notifier
 from spx_noon.runner import _State, _flatten, _maybe_enter, _poll_working, _rest_target, run_session
 from spx_noon.strategy import Bar, OptQuote
+from spx_noon.wrap_run import main as wrap_main
 
 from test_rules import DAY, levels, today_call_bars
 
 ET = ZoneInfo("America/New_York")
+LIVE_ACCOUNT = "U7654321"
 
 
 def _cfg(tmp, **extra):
@@ -118,6 +124,200 @@ def test_dry_mode_logs_the_signal_and_sends_nothing(tmp_path):
     assert buys == [] and sells == []
     assert rows[0]["exit_reason"] == "dry_signal"
     assert rows[0]["direction"] == "CALL"
+
+
+class _NoOrders(SimBroker):
+    def place_combo(self, *args, **kwargs):
+        raise AssertionError("dry and alerts must never call the order adapter")
+
+
+@pytest.mark.parametrize("mode", ["dry", "alerts"])
+def test_dry_and_alerts_never_reach_the_order_adapter(tmp_path, mode):
+    code, rows, buys, sells, broker = _run(tmp_path / mode, "target", mode=mode)
+    assert code == 0
+    assert broker.placed == [] and buys == [] and sells == []
+    assert rows[0]["exit_reason"] == "dry_signal"
+    # and the adapter itself is never reached, even with a qualifying bar
+    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
+    guarded = _NoOrders(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
+    assert run_session(_cfg(tmp_path / (mode + "2"), mode=mode), guarded) == 0
+
+
+def _live_cfg(tmp, **extra):
+    data = dict(broker="ibkr", mode="live", port=7496, account=LIVE_ACCOUNT,
+                base_dir=str(tmp), loop_interval_s=60, decision_grace_s=90)
+    data.update(extra)
+    return Config(**data)
+
+
+def test_ibkr_live_keeps_its_own_book_position_file_and_report(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
+    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
+    cfg = _live_cfg(tmp_path)
+    cfg.validate()
+    assert cfg.ibkr_live is True and cfg.live is False and cfg.sends_orders() is True
+    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
+    broker = SimBroker(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000,
+                       account=LIVE_ACCOUNT)
+    assert run_session(cfg, broker) == 0
+    state = tmp_path / "state"
+    assert (state / "trades-live.csv").exists()
+    assert not (state / "trades.csv").exists()
+    assert (state / "own_position-live.json").exists()
+    assert not (state / "own_position.json").exists()
+    assert (state / "report-live-2026-10-28.md").exists()
+    assert not (state / "report_2026-10-28.md").exists()
+    with (state / "trades-live.csv").open() as fh:
+        rows = list(csv.DictReader(fh))
+    assert [row["exit_reason"] for row in rows if row["exit_reason"] == "target"]
+    assert all(row["mode"] == "live" for row in rows)
+    printed = capsys.readouterr().out
+    assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=7496 REAL MONEY=YES" in printed
+    assert LIVE_ACCOUNT not in printed
+
+
+def test_a_paper_position_file_cannot_be_flattened_on_the_live_account(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
+    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
+    cfg = _live_cfg(tmp_path)
+    cfg.ensure_dirs()
+    from spx_noon.resume import save
+    save(cfg.state_dir, {"date": DAY.isoformat(), "status": "open", "had_fill": True,
+                         "fill_price": 12.0, "account": "DU999001"})
+    assert (cfg.state_dir / "own_position.json").exists()
+    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
+    broker = SimBroker(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000,
+                       account=LIVE_ACCOUNT)
+    assert run_session(cfg, broker) == 0
+    sells = [order for order in broker.placed if order["action"] == "SELL"]
+    assert broker.placed and sells
+    assert all(order["account"] == LIVE_ACCOUNT for order in broker.placed)
+    assert all(order["account"] != "DU999001" for order in sells)
+    # the paper file is untouched; live has its own
+    assert json.loads((cfg.state_dir / "own_position.json").read_text())["account"] == "DU999001"
+    assert (cfg.state_dir / "own_position-live.json").exists()
+
+
+def test_a_live_session_banner_prints_on_a_day_that_will_not_trade(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
+    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
+    start = datetime(2026, 11, 26, 11, 50, tzinfo=ET)  # Thanksgiving
+    bars = [Bar(datetime(2026, 11, 25, 10, 0, tzinfo=ET), 1, 2, 1, 1)]
+    broker = SimBroker(start, bars, _quotes("target"), spot=7000, account=LIVE_ACCOUNT)
+    assert run_session(_live_cfg(tmp_path, port=4001), broker) == 0
+    assert broker.placed == []
+    printed = capsys.readouterr().out
+    assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=4001 REAL MONEY=YES" in printed
+
+
+def test_a_live_session_stops_on_an_account_mismatch(tmp_path, monkeypatch):
+    from spx_noon.config import SafetyError
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
+    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
+    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
+    for reported in ("U1111111", "DU999001"):
+        broker = SimBroker(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000,
+                           account=reported)
+        with pytest.raises(SafetyError):
+            run_session(_live_cfg(tmp_path / reported), broker)
+        assert broker.placed == []
+        assert broker.connected is False  # the socket is closed again
+
+
+def test_the_live_position_file_blocks_a_second_live_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
+    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
+    cfg = _live_cfg(tmp_path)
+    cfg.ensure_dirs()
+    from spx_noon.resume import save
+    save(cfg.state_dir, {"date": DAY.isoformat(), "status": "closed", "had_fill": True,
+                         "fill_price": 12.0}, live=True)
+    assert (cfg.state_dir / "own_position-live.json").exists()
+    assert not (cfg.state_dir / "own_position.json").exists()
+    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
+    broker = SimBroker(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000,
+                       account=LIVE_ACCOUNT)
+    assert run_session(cfg, broker) == 0
+    assert broker.placed == []
+
+
+def test_a_live_restart_manages_the_open_live_spread(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
+    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
+    cfg = _live_cfg(tmp_path)
+    cfg.ensure_dirs()
+    entry = datetime(2026, 10, 28, 12, 0, tzinfo=ET)
+    payload = {
+        "date": DAY.isoformat(), "status": "open", "direction": "CALL", "right": "C",
+        "spx": 7000, "pdh": 7010, "pdl": 6890, "em": 30, "width": 30,
+        "long_strike": 6950, "short_strike": 6980, "long_delta": 0.74, "short_delta": 0.40,
+        "mid": 12.0, "limit": 12.0, "fill_price": 12.0,
+        "entry_close": entry.isoformat(),
+        "deadline": datetime(2026, 10, 28, 14, 0, tzinfo=ET).isoformat(),
+        "legs": [[69501, 1], [69801, -1]],
+        "account": LIVE_ACCOUNT, "ref": "SPXNOON-20261028-1",
+        "tp_order_id": None, "mode": "live", "note": "restart",
+    }
+    from spx_noon.resume import save
+    save(cfg.state_dir, payload, live=True)
+    start = datetime(2026, 10, 28, 13, 30, tzinfo=ET)
+    broker = SimBroker(start, levels()[0] + today_call_bars(), _quotes("dip"), spot=7000,
+                       account=LIVE_ACCOUNT)
+    assert run_session(cfg, broker) == 0
+    assert [order for order in broker.placed if order["action"] == "BUY"] == []
+    assert broker.placed and all(order["account"] == LIVE_ACCOUNT for order in broker.placed)
+    with (tmp_path / "state" / "trades-live.csv").open() as fh:
+        rows = list(csv.DictReader(fh))
+    assert rows[-1]["exit_reason"] == "time"
+    assert not (tmp_path / "state" / "trades.csv").exists()
+    assert not (tmp_path / "state" / "own_position.json").exists()
+
+
+def _wrap_config(tmp_path, **keys):
+    data = {"port": 7497, "mode": "dry", "base_dir": str(tmp_path)}
+    data.update(keys)
+    path = tmp_path / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data))
+    return path
+
+
+def test_the_paper_and_live_wraps_never_see_each_other_s_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    path = _wrap_config(tmp_path)
+    today = datetime.now(ET).date()
+    Outputs(tmp_path / "state", book="paper").append_trade(
+        {"date": today, "direction": "CALL", "exit_reason": "target", "mode": "paper"})
+    Outputs(tmp_path / "state", book="live").append_trade(
+        {"date": today, "direction": "PUT", "exit_reason": "time", "mode": "live"})
+    assert wrap_main(["--config", str(path), "--now"]) == 0
+    paper_text = (tmp_path / "reports" / f"wrap-{today.isoformat()}.md").read_text()
+    assert "CALL" in paper_text and "PUT" not in paper_text
+    assert "trades.csv" in paper_text and "trades-live.csv" not in paper_text
+    # --book live works while the config is still dry on the paper port, with no latch
+    assert wrap_main(["--config", str(path), "--now", "--book", "live"]) == 0
+    live_text = (tmp_path / "reports" / f"wrap-live-{today.isoformat()}.md").read_text()
+    assert "PUT" in live_text and "CALL" not in live_text
+    assert "trades-live.csv" in live_text
+
+
+def test_wrap_with_no_book_follows_a_latched_live_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
+    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
+    path = _wrap_config(tmp_path, mode="live", port=7496, account=LIVE_ACCOUNT)
+    today = datetime.now(ET).date()
+    Outputs(tmp_path / "state", book="live").append_trade(
+        {"date": today, "direction": "PUT", "exit_reason": "time", "mode": "live"})
+    assert wrap_main(["--config", str(path), "--now"]) == 0
+    assert (tmp_path / "reports" / f"wrap-live-{today.isoformat()}.md").exists()
+    assert not (tmp_path / "reports" / f"wrap-{today.isoformat()}.md").exists()
 
 
 def test_restart_manages_the_open_spread_and_does_not_enter_again(tmp_path):

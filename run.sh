@@ -3,6 +3,9 @@
 #   ./run.sh          uses config.json mode (the example is dry)
 #   ./run.sh paper    send to TWS paper
 #   ./run.sh dry      force dry for this launch
+#   ./run.sh live     REAL MONEY on IBKR. This script does not set the latch:
+#                     export SPX_NOON_ALLOW_LIVE=1 and SPX_NOON_LIVE_ACCOUNT
+#                     (exactly the config account) yourself, or the bot refuses.
 set -euo pipefail
 BASE="${SPX_NOON_HOME:-$HOME/Documents/spx-noon-breakout}"
 cd "$BASE"
@@ -14,8 +17,8 @@ if [ "$DOW" -gt 5 ]; then
   exit 0
 fi
 EXTRA=()
-if [ "${1:-}" = "paper" ] || [ "${1:-}" = "dry" ] || [ "${1:-}" = "alerts" ]; then
-  EXTRA=(--mode "$1")
-fi
+case "${1:-}" in
+  paper|dry|alerts|live) EXTRA=(--mode "$1") ;;
+esac
 echo "$(date) starting Noon Breakout (TZ $(date +%Z)) ${EXTRA[*]:-}" >> "$LOG"
 exec /usr/bin/caffeinate -i "$BASE/.venv/bin/python" -m spx_noon --config "$BASE/config.json" ${EXTRA[@]+"${EXTRA[@]}"} >> "$LOG" 2>&1

@@ -1,6 +1,6 @@
 """Read-only smoke test. Places no orders.
 
-Mac auto: TWS paper on 127.0.0.1:7497.
+Mac auto: TWS paper on 127.0.0.1:7497. It never dials a live port.
 Windows auto: tastytrade (quotes, bars, chain, orders host).
 ``--broker schwab`` still runs the Schwab check.
 """
@@ -46,10 +46,15 @@ def main(argv=None) -> int:
 
 
 def ib_main(client_id_arg=None) -> int:
-    cfg = load_config(broker="ibkr")
+    """Paper only. check never dials 7496 or 4001; a live config fails closed here."""
+    try:
+        cfg = load_config(broker="ibkr")
+    except (SafetyError, ValueError, TypeError) as exc:
+        print(f"refusing: {exc}")
+        return 2
     client_id = client_id_arg or cfg.check_client_id
-    if int(cfg.port) != PAPER_PORT:
-        print("refusing: not the paper port")
+    if cfg.mode == "live" or int(cfg.port) != PAPER_PORT:
+        print("refusing: not the paper port. check does not connect to a live port.")
         return 2
     from ib_async import IB, Index
 

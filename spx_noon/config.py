@@ -1,6 +1,9 @@
 """Configuration. The computer picks the broker. A config file cannot.
 
-Mac (darwin) is IBKR TWS paper, 127.0.0.1:7497, account ids starting with D.
+Mac (darwin) is IBKR TWS. mode "paper" is 127.0.0.1:7497 with account ids
+starting with D. mode "live" is real money on 127.0.0.1:7496 (TWS) or 4001
+(IB Gateway) and needs the ``SPX_NOON_ALLOW_LIVE`` / ``SPX_NOON_LIVE_ACCOUNT``
+latch in the environment. A config file alone can never enable real orders.
 Windows is tastytrade. ``tasty_data`` (default production) and ``tasty_orders``
 (default sandbox) choose the hosts. There is no env-var toggle.
 ``tasty_orders=production`` is real money and requires ``tasty_data=production``.
@@ -13,6 +16,7 @@ strategy.py. They are not config keys.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from dataclasses import asdict, dataclass, fields
@@ -20,11 +24,77 @@ from datetime import time
 from pathlib import Path
 
 PAPER_PORT = 7497
+LIVE_PORTS = (7496, 4001)
+LOCALHOSTS = ("127.0.0.1", "localhost", "::1")
 ORDER_PREFIX = "SPXNOON-"
+
+#: Both must be present and exact before IBKR mode ``live`` may send a real order.
+LIVE_ALLOW_ENV = "SPX_NOON_ALLOW_LIVE"
+LIVE_ACCOUNT_ENV = "SPX_NOON_LIVE_ACCOUNT"
+
+_order_log = logging.getLogger("spx_noon.orders")
 
 
 class SafetyError(RuntimeError):
     """A hard safety rule failed. The bot must not send orders."""
+
+
+def account_tail(account) -> str:
+    """Last four characters only. The full account id is never printed or logged."""
+    return str(account or "")[-4:]
+
+
+class _AccountFilter(logging.Filter):
+    """Shrink a full account id to its last four characters wherever it appears."""
+
+    def __init__(self, account: str):
+        super().__init__()
+        self.account = str(account)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not self.account:
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001
+            return True
+        if self.account not in message:
+            return True
+        record.msg = message.replace(self.account, "..." + account_tail(self.account))
+        record.args = ()
+        return True
+
+
+def redact_account(account) -> None:
+    """Keep an account id out of every log line, including ``ib_async``'s own order
+    logs, which print the whole order at INFO. Handler-level so propagated records
+    from third-party loggers are covered too."""
+    account = str(account or "")
+    if not account:
+        return
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(flt, _AccountFilter) and flt.account == account
+                   for flt in handler.filters):
+            handler.addFilter(_AccountFilter(account))
+
+
+def live_latch(account) -> tuple[bool, str]:
+    """``SPX_NOON_ALLOW_LIVE=1`` plus an exact ``SPX_NOON_LIVE_ACCOUNT`` match.
+
+    No strip and no casefold: ``"1 "``, ``"true"``, and a different case all fail.
+    """
+    want = str(account)
+    if not want.strip():
+        return False, "IBKR live needs account set to the live account id"
+    if want.startswith("D"):
+        return False, "IBKR live refuses a paper account id (starts with D)"
+    if os.environ.get(LIVE_ALLOW_ENV) != "1":
+        return False, (
+            f"IBKR live needs {LIVE_ALLOW_ENV}=1 in the environment; "
+            "a config file cannot turn on real money")
+    if os.environ.get(LIVE_ACCOUNT_ENV) != want:
+        return False, f"{LIVE_ACCOUNT_ENV} must equal the config account exactly"
+    return True, ""
 
 
 def _env_name(value, key: str) -> str:
@@ -57,7 +127,7 @@ def machine_broker() -> str:
     if sys.platform == "win32":
         return "tasty"
     raise SafetyError(
-        f"Noon Breakout runs on Mac (IBKR paper) or Windows (tastytrade); this is {sys.platform}")
+        f"Noon Breakout runs on Mac (IBKR) or Windows (tastytrade); this is {sys.platform}")
 
 
 def resolve_broker(name: str | None = None) -> str:
@@ -143,6 +213,8 @@ class Config:
                 self.dry_run = True
             elif self.mode == "paper":
                 self.dry_run = False
+            elif self.mode == "live" and self.broker == "ibkr":
+                self.dry_run = False
         elif self.broker in ("schwab", "tasty"):
             if not self.mode:
                 self.mode = "dry" if self.dry_run else "live"
@@ -175,13 +247,26 @@ class Config:
         """IBKR paper on port 7497. The port and a D-account are the gate."""
         return self.broker == "ibkr" and self.mode == "paper" and not self.dry_run
 
+    @property
+    def ibkr_live(self) -> bool:
+        """IBKR real money. Deliberately not ``live``: it must not take the
+        Schwab/tastytrade preview-and-``yes`` path in the runner."""
+        if self.broker != "ibkr" or self.mode != "live" or self.dry_run:
+            return False
+        return live_latch(self.account)[0]
+
+    @property
+    def real_money_flag(self) -> str:
+        """``YES`` only for a latched IBKR live session. Paper, dry, alerts are ``NO``."""
+        return "YES" if self.ibkr_live else "NO"
+
     def sends_orders(self) -> bool:
         """True when this process may hand an order to the broker adapter."""
         if self.mode in ("dry", "alerts"):
             return False
         if self.broker == "sim":
             return self.mode == "paper"
-        return self.paper or self.live
+        return self.paper or self.live or self.ibkr_live
 
     def validate(self) -> None:
         self.tasty_data = _env_name(self.tasty_data, "tasty_data")
@@ -189,14 +274,23 @@ class Config:
         if self.tasty_orders == "production" and self.tasty_data != "production":
             raise SafetyError("tasty_orders=production requires tasty_data=production")
         if self.broker == "ibkr":
-            if self.mode not in ("dry", "alerts", "paper"):
-                raise SafetyError(f"Mac/IBKR mode must be dry, alerts, or paper (got {self.mode!r})")
-            if self.mode != "paper" and not self.dry_run:
-                raise SafetyError("dry_run stays on unless mode is 'paper'")
-            if int(self.port) != PAPER_PORT:
+            if self.mode not in ("dry", "alerts", "paper", "live"):
+                raise SafetyError(
+                    f"Mac/IBKR mode must be dry, alerts, paper, or live (got {self.mode!r})")
+            if self.mode not in ("paper", "live") and not self.dry_run:
+                raise SafetyError("dry_run stays on unless mode is 'paper' or 'live'")
+            if self.mode == "live":
+                allowed, why = live_latch(self.account)
+                if not allowed:
+                    raise SafetyError(f"Refusing to run live: {why}")
+                if int(self.port) not in LIVE_PORTS:
+                    raise SafetyError(
+                        f"Refusing to run: port {self.port} is not an IBKR live port "
+                        f"{LIVE_PORTS[0]} (TWS) or {LIVE_PORTS[1]} (IB Gateway).")
+            elif int(self.port) != PAPER_PORT:
                 raise SafetyError(
                     f"Refusing to run: port {self.port} is not the IBKR paper port {PAPER_PORT}.")
-            if self.host not in ("127.0.0.1", "localhost", "::1"):
+            if self.host not in LOCALHOSTS:
                 raise SafetyError(f"Refusing to run: host {self.host!r} is not localhost.")
             if int(self.wrap_client_id) == int(self.client_id) or int(self.check_client_id) == int(self.client_id):
                 raise SafetyError("check_client_id and wrap_client_id must differ from client_id")
@@ -220,7 +314,7 @@ class Config:
             if self.mode not in ("dry", "alerts", "paper"):
                 raise SafetyError(f"sim mode must be dry, alerts, or paper (got {self.mode!r})")
         else:
-            raise SafetyError("Noon Breakout runs on Mac (IBKR paper) or Windows (tastytrade)")
+            raise SafetyError("Noon Breakout runs on Mac (IBKR) or Windows (tastytrade)")
         if self.decision_grace_s <= 0:
             raise ValueError("decision_grace_s must be positive")
         if self.chain_band_pts <= 0:
@@ -228,6 +322,29 @@ class Config:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def startup_banner(cfg, account) -> str:
+    """One line, printed and logged once the IBKR account has been verified.
+
+    Only the last four characters of the verified account appear.
+    """
+    return (
+        f"BROKER={cfg.broker} MODE={cfg.mode} ACCOUNT={account_tail(account)} "
+        f"PORT={int(cfg.port)} REAL MONEY={cfg.real_money_flag}"
+    )
+
+
+def order_log_suffix(cfg) -> str:
+    """``REAL MONEY=YES|NO`` for IBKR order lines. Other brokers log unchanged."""
+    if getattr(cfg, "broker", "") != "ibkr":
+        return ""
+    return f" REAL MONEY={cfg.real_money_flag}"
+
+
+def log_order(cfg, level, msg, *args, **kwargs) -> None:
+    """Log an order line. IBKR lines carry the real-money flag; nothing logs an account id."""
+    _order_log.log(level, str(msg) + order_log_suffix(cfg), *args, **kwargs)
 
 
 def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:

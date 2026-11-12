@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Noon Breakout REAL MONEY session — weekdays 11:45 local time (11:45 AM ET on Derek's Mac).
+  Installed only by ./deploy/install_launchd.sh live. It is a separate label from
+  com.derek.spxnoon and does not replace the paper/dry job.
+  __HOME__ and __LIVE_ACCOUNT__ are replaced at install time. No account id is committed.
+  The job runs run.sh live, and the latch below is what lets real orders out:
+  SPX_NOON_ALLOW_LIVE must be exactly 1 and SPX_NOON_LIVE_ACCOUNT must equal config account.
+  Set config.json "port" to 7496 (TWS) or 4001 (IB Gateway) and "account" to that same id.
+  This job passes mode live, so config mode can stay dry and bare ./run.sh stays dry.
+  Turn off the Candle and Fly launchd jobs, and the paper job, while this runs.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.derek.spxnoon.live</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__HOME__/Documents/spx-noon-breakout/run.sh</string>
+    <string>live</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SPX_NOON_HOME</key><string>__HOME__/Documents/spx-noon-breakout</string>
+    <key>SPX_NOON_ALLOW_LIVE</key><string>1</string>
+    <key>SPX_NOON_LIVE_ACCOUNT</key><string>__LIVE_ACCOUNT__</string>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/spx-noon-breakout/launchd.live.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/spx-noon-breakout/launchd.live.err.log</string>
+</dict>
+</plist>

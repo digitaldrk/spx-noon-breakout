@@ -38,13 +38,22 @@ def _atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+BOOKS = ("paper", "live")
+
+
 class Outputs:
-    def __init__(self, state_dir: Path):
+    """One book per set of money. ``paper`` is ``trades.csv``; ``live`` is
+    ``trades-live.csv`` so the paper running total never mixes with real fills."""
+
+    def __init__(self, state_dir: Path, book: str = "paper"):
+        if book not in BOOKS:
+            raise ValueError(f"book must be one of {BOOKS} (got {book!r})")
         self.dir = Path(state_dir)
+        self.book = book
         self.dir.mkdir(parents=True, exist_ok=True)
 
     def trade_path(self) -> Path:
-        return self.dir / "trades.csv"
+        return self.dir / ("trades-live.csv" if self.book == "live" else "trades.csv")
 
     def append_trade(self, row: dict) -> None:
         path = self.trade_path()
@@ -70,6 +79,10 @@ class Outputs:
         _atomic_write(self.dir / f"status_{day.isoformat()}.json", json.dumps(status, indent=2, default=str))
 
     def write_report(self, day: date, text: str) -> Path:
-        path = self.dir / f"report_{day.isoformat()}.md"
+        name = (
+            f"report-live-{day.isoformat()}.md" if self.book == "live"
+            else f"report_{day.isoformat()}.md"
+        )
+        path = self.dir / name
         _atomic_write(path, text)
         return path

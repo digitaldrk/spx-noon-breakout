@@ -127,3 +127,45 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
 12. **Slippage benchmark:** typical 0DTE fills come in $0.05–$0.15 off mid. Track the average per side. Anything at $0.20 or more erodes the edge, and $0.30 breaks it.
 13. **Review after 30–60 paper sessions** before going live: win rate, profit factor, and average slippage against the backtest (PF 1.41 at fair pricing; 1.48 rich).
 14. **Live orders require Tod's explicit approval.** The code must not send live orders unless Tod has approved going live.
+
+---
+
+## 9. Going live on IBKR (Mac)
+
+Mac mode `live` is real money. The code will not start unless every one of these holds, and the
+`config.json` file alone can never turn it on:
+
+- `mode` is `live`, `host` is localhost, and `port` is **7496** (TWS live) or **4001** (IB Gateway live). Never 7497.
+- `account` is set, non-empty, and does **not** start with `D`. Live never falls back to the first account TWS shows.
+- `SPX_NOON_ALLOW_LIVE` is exactly `1` in the environment — not `true`, not `yes`, not `1 `.
+- `SPX_NOON_LIVE_ACCOUNT` is character-for-character equal to `account`. No strip, no casefold.
+
+The latch is IBKR only. Paper, dry, and alerts are unchanged, and tastytrade and Schwab do not
+use it.
+
+**Operator checklist**
+
+- Turn off the Candle and Fly launchd jobs while High Noon runs live.
+- TWS (or IB Gateway) logged into the **live** account, API enabled, Read-Only API off, socket port 7496 (Gateway 4001).
+- The live account has SPX index + SPX options market data subscriptions and options trading permissions for spreads.
+- First live day: watch the banner and the first order ticket.
+- `SPX_NOON_ALLOW_LIVE=1` and `SPX_NOON_LIVE_ACCOUNT` exactly equal to config `account`. The config file cannot turn this on by itself.
+- `./run.sh live` is the manual entry. `./deploy/install_launchd.sh live` is optional and does not replace the paper job.
+- Live fills are in `state/trades-live.csv` and `reports/wrap-live-<date>.md`, not in the paper total.
+
+**What the session does**
+
+1. After every connect and every reconnect it checks the accounts TWS reports. Live requires the
+   configured account to be present, to equal `SPX_NOON_LIVE_ACCOUNT`, to not start with `D`, and
+   that **no** reported account starts with `D`. Paper, dry, and alerts require every reported
+   account to start with `D`. A mismatch closes the socket and exits; it is not retried as a
+   dropped connection.
+2. It prints and logs one banner, including on a day it will not trade:
+   `BROKER=ibkr MODE=<mode> ACCOUNT=<last 4> PORT=<port> REAL MONEY=YES/NO`. Only the last four
+   characters of the verified account appear. `REAL MONEY=YES` means IBKR `live` with the latch
+   matched; paper, dry, and alerts say `NO`. Every IBKR order log line carries the same flag.
+3. It trades version B exactly as above. Live does **not** take the Schwab preview-and-`yes`
+   path, and the thresholds, windows, delta, slippage cap, target, and flat time are identical.
+4. It tracks only its own `SPXNOON-` orders and its own spread
+   (`state/own_position-live.json`), writes fills to `state/trades-live.csv`, and writes the
+   session note to `state/report-live-<date>.md`. The paper running total is never touched.

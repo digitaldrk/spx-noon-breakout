@@ -1,4 +1,9 @@
-"""IBBroker: Mac path. IBKR TWS paper only, 127.0.0.1:7497.
+"""IBBroker: Mac path. IBKR TWS on localhost.
+
+mode ``paper`` is port 7497 and account ids starting with D. mode ``live`` is
+real money on 7496 (TWS) or 4001 (IB Gateway) and runs only with the
+``SPX_NOON_ALLOW_LIVE`` / ``SPX_NOON_LIVE_ACCOUNT`` latch. mode ``dry`` and
+``alerts`` connect read-only on 7497 and never send.
 
 Orders carry orderRef SPXNOON-. The bot never modifies an order that does not.
 Entry orders are DAY. The take-profit is GTC, as the plan specifies.
@@ -7,10 +12,21 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from datetime import datetime
 
 from .broker import Broker, to_et
-from .config import ORDER_PREFIX, PAPER_PORT, SafetyError
+from .config import (
+    LIVE_ACCOUNT_ENV,
+    LIVE_PORTS,
+    LOCALHOSTS,
+    ORDER_PREFIX,
+    PAPER_PORT,
+    SafetyError,
+    account_tail,
+    log_order,
+    redact_account,
+)
 from .strategy import Bar, OptQuote, Px
 
 log = logging.getLogger("spx_noon.ib")
@@ -26,6 +42,10 @@ def _f(value):
     return value
 
 
+def _tails(accounts) -> list[str]:
+    return [account_tail(acct) for acct in accounts]
+
+
 def paper_send_allowed(cfg, account: str, order_ref: str) -> None:
     """Raise unless this order is allowed onto TWS paper."""
     if cfg.broker != "ibkr":
@@ -34,21 +54,104 @@ def paper_send_allowed(cfg, account: str, order_ref: str) -> None:
         raise SafetyError("refusing: Mac sends orders only in paper mode")
     if int(cfg.port) != PAPER_PORT:
         raise SafetyError(f"refusing: port {cfg.port} is not {PAPER_PORT}")
-    if cfg.host not in ("127.0.0.1", "localhost", "::1"):
+    if cfg.host not in LOCALHOSTS:
         raise SafetyError(f"refusing: host {cfg.host!r} is not localhost")
     if not str(account).startswith("D"):
-        raise SafetyError(f"refusing: account {account!r} is not an IBKR paper account")
+        raise SafetyError(f"refusing: account ...{account_tail(account)} is not an IBKR paper account")
     if not str(order_ref or "").startswith(ORDER_PREFIX):
         raise SafetyError(f"every Noon order must carry an {ORDER_PREFIX} orderRef")
+
+
+def live_send_allowed(cfg, account: str, order_ref: str) -> None:
+    """Raise unless this order is allowed onto the latched IBKR live account."""
+    if cfg.broker != "ibkr":
+        raise SafetyError("IBKR orders are the Mac path")
+    if not cfg.ibkr_live:
+        raise SafetyError("refusing: IBKR live is not latched")
+    if int(cfg.port) not in LIVE_PORTS:
+        raise SafetyError(f"refusing: port {cfg.port} is not an IBKR live port {LIVE_PORTS}")
+    if cfg.host not in LOCALHOSTS:
+        raise SafetyError(f"refusing: host {cfg.host!r} is not localhost")
+    acct = str(account)
+    if acct.startswith("D"):
+        raise SafetyError("refusing: a live order must not go to a paper (D...) account")
+    if acct != str(cfg.account):
+        raise SafetyError("refusing: the order account is not the configured live account")
+    if acct != os.environ.get(LIVE_ACCOUNT_ENV):
+        raise SafetyError(f"refusing: the order account is not {LIVE_ACCOUNT_ENV}")
+    if not str(order_ref or "").startswith(ORDER_PREFIX):
+        raise SafetyError(f"every Noon order must carry an {ORDER_PREFIX} orderRef")
+
+
+def send_allowed(cfg, account: str, order_ref: str) -> None:
+    """The one gate every IBKR order passes. dry and alerts never reach a broker."""
+    if getattr(cfg, "broker", "") != "ibkr":
+        raise SafetyError("IBKR orders are the Mac path")
+    if cfg.mode == "live":
+        live_send_allowed(cfg, account, order_ref)
+        return
+    paper_send_allowed(cfg, account, order_ref)
+
+
+def check_accounts(cfg, accounts) -> str:
+    """Verify what TWS reports and return the account this session may use.
+
+    Live: the configured account is reported, equals ``SPX_NOON_LIVE_ACCOUNT``,
+    does not start with D, and no reported account starts with D. Paper, dry,
+    and alerts: every reported account must start with D. No socket is touched
+    and no full account id is raised.
+    """
+    reported = [str(acct) for acct in (accounts or [])]
+    if not reported:
+        raise SafetyError("TWS reported no account")
+    want = str(getattr(cfg, "account", "") or "")
+    if getattr(cfg, "mode", "") == "live":
+        if not cfg.ibkr_live:
+            raise SafetyError("refusing: IBKR live is not latched")
+        if want.startswith("D"):
+            raise SafetyError("refusing: live mode will not use a paper (D...) account")
+        if want != os.environ.get(LIVE_ACCOUNT_ENV):
+            raise SafetyError(f"refusing: the live account is not {LIVE_ACCOUNT_ENV}")
+        if want not in reported:
+            raise SafetyError(
+                f"refusing: the configured live account is not one TWS reports ({_tails(reported)})")
+        paper = [acct for acct in reported if acct.startswith("D")]
+        if paper:
+            raise SafetyError(
+                f"refusing: live mode will not share a session with paper account(s) {_tails(paper)}")
+        return want
+    if want and not want.startswith("D"):
+        raise SafetyError(
+            f"refusing: configured account ...{account_tail(want)} is not an IBKR paper (D...) id")
+    bad = [acct for acct in reported if not acct.startswith("D")]
+    if bad:
+        raise SafetyError(f"refusing non-paper account(s) {_tails(bad)}")
+    if want:
+        if want not in reported:
+            raise SafetyError(f"account ...{account_tail(want)} is not managed by TWS ({_tails(reported)})")
+        return want
+    return reported[0]
+
+
+def _dial_port(cfg) -> int:
+    """The port this config may dial. ``validate()`` has already run."""
+    port = int(cfg.port)
+    if cfg.mode == "live":
+        if port not in LIVE_PORTS:
+            raise SafetyError(f"Refusing to connect: port {port} is not an IBKR live port {LIVE_PORTS}")
+        if not cfg.ibkr_live:
+            raise SafetyError("Refusing to connect: IBKR live is not latched")
+    elif port != PAPER_PORT:
+        raise SafetyError(f"Refusing to connect: port {port} != {PAPER_PORT}")
+    return port
 
 
 class IBBroker(Broker):
     def __init__(self, cfg):
         cfg.validate()
         if cfg.broker != "ibkr":
-            raise SafetyError("IBBroker is the Mac setup (IBKR paper)")
-        if int(cfg.port) != PAPER_PORT:
-            raise SafetyError(f"Refusing to connect: port {cfg.port} != {PAPER_PORT}")
+            raise SafetyError("IBBroker is the Mac setup (IBKR)")
+        _dial_port(cfg)
         from ib_async import IB
         self.cfg = cfg
         self.ib = IB()
@@ -58,6 +161,7 @@ class IBBroker(Broker):
         self._opt_contracts: dict = {}
         self._trades: dict = {}
         self.spx = None
+        self.verified_account: str | None = None
 
     def _on_error(self, reqId, code, msg, contract):
         from .broker import ET
@@ -67,14 +171,29 @@ class IBBroker(Broker):
 
     def connect(self):
         cfg = self.cfg
-        if int(cfg.port) != PAPER_PORT:
-            raise SafetyError("port is not 7497")
+        port = _dial_port(cfg)
+        redact_account(cfg.account)
         self.ib.connect(
-            cfg.host, PAPER_PORT, clientId=cfg.client_id, timeout=cfg.connect_timeout_s,
+            cfg.host, port, clientId=cfg.client_id, timeout=cfg.connect_timeout_s,
             readonly=bool(cfg.dry_run), account=cfg.account or "")
+        self.verified_account = self.verify_accounts()
+        redact_account(self.verified_account)
         self.ib.reqMarketDataType(1)
         self._streams_started = False
         self.start_streams()
+
+    def verify_accounts(self) -> str:
+        """Check what TWS reports. Any mismatch closes the socket and raises SafetyError."""
+        try:
+            reported = list(self.ib.managedAccounts())
+        except Exception as exc:  # noqa: BLE001
+            self.disconnect()
+            raise SafetyError(f"could not read the accounts TWS reports: {exc}") from exc
+        try:
+            return check_accounts(self.cfg, reported)
+        except SafetyError:
+            self.disconnect()
+            raise
 
     def ensure_connected(self) -> bool:
         if self.ib.isConnected():
@@ -82,12 +201,11 @@ class IBBroker(Broker):
         log.warning("TWS connection lost — reconnecting")
         try:
             self.connect()
+        except SafetyError:
+            raise
         except Exception as exc:  # noqa: BLE001
             log.warning("reconnect failed: %s", exc)
             return False
-        bad = [a for a in self.ib.managedAccounts() if not str(a).startswith("D")]
-        if bad:
-            raise SafetyError(f"after reconnect, non-paper account(s) {bad}")
         self._opt_tickers.clear()
         self._streams_started = False
         self.start_streams()
@@ -226,7 +344,7 @@ class IBBroker(Broker):
 
     def place_combo(self, legs, action, qty, limit, account, order_ref=None, tif="DAY"):
         from ib_async import ComboLeg, Contract, LimitOrder
-        paper_send_allowed(self.cfg, account, order_ref or "")
+        send_allowed(self.cfg, account, order_ref or "")
         if self.cfg.dry_run:
             raise SafetyError("place_combo called while dry")
         bag = Contract(symbol="SPX", secType="BAG", currency="USD", exchange="SMART")
@@ -239,6 +357,8 @@ class IBBroker(Broker):
                            orderRef=order_ref)
         trade = self.ib.placeOrder(bag, order)
         self._trades[order.orderId] = trade
+        log_order(self.cfg, logging.INFO, "placed %s %s x%s limit %.2f ref %s acct ...%s",
+                  action, tif, int(qty), float(limit), order_ref, account_tail(account))
         return order.orderId
 
     def _is_own(self, trade) -> bool:
@@ -260,9 +380,11 @@ class IBBroker(Broker):
             raise SafetyError("cancel called while dry")
         trade = self._trades.get(handle)
         if trade is None or not self._is_own(trade):
-            log.warning("refusing to cancel order %s: not a Noon order", handle)
+            log_order(self.cfg, logging.WARNING,
+                      "refusing to cancel order %s: not a Noon order", handle)
             return
         if not trade.isDone():
+            log_order(self.cfg, logging.INFO, "cancelling order %s", handle)
             self.ib.cancelOrder(trade.order)
 
     def order_state(self, handle):
