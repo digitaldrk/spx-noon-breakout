@@ -15,6 +15,7 @@ The bot implements **version B only** (section 1 and the checklist in section 8)
 |---|---|
 | Trigger | 15-minute close beyond the prior day's high (call) or low (put), from noon to 1:00 PM ET. One fill per day. |
 | Entry | The 12:00 15-minute close. 100 of 118 trades entered then; the rest came later in the window. |
+| Calendar | Flat if the NYSE list or the broker hours say closed or early close. A 1:00 PM early close runs into the noon window, so that day is not traded. |
 | Structure | Debit vertical. Long leg at **75 delta**. |
 | Short leg | Width = **max(10, expected move rounded down to 5)** |
 | Take-profit | **+30%** of debit |
@@ -110,7 +111,7 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
     - Prior day's RTH high (PDH) and low (PDL): the max high and min low of yesterday's 15m RTH bars.
     - 0DTE SPX option chain with bid, ask, mid and delta.
     - VIX (live) or the 0DTE ATM straddle, for the expected move. The backtest used EM = the price of the ATM straddle (strike = spot rounded to 5) at entry.
-2. **Entry window.** Check the 15m bars that close at **12:00, 12:15, 12:30, 12:45 and 1:00 PM**. Take the first bar that qualifies. Most entries (100/118) came on the 12:00 close; the rest came on the later closes.
+2. **Entry window.** Check the 15m bars that close at **12:00, 12:15, 12:30, 12:45 and 1:00 PM**. Take the first bar that qualifies. Most entries (100/118) came on the 12:00 close; the rest came on the later closes. If the NYSE list or the broker hours say the day is closed or an early close, do not trade. A 1:00 PM early close runs into this window.
 3. **Breakout rule.** Check calls first, then puts. A bar qualifies for **calls** when all three of these are true (mirror everything for puts, using PDL and "below"):
     - a. At least one 15m close earlier today, from 9:45 on, was above PDH. The first such bar is the **trigger bar**. It can be in the morning.
     - b. This bar's close is still above PDH.
