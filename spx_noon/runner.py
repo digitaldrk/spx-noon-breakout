@@ -4,7 +4,7 @@ Waits for the 12:00–1:00 PM ET closes, takes the first qualifying bar, and
 sends at most one spread. One job runs it either way: paper on a Mac goes to
 TWS 7497, and IBKR live — config ``mode`` ``live`` with a non-``D`` account —
 goes to TWS 7496 or IB Gateway 4001 and keeps its own book and position file.
-Tastytrade live auto-approves. Schwab live still waits for `yes <ticketID>`.
+Tastytrade live previews, then approves its own ticket. Nothing waits on a human.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from .config import (
     startup_banner,
 )
 from .logbook import Outputs
-from .notify import ConsoleApprover, Notifier
+from .notify import Notifier
 from .pricing import floor_tick, take_profit_limit, target_reached, time_exit_deadline, trade_pnl
 from . import resume
 from .strategy import (
@@ -69,8 +69,6 @@ def _setup_logging(cfg) -> None:
 
 
 def _resolve_account(cfg, broker) -> str:
-    if cfg.broker == "schwab":
-        return cfg.account
     accounts = [str(item) for item in (broker.managed_accounts() or [])]
     if cfg.broker == "tasty":
         return _tasty_account(cfg.account, accounts)
@@ -228,7 +226,7 @@ def _ticket_text(plan, account: str = "", *, broker: str = "") -> str:
     if broker == "tasty":
         tail = "No stop. Tastytrade live auto-approves this ticket. The price cap is the mid limit."
     else:
-        tail = "No stop. Live send still needs yes <ticket>."
+        tail = "No stop."
     lines = [
         f"{plan.direction} debit vertical  1 spread",
         f"SPX {plan.spot:.2f}   PDH {plan.pdh:.2f}   PDL {plan.pdl:.2f}",
@@ -547,7 +545,7 @@ def _poll_working(cfg, broker, notifier, out, state: _State) -> None:
 
 
 def _revalidate(cfg, broker, breakout, spot: float, expiry: str):
-    """Rebuild the plan from fresh quotes after the operator approves."""
+    """Rebuild the plan from fresh quotes after the preview comes back clean."""
     try:
         _subscribe(cfg, broker, spot, expiry)
         quotes = broker.option_quotes()
@@ -561,7 +559,7 @@ def _revalidate(cfg, broker, breakout, spot: float, expiry: str):
     return plan
 
 
-def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: str, closes) -> None:
+def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes) -> None:
     if state.done_for_day or state.halt or state.working or state.position:
         return
     now = broker.now()
@@ -642,12 +640,6 @@ def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: s
             if not preview.get("ok", False):
                 out.append_trade(_row_from_plan(plan, cfg.mode, "skip_preview"))
                 continue
-            if cfg.confirms_orders:
-                approved, why = approver.ask(ticket, cfg.approval_timeout_secs)
-                if not approved:
-                    out.append_trade(_row_from_plan(plan, cfg.mode, "skip_approval"))
-                    notifier.alert("Noon skipped", f"{ticket} {why}", toast=False)
-                    continue
             if broker.now() > close_at + grace:
                 out.append_trade(_row_from_plan(plan, cfg.mode, "skip_stale"))
                 notifier.alert("Noon skipped", f"{ticket} decision window closed", toast=False)
@@ -805,11 +797,10 @@ def _write_report(cfg, out: Outputs, day, calendar_status) -> None:
     out.write_report(day, "\n".join(lines) + "\n")
 
 
-def run_session(cfg, broker, approver=None, notifier=None) -> int:
+def run_session(cfg, broker, notifier=None) -> int:
     cfg.validate()
     cfg.ensure_dirs()
     notifier = notifier or Notifier(cfg.home / "logs", toast=cfg.toast and cfg.mode == "live")
-    approver = approver or ConsoleApprover()
     out = Outputs(cfg.state_dir, book="live" if cfg.ibkr_live else "paper")
     _connect(cfg, broker)
     try:
@@ -869,7 +860,7 @@ def run_session(cfg, broker, approver=None, notifier=None) -> int:
                 break
             if broker.now().time() >= datetime.strptime("15:10", "%H:%M").time() and state.position is None:
                 break
-            _maybe_enter(cfg, broker, notifier, approver, out, state, account, closes)
+            _maybe_enter(cfg, broker, notifier, out, state, account, closes)
             if state.working is not None:
                 _poll_working(cfg, broker, notifier, out, state)
             if state.halt and state.position is None:
@@ -893,7 +884,7 @@ def main(argv=None) -> int:
     parser.add_argument("--config", default=None)
     parser.add_argument("--mode", choices=["dry", "alerts", "paper", "live"], default=None)
     parser.add_argument("--broker", default="auto",
-                        help="auto, tasty, tt, tastytrade, ibkr, or schwab. auto is tastytrade on Windows.")
+                        help="auto, tasty, tt, tastytrade, or ibkr. auto is tastytrade on Windows.")
     args = parser.parse_args(argv)
     overrides = {}
     if args.mode:
@@ -908,9 +899,6 @@ def main(argv=None) -> int:
     if cfg.broker == "ibkr":
         from .ib import IBBroker
         broker = IBBroker(cfg)
-    elif cfg.broker == "schwab":
-        from .schwab import SchwabBroker
-        broker = SchwabBroker(cfg)
     elif cfg.broker == "tasty":
         from .tasty import TastyBroker
         broker = TastyBroker(cfg)

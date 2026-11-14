@@ -2,7 +2,6 @@
 
 Mac auto: TWS paper on 127.0.0.1:7497. It never dials a live port.
 Windows auto: tastytrade (quotes, bars, chain, orders host).
-``--broker schwab`` still runs the Schwab check.
 """
 from __future__ import annotations
 
@@ -19,10 +18,8 @@ ET = ZoneInfo("America/New_York")
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="spx_noon check")
     parser.add_argument("--broker", default="auto",
-                        help="auto, tasty, tt, tastytrade, ibkr, or schwab")
+                        help="auto, tasty, tt, tastytrade, or ibkr")
     parser.add_argument("--client-id", type=int, default=None)
-    parser.add_argument("--preview-sample", action="store_true",
-                        help="Schwab only: previewOrder on a 1-lot vertical. Does not place it.")
     args = parser.parse_args(argv)
     try:
         broker = resolve_broker(args.broker)
@@ -35,10 +32,6 @@ def main(argv=None) -> int:
     if broker == "tasty":
         from .check_tasty import main as tasty_main
         return tasty_main(["--broker", "tasty"])
-    if broker == "schwab":
-        from .check_schwab import main as schwab_main
-        forwarded = ["--preview-sample"] if args.preview_sample else []
-        return schwab_main(forwarded)
     if broker == "ibkr":
         return ib_main(args.client_id)
     print(f"refusing: check does not run for {broker}")

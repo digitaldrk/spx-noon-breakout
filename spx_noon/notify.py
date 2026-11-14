@@ -1,10 +1,8 @@
-"""Console alerts, logs/alerts.log, a Windows toast when one is available, and the yes-prompt."""
+"""Console alerts, logs/alerts.log, and a Windows toast when one is available."""
 from __future__ import annotations
 
-import queue
 import subprocess
 import sys
-import threading
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -51,48 +49,3 @@ class Notifier:
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:  # noqa: BLE001
             pass
-
-
-class ConsoleApprover:
-    """Wait for ``yes <ticket id>`` in this console. Anything else, or the timeout, skips."""
-
-    def __init__(self, stream=None):
-        self.stream = stream or sys.stdin
-        self._q: queue.Queue | None = None
-
-    def _start(self) -> None:
-        if self._q is not None:
-            return
-        self._q = queue.Queue()
-
-        def reader():
-            for line in self.stream:
-                self._q.put(line.strip())
-
-        threading.Thread(target=reader, daemon=True).start()
-
-    def ask(self, ticket_id: str, timeout: float, clock=None) -> tuple[bool, str]:
-        import time as _t
-        clock = clock or _t.monotonic
-        self._start()
-        while not self._q.empty():
-            self._q.get_nowait()
-        print(
-            f">>> Type   yes {ticket_id}   within {timeout:.0f}s to SEND this order "
-            "(anything else = skip): ",
-            end="", flush=True)
-        end = clock() + timeout
-        while True:
-            left = end - clock()
-            if left <= 0:
-                return False, "timeout"
-            try:
-                line = self._q.get(timeout=left)
-            except queue.Empty:
-                return False, "timeout"
-            parts = line.lower().split()
-            if parts == ["yes", ticket_id.lower()]:
-                return True, "approved"
-            if parts and parts[0] in ("no", "n", "skip"):
-                return False, "declined"
-            print(f"(need exactly: yes {ticket_id})", flush=True)

@@ -11,13 +11,13 @@ A config file cannot switch brokers. On a Mac it is the one switch between paper
 
 **Mac:** copy `config.example.json` to `config.json`, keep TWS logged into paper on port 7497 with Read-Only API off, and use `run.sh`. `./run.sh paper` is the launch that transmits. State goes in `~/Documents/spx-noon-breakout/state`. For real money see [IBKR live mode](#ibkr-live-mode-real-money).
 
-**Windows:** see [WINDOWS_SETUP.md](WINDOWS_SETUP.md). Copy `config.windows.example.json` to `config.json`. A bare `.\run_session.ps1` stays dry. `.\run_session.ps1 -Mode live` is the send mode. Tastytrade auto-approves. The price cap and 10 orders per minute still apply. `--broker schwab` keeps the `yes <ticketID>` gate.
+**Windows:** see [WINDOWS_SETUP.md](WINDOWS_SETUP.md). Copy `config.windows.example.json` to `config.json`. A bare `.\run_session.ps1` stays dry. `.\run_session.ps1 -Mode live` is the send mode. Tastytrade auto-approves. The price cap and 10 orders per minute still apply.
 
 ## Configuration
 
 `config.json` holds local overrides. Defaults are the fields on `Config` in `spx_noon/config.py`. Leave a key out and that default stays. Keys the loader does not know are ignored, including the `_comment`, `_rules`, and `_wrap` notes. The machine chooses the broker. A `broker` key in the file is ignored. A `dry_run` key is ignored too; `mode` is the only send setting.
 
-Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` and `tokens.json`. Schwab app key and secret stay in `SCHWAB_APP_KEY` and `SCHWAB_APP_SECRET`. The token file and any service-account json stay out of git.
+Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` and `tokens.json`. Tastytrade credentials stay in environment variables or files under `secrets/`, never in the repo. Any token file and any service-account json stay out of git.
 
 | Machine | Copy | Where the launcher reads it |
 | --- | --- | --- |
@@ -36,8 +36,6 @@ The 75-delta rule, the width, the $0.20 skip, the +30% target, and the two-hour 
 | `host`, `port`, `client_id` | `127.0.0.1`, `7497`, `41` | Mac TWS. Host must be localhost. Port must be 7497 for `dry`, `alerts`, and `paper`, or 7496/4001 for `live`. Client 41 leaves Candle (77) and Fly (31) alone. |
 | `account` | `""` | Mac paper: paper account id (starts with `D`); blank uses the first account TWS shows, which must also start with `D`. Mac live: the live account id, required, must not start with `D`, and TWS must report it. Tastytrade: blank uses the only order-session account. |
 | `base_dir` | `~/Documents/spx-noon-breakout` or `C:/spx-noon-breakout` | State, logs, and reports. Tastytrade order ids go in `state/tt_orders-<date>.json`. |
-| `token_path` | `~/schwab/tokens.json` | Schwab token file (`--broker schwab`). `SCHWAB_TOKEN_PATH` replaces this value. |
-| `approval_timeout_secs` | `300` | Schwab live: seconds to type `yes <id>` before that ticket is skipped. Tastytrade does not prompt. |
 
 ## IBKR live mode (real money)
 
@@ -52,8 +50,7 @@ two settings of it. The switch is `config.json` plus the TWS session you are log
 | TWS | logged into paper | logged into the live account |
 
 `host` must be `127.0.0.1`, `localhost`, or `::1` in both. If any of those fails the process
-refuses to start. There are no environment variables in this gate; tastytrade and Schwab are
-unchanged.
+refuses to start. There are no environment variables in this gate; tastytrade is unchanged.
 
 After every connect and every reconnect the bot checks the accounts TWS reports: the configured
 account must be there, must not start with `D`, and **no** reported account may start with `D`.
@@ -94,7 +91,7 @@ Only the last four characters of the account appear. Paper, dry, and alerts prin
 
 Real money never mixes with the paper running total.
 
-| | Paper / dry / alerts / sim / tastytrade / Schwab | IBKR live |
+| | Paper / dry / alerts / sim / tastytrade | IBKR live |
 | --- | --- | --- |
 | Trade log | `state/trades.csv` | `state/trades-live.csv` |
 | Own position | `state/own_position.json` | `state/own_position-live.json` |
@@ -121,7 +118,7 @@ scheduled, so the stale real-money job cannot fire at 11:45 next to this one. It
 
 ## Shared account
 
-Noon tracks only its own orders (IBKR `orderRef` `SPXNOON-…` on a Mac, `state/tt_orders-<date>.json` for tastytrade, `state/schwab_orders-<date>.json` for `--broker schwab`) and its own spread (`state/own_position.json`, or `state/own_position-live.json` for IBKR live). It does not count, modify, or cancel another bot's SPX position or order, it never adopts an order without the `SPXNOON-` prefix, and it does not scan the live account for other SPX positions.
+Noon tracks only its own orders (IBKR `orderRef` `SPXNOON-…` on a Mac, `state/tt_orders-<date>.json` for tastytrade) and its own spread (`state/own_position.json`, or `state/own_position-live.json` for IBKR live). It does not count, modify, or cancel another bot's SPX position or order, it never adopts an order without the `SPXNOON-` prefix, and it does not scan the live account for other SPX positions.
 
 ## Run
 
@@ -153,7 +150,7 @@ The bot implements version B in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). Re
 | `spx_noon/runner.py` | The session: one fill, GTC target, hard flat, trade log |
 | `spx_noon/ib.py` | Mac broker. `ib_async` against TWS paper (7497) or live (7496/4001) |
 | `spx_noon/tasty.py`, `check_tasty.py` | Windows broker. Production data session, sandbox orders unless configured. Auto-approves. |
-| `spx_noon/schwab.py`, `schwabapi.py`, `guard.py` | `--broker schwab`. Refuses a live order with no approved ticket |
+| `spx_noon/guard.py` | In-process ticket guard. Refuses a live order with no approved ticket, a price over the cap, or more than 10 requests a minute |
 | `spx_noon/config.py` | Machine broker, the mode gate, the IBKR live port/account gate, and the real-money banner |
 | `run_wrap.sh`, `spx_noon/wrap_run.py` | 16:20 read-only note. `--book paper` or `--book live` |
 | `config.example.json` | Mac template |

@@ -8,8 +8,8 @@ mode "live" is real money on 127.0.0.1:7496 (TWS) or 4001 (IB Gateway) with an
 Windows is tastytrade. ``tasty_data`` (default production) and ``tasty_orders``
 (default sandbox) choose the hosts. There is no env-var toggle.
 ``tasty_orders=production`` is real money and requires ``tasty_data=production``.
-Tastytrade orders auto-approve. Schwab, selected with ``--broker schwab``, still
-waits for ``yes <ticketID>``. mode "dry" (the default) and "alerts" never transmit.
+Tastytrade orders auto-approve: no console prompt takes part. mode "dry" (the
+default) and "alerts" never transmit.
 
 Plan v2 version B prices (75 delta, +30%, $0.20/side, 2h flat, 1 spread) live in
 strategy.py. They are not config keys.
@@ -109,7 +109,6 @@ _BROKER_ALIASES = {
     "tastytrade": "tasty",
     "tasty": "tasty",
     "ibkr": "ibkr",
-    "schwab": "schwab",
     "sim": "sim",
 }
 
@@ -133,7 +132,7 @@ def resolve_broker(name: str | None = None) -> str:
     found = _BROKER_ALIASES.get(key)
     if found is None:
         raise SafetyError(
-            f"unknown broker {name!r}; use auto, tasty, tt, tastytrade, ibkr, or schwab")
+            f"unknown broker {name!r}; use auto, tasty, tt, tastytrade, or ibkr")
     return found
 
 
@@ -153,8 +152,6 @@ class Config:
     wrap_client_id: int = 142
     tws_naive_tz: str = "US/Central"
 
-    token_path: str = "~/schwab/tokens.json"
-    approval_timeout_secs: float = 300.0
     max_orders_per_min: int = 10
     min_replace_secs: float = 15.0
     poll_secs: float = 3.0
@@ -208,7 +205,7 @@ class Config:
                 self.dry_run = False
             elif self.mode == "live" and self.broker == "ibkr":
                 self.dry_run = False
-        elif self.broker in ("schwab", "tasty"):
+        elif self.broker == "tasty":
             if not self.mode:
                 self.mode = "dry" if self.dry_run else "live"
             if self.mode in ("dry", "alerts"):
@@ -222,13 +219,8 @@ class Config:
 
     @property
     def live(self) -> bool:
-        """Schwab or tastytrade live. Schwab still waits for ``yes``. Tastytrade does not."""
-        return self.broker in ("schwab", "tasty") and self.mode == "live" and not self.dry_run
-
-    @property
-    def confirms_orders(self) -> bool:
-        """Human ``yes <id>`` gate. Tastytrade auto-approves and does not use this."""
-        return self.broker == "schwab" and self.live
+        """Tastytrade live: preview, then auto-approve. No console prompt."""
+        return self.broker == "tasty" and self.mode == "live" and not self.dry_run
 
     @property
     def real_money(self) -> bool:
@@ -243,7 +235,7 @@ class Config:
     @property
     def ibkr_live(self) -> bool:
         """IBKR real money. Deliberately not ``live``: it must not take the
-        Schwab/tastytrade preview-and-``yes`` path in the runner.
+        tastytrade preview-and-approve path in the runner.
 
         ``validate()`` has already accepted the port, the host, and the account
         for any config that reaches a broker, so this is the mode alone."""
@@ -288,15 +280,6 @@ class Config:
                 raise SafetyError(f"Refusing to run: host {self.host!r} is not localhost.")
             if int(self.wrap_client_id) == int(self.client_id) or int(self.check_client_id) == int(self.client_id):
                 raise SafetyError("check_client_id and wrap_client_id must differ from client_id")
-        elif self.broker == "schwab":
-            if self.mode not in ("dry", "alerts", "live"):
-                raise SafetyError(f"Windows/Schwab mode must be dry, alerts, or live (got {self.mode!r})")
-            if self.mode != "live" and not self.dry_run:
-                raise SafetyError("dry_run stays on unless mode is 'live'")
-            if self.mode == "live" and not str(self.account).strip():
-                raise SafetyError("Schwab live needs account set to the account's last digits")
-            if self.max_orders_per_min > 10:
-                raise SafetyError("max_orders_per_min cannot exceed Schwab's 10/min")
         elif self.broker == "tasty":
             if self.mode not in ("dry", "alerts", "live"):
                 raise SafetyError(f"tastytrade mode must be dry, alerts, or live (got {self.mode!r})")
@@ -366,8 +349,6 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
         overrides["broker"] = resolve_broker(overrides["broker"])
     elif sys.platform not in ("darwin", "win32"):
         overrides["broker"] = "ibkr"
-    if os.environ.get("SCHWAB_TOKEN_PATH"):
-        kwargs["token_path"] = os.environ["SCHWAB_TOKEN_PATH"]
     if os.environ.get("SPX_NOON_HOME") and "base_dir" not in data:
         kwargs["base_dir"] = os.environ["SPX_NOON_HOME"]
     kwargs.update(overrides)

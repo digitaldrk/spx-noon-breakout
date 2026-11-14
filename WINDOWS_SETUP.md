@@ -2,7 +2,7 @@
 
 This is the Windows machine. A Mac runs IBKR paper through `run.sh` and `deploy/install_launchd.sh`, using `config.example.json`. On this PC, copy `config.windows.example.json` to `config.json`.
 
-`auto` on Windows is tastytrade. Quotes, 15-minute bars, 1-minute bars, the SPXW chain, greeks, and orders all come from tastytrade. `--broker schwab` is the previous confirm-before-send path.
+`auto` on Windows is tastytrade. Quotes, 15-minute bars, 1-minute bars, the SPXW chain, greeks, and orders all come from tastytrade. Tastytrade is the only broker this PC runs.
 
 ## What it does
 
@@ -12,8 +12,7 @@ Noon Breakout, plan v2 version B: one 0DTE SPX debit vertical on the first quali
 | --- | --- |
 | `.\run_session.ps1` | Dry. Nothing is sent. |
 | `.\run_session.ps1 -Mode alerts` | Nothing is sent. The ticket is printed and toasted. |
-| `.\run_session.ps1 -Mode live` | Sends. Tastytrade auto-approves. There is no `yes <id>` prompt. The price cap is the mid limit, and at most 10 place/replace/cancel requests go out per minute. |
-| `.\run_session.ps1 -Broker schwab -Mode live` | Schwab only. Sends after you type `yes <ticketID>` in this window. |
+| `.\run_session.ps1 -Mode live` | Sends. Tastytrade auto-approves. There is no prompt. The price cap is the mid limit, and at most 10 place/replace/cancel requests go out per minute. |
 
 Where live orders go is `tasty_orders` in `config.json`, not an environment variable:
 

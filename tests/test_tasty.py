@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from spx_noon.config import Config, SafetyError, load_config, resolve_broker
+from spx_noon.config import _BROKER_ALIASES, Config, SafetyError, load_config, resolve_broker
 from spx_noon.guard import GuardError
 from spx_noon.tasty import (
     CERT_HOST,
@@ -134,8 +134,12 @@ def test_aliases_and_windows_auto(monkeypatch):
     assert resolve_broker(None) == "tasty"
     monkeypatch.setattr(sys, "platform", "darwin")
     assert resolve_broker("auto") == "ibkr"
-    flipped = resolve_broker("schwab")
-    assert flipped == "schwab"
+    # the alias table is the whole list of brokers. A retired one is not on it,
+    # and anything that is not on it is refused rather than guessed at.
+    assert sorted(_BROKER_ALIASES) == ["ibkr", "sim", "tasty", "tastytrade", "tt"]
+    for name in ("nope", "tda", "etrade", "ib"):
+        with pytest.raises(SafetyError, match="unknown broker"):
+            resolve_broker(name)
 
 
 def test_config_defaults_and_rejects_a_mismatch(tmp_path, monkeypatch):
@@ -143,10 +147,9 @@ def test_config_defaults_and_rejects_a_mismatch(tmp_path, monkeypatch):
     assert cfg.tasty_data == "production"
     assert cfg.tasty_orders == "sandbox"
     assert cfg.real_money is False
-    assert cfg.confirms_orders is False
     assert cfg.sends_orders() is False
     live = Config(broker="tasty", mode="live", base_dir=str(tmp_path))
-    assert live.live and live.sends_orders() and not live.confirms_orders
+    assert live.live and live.sends_orders()
     real = Config(broker="tasty", mode="live", tasty_data="production", tasty_orders="production",
                   base_dir=str(tmp_path))
     assert real.real_money is True
@@ -163,8 +166,6 @@ def test_config_defaults_and_rejects_a_mismatch(tmp_path, monkeypatch):
     assert loaded.broker == "tasty"
     assert loaded.tasty_orders == "sandbox"
     assert loaded.tasty_data == "production"
-    schwab = Config(broker="schwab", mode="live", account="705")
-    assert schwab.confirms_orders is True
 
 
 def test_no_production_order_toggle_in_source():
@@ -364,10 +365,6 @@ def test_tasty_live_auto_approves_without_a_prompt(tmp_path):
 
     et = ZoneInfo("America/New_York")
 
-    class _Boom:
-        def ask(self, *args, **kwargs):
-            raise AssertionError("tastytrade prompted for yes")
-
     cfg = Config(
         broker="tasty", mode="live", base_dir=str(tmp_path),
         decision_grace_s=90, loop_interval_s=60,
@@ -376,8 +373,9 @@ def test_tasty_live_auto_approves_without_a_prompt(tmp_path):
     noon = datetime(2026, 10, 28, 12, 0, tzinfo=et)
     broker = SimBroker(noon, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
     state = _State()
+    # _maybe_enter takes no approver: there is nothing a human could be asked
     _maybe_enter(
-        cfg, broker, Notifier(tmp_path / "logs", toast=False), _Boom(),
+        cfg, broker, Notifier(tmp_path / "logs", toast=False),
         Outputs(cfg.state_dir), state, "5WT12345", [noon],
     )
     buys = [order for order in broker.placed if order["action"] == "BUY"]

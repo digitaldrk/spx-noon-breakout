@@ -142,8 +142,7 @@ logged in. The code will not start unless every one of these holds:
 - TWS (or IB Gateway) is logged into that live account, and reports it after connect.
 
 Paper is the same job with `mode` `paper`, port 7497, an account id starting with `D`, and TWS
-logged into paper. No environment variable takes part in either. Tastytrade and Schwab are
-unchanged.
+logged into paper. No environment variable takes part in either. Tastytrade is unchanged.
 
 **Operator checklist**
 
@@ -166,8 +165,8 @@ unchanged.
    `BROKER=ibkr MODE=<mode> ACCOUNT=<last 4> PORT=<port> REAL MONEY=YES/NO`. Only the last four
    characters of the verified account appear. `REAL MONEY=YES` means IBKR mode `live`; paper,
    dry, and alerts say `NO`. Every IBKR order log line carries the same flag.
-3. It trades version B exactly as above. Live does **not** take the Schwab preview-and-`yes`
-   path, and the thresholds, windows, delta, slippage cap, target, and flat time are identical.
+3. It trades version B exactly as above. Live does **not** take the tastytrade preview path,
+   and the thresholds, windows, delta, slippage cap, target, and flat time are identical.
 4. It tracks only its own `SPXNOON-` orders and its own spread
    (`state/own_position-live.json`), writes fills to `state/trades-live.csv`, and writes the
    session note to `state/report-live-<date>.md`. The paper running total is never touched.

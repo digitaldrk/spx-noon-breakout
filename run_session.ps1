@@ -2,12 +2,11 @@
 #   .\run_session.ps1                         dry, broker auto (tastytrade)
 #   .\run_session.ps1 -Mode alerts            ticket + toast, nothing transmitted
 #   .\run_session.ps1 -Mode live              send to tasty_orders (sandbox unless config says production)
-#   .\run_session.ps1 -Mode live -Broker schwab   old path; still waits for "yes <ticketID>"
 # Keeps Windows awake while the bot runs and restores normal sleep on exit.
 # Tastytrade live auto-approves. Price caps and the 10/min limit still apply.
 param(
     [ValidateSet("live", "alerts", "dry")][string]$Mode = "dry",
-    [ValidateSet("auto", "tasty", "tt", "tastytrade", "schwab")][string]$Broker = "auto"
+    [ValidateSet("auto", "tasty", "tt", "tastytrade")][string]$Broker = "auto"
 )
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot

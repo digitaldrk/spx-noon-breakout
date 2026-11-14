@@ -12,7 +12,7 @@ from spx_noon.config import Config
 from spx_noon.pricing import trade_pnl
 from spx_noon.logbook import Outputs
 from spx_noon.notify import Notifier
-from spx_noon.runner import _State, _flatten, _maybe_enter, _poll_working, _rest_target, run_session
+from spx_noon.runner import _State, _flatten, _poll_working, _rest_target, run_session
 from spx_noon.strategy import Bar, OptQuote
 from spx_noon.wrap_run import main as wrap_main
 
@@ -479,36 +479,6 @@ def test_flatten_stops_after_three_failed_attempts(tmp_path):
     assert placed == 3
     assert _flatten(cfg, broker, notifier, out, state, "time", {"close_bid": 12.0}) is False
     assert len(broker.placed) == placed
-
-
-class _LateYes:
-    def __init__(self, broker, when):
-        self.broker = broker
-        self.when = when
-
-    def ask(self, ticket, timeout):
-        self.broker.t = self.when
-        return True, "yes"
-
-
-def test_approval_after_the_grace_window_sends_nothing(tmp_path):
-    cfg = Config(
-        broker="schwab", mode="live", account="705", base_dir=str(tmp_path),
-        loop_interval_s=60, decision_grace_s=90,
-    )
-    cfg.ensure_dirs()
-    noon = datetime(2026, 10, 28, 12, 0, tzinfo=ET)
-    broker = SimBroker(noon, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
-    state = _State()
-    _maybe_enter(
-        cfg, broker, Notifier(tmp_path / "logs", toast=False),
-        _LateYes(broker, noon + timedelta(seconds=120)),
-        Outputs(cfg.state_dir), state, "705", [noon],
-    )
-    assert broker.placed == []
-    with (tmp_path / "state" / "trades.csv").open() as fh:
-        rows = list(csv.DictReader(fh))
-    assert rows[-1]["exit_reason"] == "skip_stale"
 
 
 def test_session_starts_the_quote_stream(tmp_path):

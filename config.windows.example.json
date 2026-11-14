@@ -1,5 +1,5 @@
 {
-  "_comment": "Windows + tastytrade. Copy to config.json. The PC is the broker: this file cannot select IBKR. auto on Windows is tastytrade. tasty_orders=sandbox (the default) sends to api.cert.tastyworks.com. tasty_orders=production is real money and requires tasty_data=production. There is no env toggle. run_session.ps1 defaults to dry. -Mode live auto-approves; it does not ask for yes <ticketID>. --broker schwab is the old confirm-before-send path.",
+  "_comment": "Windows + tastytrade. Copy to config.json. The PC is the broker: this file cannot select IBKR. auto on Windows is tastytrade. tasty_orders=sandbox (the default) sends to api.cert.tastyworks.com. tasty_orders=production is real money and requires tasty_data=production. There is no env toggle. run_session.ps1 defaults to dry. -Mode live auto-approves; nothing waits on a human.",
   "mode": "dry",
   "account": "",
   "tasty_data": "production",
