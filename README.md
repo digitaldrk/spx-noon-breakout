@@ -13,6 +13,8 @@ A config file cannot switch brokers. On a Mac it is the one switch between paper
 
 **Windows:** see [WINDOWS_SETUP.md](WINDOWS_SETUP.md). Copy `config.windows.example.json` to `config.json`. A bare `.\run_session.ps1` stays dry. `.\run_session.ps1 -Mode live` is the send mode. Tastytrade auto-approves. The price cap and 10 orders per minute still apply.
 
+**Hosted (no computer left on):** see [RENDER.md](RENDER.md). One private Render background worker runs tastytrade from a container: real quotes, sandbox orders by default, state on a disk at `/data`. It changes nothing on this Mac or on Windows.
+
 ## Configuration
 
 `config.json` holds local overrides. Defaults are the fields on `Config` in `spx_noon/config.py`. Leave a key out and that default stays. Keys the loader does not know are ignored, including the `_comment`, `_rules`, and `_wrap` notes. The machine chooses the broker. A `broker` key in the file is ignored. A `dry_run` key is ignored too; `mode` is the only send setting.
@@ -155,5 +157,7 @@ The bot implements version B in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). Re
 | `run_wrap.sh`, `spx_noon/wrap_run.py` | 16:20 read-only note. `--book paper` or `--book live` |
 | `config.example.json` | Mac template |
 | `config.windows.example.json` | Windows tastytrade template |
+| `spx_noon/service.py` | Hosted worker supervisor: waits for 11:45, spawns the session, restarts a crash, runs the 16:20 wrap. [RENDER.md](RENDER.md) |
+| `render.yaml`, `Dockerfile`, `config.render.example.json` | Render blueprint, image, and the seed copied to the disk once |
 | `run.sh`, `deploy/` | Mac launchers |
 | `run_session.ps1` | Windows launcher. Default `-Mode dry` `-Broker auto` |
