@@ -1,5 +1,5 @@
 {
-  "_comment": "Mac + IBKR. Copy to config.json. The Mac is the broker: this file cannot select tastytrade or Schwab. This template is dry on the paper port 7497, and mode dry stays dry. ./run.sh paper sets paper for one launch. Real money (mode live, port 7496 for TWS or 4001 for IB Gateway, account set to the live id) also needs SPX_NOON_ALLOW_LIVE=1 and SPX_NOON_LIVE_ACCOUNT equal to that account in the environment; this file alone can never send a real order.",
+  "_comment": "Mac + IBKR. Copy to config.json. The Mac is the broker: this file cannot select tastytrade or Schwab. This template is dry on the paper port 7497, and mode dry stays dry. There is one 11:45 job either way; this file is the switch. Paper is mode paper, port 7497, an account id starting with D, with TWS logged into paper. Real money is mode live, port 7496 for TWS or 4001 for IB Gateway, account set to the live id (it must not start with D), with TWS logged into the live account. ./run.sh paper and ./run.sh live override the mode for one launch.",
   "mode": "dry",
   "host": "127.0.0.1",
   "port": 7497,
@@ -13,5 +13,5 @@
   "loop_interval_s": 5,
   "chain_band_pts": 150,
   "_rules": "Version B only. 15m closes 12:00–1:00 PM ET, first qualifying bar, 1 spread. Long nearest 75 delta. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. GTC close at debit x 1.30. Flat 2 hours after the entry bar. No stop. Live Schwab orders are not this file.",
-  "_wrap": "Read-only log summary at 16:20 ET: python -m spx_noon wrap reads state/trades.csv. python -m spx_noon wrap --book live reads state/trades-live.csv instead. Neither sends orders. Client id 142 is reserved and unused by that job."
+  "_wrap": "Read-only log summary at 16:20 ET: python -m spx_noon wrap with no --book follows this file's mode, so an IBKR live config reads state/trades-live.csv and everything else reads state/trades.csv. --book paper and --book live pick one by hand. Neither sends orders. Client id 142 is reserved and unused by that job."
 }

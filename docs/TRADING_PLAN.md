@@ -132,16 +132,17 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
 
 ## 9. Going live on IBKR (Mac)
 
-Mac mode `live` is real money. The code will not start unless every one of these holds, and the
-`config.json` file alone can never turn it on:
+Mac mode `live` is real money. There is one scheduled process and one config file; paper and
+live are two settings of it. The operator switch is `config.json` plus the TWS session that is
+logged in. The code will not start unless every one of these holds:
 
 - `mode` is `live`, `host` is localhost, and `port` is **7496** (TWS live) or **4001** (IB Gateway live). Never 7497.
 - `account` is set, non-empty, and does **not** start with `D`. Live never falls back to the first account TWS shows.
-- `SPX_NOON_ALLOW_LIVE` is exactly `1` in the environment — not `true`, not `yes`, not `1 `.
-- `SPX_NOON_LIVE_ACCOUNT` is character-for-character equal to `account`. No strip, no casefold.
+- TWS (or IB Gateway) is logged into that live account, and reports it after connect.
 
-The latch is IBKR only. Paper, dry, and alerts are unchanged, and tastytrade and Schwab do not
-use it.
+Paper is the same job with `mode` `paper`, port 7497, an account id starting with `D`, and TWS
+logged into paper. No environment variable takes part in either. Tastytrade and Schwab are
+unchanged.
 
 **Operator checklist**
 
@@ -149,23 +150,27 @@ use it.
 - TWS (or IB Gateway) logged into the **live** account, API enabled, Read-Only API off, socket port 7496 (Gateway 4001).
 - The live account has SPX index + SPX options market data subscriptions and options trading permissions for spreads.
 - First live day: watch the banner and the first order ticket.
-- `SPX_NOON_ALLOW_LIVE=1` and `SPX_NOON_LIVE_ACCOUNT` exactly equal to config `account`. The config file cannot turn this on by itself.
-- `./run.sh live` is the manual entry. `./deploy/install_launchd.sh live` is optional and does not replace the paper job.
+- `config.json`: `mode` `live`, `port` 7496 (or 4001), `account` set to the live id. The same 11:45 job runs it; `./deploy/install_launchd.sh` takes no arguments and there is no second job to install. Run it once when upgrading from the old two-job setup: it deletes the retired `com.derek.spxnoon.live` pair so a stale real-money job cannot fire beside this one.
+- `./run.sh live` is a one-shot override of that same script. It still needs the live port, the live account, and the live TWS session.
 - Live fills are in `state/trades-live.csv` and `reports/wrap-live-<date>.md`, not in the paper total.
 
 **What the session does**
 
 1. After every connect and every reconnect it checks the accounts TWS reports. Live requires the
-   configured account to be present, to equal `SPX_NOON_LIVE_ACCOUNT`, to not start with `D`, and
-   that **no** reported account starts with `D`. Paper, dry, and alerts require every reported
+   configured account to be present, to not start with `D`, and that **no** reported account
+   starts with `D`. Paper, dry, and alerts require every reported
    account to start with `D`. A mismatch closes the socket and exits; it is not retried as a
    dropped connection.
 2. It prints and logs one banner, including on a day it will not trade:
    `BROKER=ibkr MODE=<mode> ACCOUNT=<last 4> PORT=<port> REAL MONEY=YES/NO`. Only the last four
-   characters of the verified account appear. `REAL MONEY=YES` means IBKR `live` with the latch
-   matched; paper, dry, and alerts say `NO`. Every IBKR order log line carries the same flag.
+   characters of the verified account appear. `REAL MONEY=YES` means IBKR mode `live`; paper,
+   dry, and alerts say `NO`. Every IBKR order log line carries the same flag.
 3. It trades version B exactly as above. Live does **not** take the Schwab preview-and-`yes`
    path, and the thresholds, windows, delta, slippage cap, target, and flat time are identical.
 4. It tracks only its own `SPXNOON-` orders and its own spread
    (`state/own_position-live.json`), writes fills to `state/trades-live.csv`, and writes the
    session note to `state/report-live-<date>.md`. The paper running total is never touched.
+5. The one 16:20 job follows the same config: an IBKR live config wraps the live book into
+   `reports/wrap-live-<date>.md`, anything else wraps `state/trades.csv` into
+   `reports/wrap-<date>.md`. The books are separate files, not separate processes, and no row
+   ever lands in both.

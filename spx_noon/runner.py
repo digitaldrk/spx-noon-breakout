@@ -1,7 +1,8 @@
 """One noon session.
 
 Waits for the 12:00–1:00 PM ET closes, takes the first qualifying bar, and
-sends at most one spread. Paper on a Mac goes to TWS 7497. Latched IBKR live
+sends at most one spread. One job runs it either way: paper on a Mac goes to
+TWS 7497, and IBKR live — config ``mode`` ``live`` with a non-``D`` account —
 goes to TWS 7496 or IB Gateway 4001 and keeps its own book and position file.
 Tastytrade live auto-approves. Schwab live still waits for `yes <ticketID>`.
 """

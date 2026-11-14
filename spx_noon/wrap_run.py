@@ -1,12 +1,13 @@
 """Read-only end-of-day note. It reads one trade book and writes a report.
 
-``--book paper`` (the default) reads ``state/trades.csv`` and writes
+``--book paper`` reads ``state/trades.csv`` and writes
 ``reports/wrap-<date>.md``. ``--book live`` reads ``state/trades-live.csv`` and
-writes ``reports/wrap-live-<date>.md``. With no ``--book``, a validated IBKR
-live config uses the live book and everything else uses paper.
+writes ``reports/wrap-live-<date>.md``. With no ``--book`` — which is what the
+one 16:20 job passes — an IBKR live config uses the live book and everything
+else uses paper.
 
-It does not connect to a broker, it does not place, change, or cancel orders,
-and ``--book live`` does not need the live latch.
+It does not connect to a broker and it does not place, change, or cancel
+orders, so ``--book live`` reads the live book from any loaded config.
 """
 from __future__ import annotations
 

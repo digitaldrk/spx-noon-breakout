@@ -1,9 +1,10 @@
 """Configuration. The computer picks the broker. A config file cannot.
 
-Mac (darwin) is IBKR TWS. mode "paper" is 127.0.0.1:7497 with account ids
-starting with D. mode "live" is real money on 127.0.0.1:7496 (TWS) or 4001
-(IB Gateway) and needs the ``SPX_NOON_ALLOW_LIVE`` / ``SPX_NOON_LIVE_ACCOUNT``
-latch in the environment. A config file alone can never enable real orders.
+Mac (darwin) is IBKR TWS. There is one job and one config: ``mode``, ``port``,
+and ``account`` are the switch, together with the TWS session the operator is
+logged into. mode "paper" is 127.0.0.1:7497 with account ids starting with D.
+mode "live" is real money on 127.0.0.1:7496 (TWS) or 4001 (IB Gateway) with an
+``account`` that is set and does not start with D.
 Windows is tastytrade. ``tasty_data`` (default production) and ``tasty_orders``
 (default sandbox) choose the hosts. There is no env-var toggle.
 ``tasty_orders=production`` is real money and requires ``tasty_data=production``.
@@ -27,10 +28,6 @@ PAPER_PORT = 7497
 LIVE_PORTS = (7496, 4001)
 LOCALHOSTS = ("127.0.0.1", "localhost", "::1")
 ORDER_PREFIX = "SPXNOON-"
-
-#: Both must be present and exact before IBKR mode ``live`` may send a real order.
-LIVE_ALLOW_ENV = "SPX_NOON_ALLOW_LIVE"
-LIVE_ACCOUNT_ENV = "SPX_NOON_LIVE_ACCOUNT"
 
 _order_log = logging.getLogger("spx_noon.orders")
 
@@ -78,22 +75,18 @@ def redact_account(account) -> None:
             handler.addFilter(_AccountFilter(account))
 
 
-def live_latch(account) -> tuple[bool, str]:
-    """``SPX_NOON_ALLOW_LIVE=1`` plus an exact ``SPX_NOON_LIVE_ACCOUNT`` match.
+def live_account_ok(account) -> tuple[bool, str]:
+    """The account half of the live gate: set, and not an IBKR paper id.
 
-    No strip and no casefold: ``"1 "``, ``"true"``, and a different case all fail.
+    No environment variable is read. ``config.json`` plus the TWS session the
+    operator is logged into is the switch. The port and host halves are in
+    :meth:`Config.validate`, and TWS is asked to confirm the account after connect.
     """
     want = str(account)
     if not want.strip():
         return False, "IBKR live needs account set to the live account id"
     if want.startswith("D"):
         return False, "IBKR live refuses a paper account id (starts with D)"
-    if os.environ.get(LIVE_ALLOW_ENV) != "1":
-        return False, (
-            f"IBKR live needs {LIVE_ALLOW_ENV}=1 in the environment; "
-            "a config file cannot turn on real money")
-    if os.environ.get(LIVE_ACCOUNT_ENV) != want:
-        return False, f"{LIVE_ACCOUNT_ENV} must equal the config account exactly"
     return True, ""
 
 
@@ -250,14 +243,15 @@ class Config:
     @property
     def ibkr_live(self) -> bool:
         """IBKR real money. Deliberately not ``live``: it must not take the
-        Schwab/tastytrade preview-and-``yes`` path in the runner."""
-        if self.broker != "ibkr" or self.mode != "live" or self.dry_run:
-            return False
-        return live_latch(self.account)[0]
+        Schwab/tastytrade preview-and-``yes`` path in the runner.
+
+        ``validate()`` has already accepted the port, the host, and the account
+        for any config that reaches a broker, so this is the mode alone."""
+        return self.broker == "ibkr" and self.mode == "live" and not self.dry_run
 
     @property
     def real_money_flag(self) -> str:
-        """``YES`` only for a latched IBKR live session. Paper, dry, alerts are ``NO``."""
+        """``YES`` only for an IBKR live session. Paper, dry, alerts are ``NO``."""
         return "YES" if self.ibkr_live else "NO"
 
     def sends_orders(self) -> bool:
@@ -280,7 +274,7 @@ class Config:
             if self.mode not in ("paper", "live") and not self.dry_run:
                 raise SafetyError("dry_run stays on unless mode is 'paper' or 'live'")
             if self.mode == "live":
-                allowed, why = live_latch(self.account)
+                allowed, why = live_account_ok(self.account)
                 if not allowed:
                     raise SafetyError(f"Refusing to run live: {why}")
                 if int(self.port) not in LIVE_PORTS:

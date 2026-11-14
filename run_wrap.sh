@@ -1,7 +1,10 @@
 #!/bin/bash
 # Read-only end-of-day note. Weekdays 4:20 PM ET via launchd. Does not place orders.
-#   ./run_wrap.sh         paper book: state/trades.csv  -> reports/wrap-<date>.md
-#   ./run_wrap.sh live    live book:  state/trades-live.csv -> reports/wrap-live-<date>.md
+# One job. With no argument the book follows config.json: an IBKR live config writes
+# the live book, everything else writes the paper book.
+#   ./run_wrap.sh         config book: trades.csv or trades-live.csv
+#   ./run_wrap.sh paper   one-shot override: state/trades.csv -> reports/wrap-<date>.md
+#   ./run_wrap.sh live    one-shot override: state/trades-live.csv -> reports/wrap-live-<date>.md
 set -euo pipefail
 BASE="${SPX_NOON_HOME:-$HOME/Documents/spx-noon-breakout}"
 cd "$BASE"

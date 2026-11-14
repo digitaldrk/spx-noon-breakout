@@ -1,9 +1,9 @@
 """IBBroker: Mac path. IBKR TWS on localhost.
 
 mode ``paper`` is port 7497 and account ids starting with D. mode ``live`` is
-real money on 7496 (TWS) or 4001 (IB Gateway) and runs only with the
-``SPX_NOON_ALLOW_LIVE`` / ``SPX_NOON_LIVE_ACCOUNT`` latch. mode ``dry`` and
-``alerts`` connect read-only on 7497 and never send.
+real money on 7496 (TWS) or 4001 (IB Gateway) with a configured account that
+does not start with D, and TWS has to report that same account. mode ``dry``
+and ``alerts`` connect read-only on 7497 and never send.
 
 Orders carry orderRef SPXNOON-. The bot never modifies an order that does not.
 Entry orders are DAY. The take-profit is GTC, as the plan specifies.
@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 from datetime import datetime
 
 from .broker import Broker, to_et
 from .config import (
-    LIVE_ACCOUNT_ENV,
     LIVE_PORTS,
     LOCALHOSTS,
     ORDER_PREFIX,
@@ -63,22 +61,22 @@ def paper_send_allowed(cfg, account: str, order_ref: str) -> None:
 
 
 def live_send_allowed(cfg, account: str, order_ref: str) -> None:
-    """Raise unless this order is allowed onto the latched IBKR live account."""
+    """Raise unless this order is allowed onto the configured IBKR live account."""
     if cfg.broker != "ibkr":
         raise SafetyError("IBKR orders are the Mac path")
     if not cfg.ibkr_live:
-        raise SafetyError("refusing: IBKR live is not latched")
+        raise SafetyError("refusing: this config is not IBKR live")
     if int(cfg.port) not in LIVE_PORTS:
         raise SafetyError(f"refusing: port {cfg.port} is not an IBKR live port {LIVE_PORTS}")
     if cfg.host not in LOCALHOSTS:
         raise SafetyError(f"refusing: host {cfg.host!r} is not localhost")
     acct = str(account)
+    if not acct.strip():
+        raise SafetyError("refusing: a live order needs the configured live account")
     if acct.startswith("D"):
         raise SafetyError("refusing: a live order must not go to a paper (D...) account")
     if acct != str(cfg.account):
         raise SafetyError("refusing: the order account is not the configured live account")
-    if acct != os.environ.get(LIVE_ACCOUNT_ENV):
-        raise SafetyError(f"refusing: the order account is not {LIVE_ACCOUNT_ENV}")
     if not str(order_ref or "").startswith(ORDER_PREFIX):
         raise SafetyError(f"every Noon order must carry an {ORDER_PREFIX} orderRef")
 
@@ -96,10 +94,10 @@ def send_allowed(cfg, account: str, order_ref: str) -> None:
 def check_accounts(cfg, accounts) -> str:
     """Verify what TWS reports and return the account this session may use.
 
-    Live: the configured account is reported, equals ``SPX_NOON_LIVE_ACCOUNT``,
-    does not start with D, and no reported account starts with D. Paper, dry,
-    and alerts: every reported account must start with D. No socket is touched
-    and no full account id is raised.
+    Live: the configured account is reported, does not start with D, and no
+    reported account starts with D. Paper, dry, and alerts: every reported
+    account must start with D. No socket is touched and no full account id is
+    raised.
     """
     reported = [str(acct) for acct in (accounts or [])]
     if not reported:
@@ -107,11 +105,11 @@ def check_accounts(cfg, accounts) -> str:
     want = str(getattr(cfg, "account", "") or "")
     if getattr(cfg, "mode", "") == "live":
         if not cfg.ibkr_live:
-            raise SafetyError("refusing: IBKR live is not latched")
+            raise SafetyError("refusing: this config is not IBKR live")
+        if not want.strip():
+            raise SafetyError("refusing: live mode needs account set to the live account id")
         if want.startswith("D"):
             raise SafetyError("refusing: live mode will not use a paper (D...) account")
-        if want != os.environ.get(LIVE_ACCOUNT_ENV):
-            raise SafetyError(f"refusing: the live account is not {LIVE_ACCOUNT_ENV}")
         if want not in reported:
             raise SafetyError(
                 f"refusing: the configured live account is not one TWS reports ({_tails(reported)})")
@@ -140,7 +138,7 @@ def _dial_port(cfg) -> int:
         if port not in LIVE_PORTS:
             raise SafetyError(f"Refusing to connect: port {port} is not an IBKR live port {LIVE_PORTS}")
         if not cfg.ibkr_live:
-            raise SafetyError("Refusing to connect: IBKR live is not latched")
+            raise SafetyError("Refusing to connect: this config is not IBKR live")
     elif port != PAPER_PORT:
         raise SafetyError(f"Refusing to connect: port {port} != {PAPER_PORT}")
     return port
