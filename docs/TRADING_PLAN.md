@@ -15,6 +15,7 @@ The bot implements **version B only** (section 1 and the checklist in section 8)
 |---|---|
 | Trigger | 15-minute close beyond the prior day's high (call) or low (put), from noon to 1:00 PM ET. One fill per day. |
 | Entry | The 12:00 15-minute close. 100 of 118 trades entered then; the rest came later in the window. |
+| Calendar | Flat if the NYSE list or the broker hours say closed or early close. A 1:00 PM early close runs into the noon window, so that day is not traded. |
 | Structure | Debit vertical. Long leg at **75 delta**. |
 | Short leg | Width = **max(10, expected move rounded down to 5)** |
 | Take-profit | **+30%** of debit |
@@ -110,7 +111,7 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
     - Prior day's RTH high (PDH) and low (PDL): the max high and min low of yesterday's 15m RTH bars.
     - 0DTE SPX option chain with bid, ask, mid and delta.
     - VIX (live) or the 0DTE ATM straddle, for the expected move. The backtest used EM = the price of the ATM straddle (strike = spot rounded to 5) at entry.
-2. **Entry window.** Check the 15m bars that close at **12:00, 12:15, 12:30, 12:45 and 1:00 PM**. Take the first bar that qualifies. Most entries (100/118) came on the 12:00 close; the rest came on the later closes.
+2. **Entry window.** Check the 15m bars that close at **12:00, 12:15, 12:30, 12:45 and 1:00 PM**. Take the first bar that qualifies. Most entries (100/118) came on the 12:00 close; the rest came on the later closes. If the NYSE list or the broker hours say the day is closed or an early close, do not trade. A 1:00 PM early close runs into this window.
 3. **Breakout rule.** Check calls first, then puts. A bar qualifies for **calls** when all three of these are true (mirror everything for puts, using PDL and "below"):
     - a. At least one 15m close earlier today, from 9:45 on, was above PDH. The first such bar is the **trigger bar**. It can be in the morning.
     - b. This bar's close is still above PDH.
@@ -127,3 +128,50 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
 12. **Slippage benchmark:** typical 0DTE fills come in $0.05–$0.15 off mid. Track the average per side. Anything at $0.20 or more erodes the edge, and $0.30 breaks it.
 13. **Review after 30–60 paper sessions** before going live: win rate, profit factor, and average slippage against the backtest (PF 1.41 at fair pricing; 1.48 rich).
 14. **Live orders require Tod's explicit approval.** The code must not send live orders unless Tod has approved going live.
+
+---
+
+## 9. Going live on IBKR (Mac)
+
+Mac mode `live` is real money. There is one scheduled process and one config file; paper and
+live are two settings of it. The operator switch is `config.json` plus the TWS session that is
+logged in. The code will not start unless every one of these holds:
+
+- `mode` is `live`, `host` is localhost, and `port` is **7496** (TWS live) or **4001** (IB Gateway live). Never 7497.
+- `account` is set, non-empty, and does **not** start with `D`. Live never falls back to the first account TWS shows.
+- TWS (or IB Gateway) is logged into that live account, and reports it after connect.
+
+Paper is the same job with `mode` `paper`, port 7497, an account id starting with `D`, and TWS
+logged into paper. No environment variable takes part in either. Tastytrade and Schwab are
+unchanged.
+
+**Operator checklist**
+
+- Turn off the Candle and Fly launchd jobs while High Noon runs live.
+- TWS (or IB Gateway) logged into the **live** account, API enabled, Read-Only API off, socket port 7496 (Gateway 4001).
+- The live account has SPX index + SPX options market data subscriptions and options trading permissions for spreads.
+- First live day: watch the banner and the first order ticket.
+- `config.json`: `mode` `live`, `port` 7496 (or 4001), `account` set to the live id. The same 11:45 job runs it; `./deploy/install_launchd.sh` takes no arguments and there is no second job to install. Run it once when upgrading from the old two-job setup: it deletes the retired `com.derek.spxnoon.live` pair so a stale real-money job cannot fire beside this one.
+- `./run.sh live` is a one-shot override of that same script. It still needs the live port, the live account, and the live TWS session.
+- Live fills are in `state/trades-live.csv` and `reports/wrap-live-<date>.md`, not in the paper total.
+
+**What the session does**
+
+1. After every connect and every reconnect it checks the accounts TWS reports. Live requires the
+   configured account to be present, to not start with `D`, and that **no** reported account
+   starts with `D`. Paper, dry, and alerts require every reported
+   account to start with `D`. A mismatch closes the socket and exits; it is not retried as a
+   dropped connection.
+2. It prints and logs one banner, including on a day it will not trade:
+   `BROKER=ibkr MODE=<mode> ACCOUNT=<last 4> PORT=<port> REAL MONEY=YES/NO`. Only the last four
+   characters of the verified account appear. `REAL MONEY=YES` means IBKR mode `live`; paper,
+   dry, and alerts say `NO`. Every IBKR order log line carries the same flag.
+3. It trades version B exactly as above. Live does **not** take the Schwab preview-and-`yes`
+   path, and the thresholds, windows, delta, slippage cap, target, and flat time are identical.
+4. It tracks only its own `SPXNOON-` orders and its own spread
+   (`state/own_position-live.json`), writes fills to `state/trades-live.csv`, and writes the
+   session note to `state/report-live-<date>.md`. The paper running total is never touched.
+5. The one 16:20 job follows the same config: an IBKR live config wraps the live book into
+   `reports/wrap-live-<date>.md`, anything else wraps `state/trades.csv` into
+   `reports/wrap-<date>.md`. The books are separate files, not separate processes, and no row
+   ever lands in both.

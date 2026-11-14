@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spx-noon-breakout"
 version = "1.0.0"
-description = "SPX 0DTE noon breakout (plan v2 version B). Mac: IBKR paper. Windows: tastytrade."
+description = "SPX 0DTE noon breakout (plan v2 version B). Mac: IBKR paper or latched live. Windows: tastytrade."
 requires-python = ">=3.11"
 dependencies = ["ib_async>=2.1.0", "tzdata"]
 

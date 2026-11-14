@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  End-of-day note. Weekdays 16:20 local time. Read-only: it summarizes state/trades.csv
-  and does not place orders. __HOME__ is replaced by install_launchd.sh.
+  End-of-day note. Weekdays 16:20 local time. Read-only: it does not place orders.
+  The job runs run_wrap.sh with no book argument, so the book follows config.json: an IBKR
+  live config summarizes state/trades-live.csv into reports/wrap-live-<date>.md, anything
+  else summarizes state/trades.csv into reports/wrap-<date>.md. The two books never mix.
+  __HOME__ is replaced by install_launchd.sh.
 -->
 <plist version="1.0">
 <dict>

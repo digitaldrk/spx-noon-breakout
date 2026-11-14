@@ -1,6 +1,13 @@
-"""Read-only end-of-day note. It reads state/trades.csv and writes a report.
+"""Read-only end-of-day note. It reads one trade book and writes a report.
 
-It does not connect to a broker and does not place, change, or cancel orders.
+``--book paper`` reads ``state/trades.csv`` and writes
+``reports/wrap-<date>.md``. ``--book live`` reads ``state/trades-live.csv`` and
+writes ``reports/wrap-live-<date>.md``. With no ``--book`` — which is what the
+one 16:20 job passes — an IBKR live config uses the live book and everything
+else uses paper.
+
+It does not connect to a broker and it does not place, change, or cancel
+orders, so ``--book live`` reads the live book from any loaded config.
 """
 from __future__ import annotations
 
@@ -8,7 +15,7 @@ import argparse
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-from .config import load_config
+from .config import SafetyError, load_config
 from .logbook import Outputs
 
 ET = ZoneInfo("America/New_York")
@@ -17,20 +24,28 @@ ET = ZoneInfo("America/New_York")
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="spx_noon wrap")
     parser.add_argument("--config", default=None)
+    parser.add_argument("--book", choices=["paper", "live"], default=None,
+                        help="paper reads state/trades.csv; live reads state/trades-live.csv")
     parser.add_argument("--now", action="store_true", help="Write immediately instead of waiting for 16:20 ET")
     args = parser.parse_args(argv)
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config)
+    except (SafetyError, ValueError, TypeError) as exc:
+        print(f"refusing to wrap: {exc}")
+        return 2
     cfg.ensure_dirs()
+    book = args.book or ("live" if cfg.ibkr_live else "paper")
     now = datetime.now(ET)
     if not args.now and now.time() < time(16, 0):
         print(f"Wrap waits until 16:00 ET (now {now:%H:%M}). Pass --now to write the log summary anyway.")
         return 0
-    out = Outputs(cfg.state_dir)
+    out = Outputs(cfg.state_dir, book=book)
     rows = out.read_trades(now.date())
+    label = "wrap live" if book == "live" else "wrap"
     lines = [
-        f"# Noon wrap {now.date().isoformat()}",
+        f"# Noon {label} {now.date().isoformat()}",
         "",
-        "Source: state/trades.csv. This job does not send orders.",
+        f"Source: state/{out.trade_path().name}. This job does not send orders.",
         "",
     ]
     if not rows:
@@ -43,7 +58,8 @@ def main(argv=None) -> int:
             f"slip/side {row.get('slippage_per_side') or 'n/a'}"
         )
     lines.append("")
-    path = cfg.reports_dir / f"wrap-{now.date().isoformat()}.md"
+    name = f"wrap-live-{now.date().isoformat()}.md" if book == "live" else f"wrap-{now.date().isoformat()}.md"
+    path = cfg.reports_dir / name
     path.write_text("\n".join(lines) + "\n")
     print(f"wrote {path}")
     return 0

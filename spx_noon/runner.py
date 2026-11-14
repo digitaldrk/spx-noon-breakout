@@ -1,8 +1,10 @@
 """One noon session.
 
 Waits for the 12:00–1:00 PM ET closes, takes the first qualifying bar, and
-sends at most one spread. Paper on a Mac goes to TWS 7497. Tastytrade live
-auto-approves. Schwab live still waits for `yes <ticketID>`.
+sends at most one spread. One job runs it either way: paper on a Mac goes to
+TWS 7497, and IBKR live — config ``mode`` ``live`` with a non-``D`` account —
+goes to TWS 7496 or IB Gateway 4001 and keeps its own book and position file.
+Tastytrade live auto-approves. Schwab live still waits for `yes <ticketID>`.
 """
 from __future__ import annotations
 
@@ -13,7 +15,14 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .calendar import trading_day_status
-from .config import SafetyError, load_config, resolve_broker
+from .config import (
+    SafetyError,
+    load_config,
+    log_order,
+    redact_account,
+    resolve_broker,
+    startup_banner,
+)
 from .logbook import Outputs
 from .notify import ConsoleApprover, Notifier
 from .pricing import floor_tick, take_profit_limit, target_reached, time_exit_deadline, trade_pnl
@@ -54,6 +63,9 @@ def _setup_logging(cfg) -> None:
             format="%(asctime)s %(levelname)s %(message)s",
             handlers=[logging.FileHandler(path), logging.StreamHandler()],
         )
+    # ib_async logs the whole order, account included, at INFO. Redact before it can.
+    if cfg.broker == "ibkr":
+        redact_account(cfg.account)
 
 
 def _resolve_account(cfg, broker) -> str:
@@ -62,9 +74,10 @@ def _resolve_account(cfg, broker) -> str:
     accounts = [str(item) for item in (broker.managed_accounts() or [])]
     if cfg.broker == "tasty":
         return _tasty_account(cfg.account, accounts)
+    if cfg.broker == "ibkr":
+        from .ib import check_accounts
+        return check_accounts(cfg, accounts)
     if cfg.account:
-        if accounts and cfg.account not in accounts and cfg.broker == "ibkr":
-            raise SafetyError(f"account {cfg.account} is not managed by TWS ({accounts})")
         return cfg.account
     if not accounts:
         raise SafetyError("broker reported no account")
@@ -88,10 +101,16 @@ def _tasty_account(want: str, accounts: list[str]) -> str:
     raise SafetyError(f"account {want} does not match exactly one tastytrade account")
 
 
-def _assert_paper_accounts(broker) -> None:
-    bad = [acct for acct in broker.managed_accounts() if not str(acct).startswith("D")]
-    if bad:
-        raise SafetyError(f"refusing non-paper account(s) {bad}")
+def _verify_ibkr(cfg, broker) -> str:
+    """Check the accounts TWS reports, then announce the banner. Runs before the
+    calendar check so a day that will not trade still shows what is armed."""
+    from .ib import check_accounts
+    account = check_accounts(cfg, broker.managed_accounts())
+    redact_account(account)  # a blank paper account is only known once TWS answers
+    banner = startup_banner(cfg, account)
+    log.info("%s", banner)
+    print(banner, flush=True)
+    return account
 
 
 def _connect(cfg, broker) -> None:
@@ -101,6 +120,8 @@ def _connect(cfg, broker) -> None:
         try:
             broker.connect()
             return
+        except SafetyError:
+            raise
         except Exception as exc:  # noqa: BLE001
             last = exc
             log.warning("connect failed (%s/%s): %s", n + 1, attempts, exc)
@@ -248,7 +269,7 @@ def _persist(cfg, pos) -> None:
     for key in ("entry_close", "deadline", "cancel_after"):
         if isinstance(payload.get(key), datetime):
             payload[key] = payload[key].isoformat()
-    resume.save(cfg.state_dir, payload)
+    resume.save(cfg.state_dir, payload, live=cfg.ibkr_live)
 
 
 def _restore_dt(value):
@@ -314,13 +335,16 @@ def _rest_target(cfg, broker, pos: dict) -> None:
         order_id = broker.place_combo(
             pos["legs"], "SELL", 1, limit, pos["account"], str(pos["ref"]) + "X", tif="GTC")
     except Exception:  # noqa: BLE001
-        log.exception("take-profit order was not accepted; watching the bid instead")
+        log_order(cfg, logging.ERROR,
+                  "take-profit order was not accepted; watching the bid instead", exc_info=True)
         return
     pos["tp_order_id"] = order_id
+    log_order(cfg, logging.INFO, "take-profit %s resting GTC at %.2f", order_id, limit)
     try:
         _persist(cfg, pos)
     except Exception:  # noqa: BLE001
-        log.exception("take-profit %s is working but was not saved", order_id)
+        log_order(cfg, logging.ERROR, "take-profit %s is working but was not saved", order_id,
+                  exc_info=True)
 
 
 def _open_position(cfg, broker, notifier, state: _State, working: dict, fill: float) -> None:
@@ -379,7 +403,7 @@ def _record_exit(cfg, broker, notifier, out: Outputs, state: _State, exit_fill: 
         "fees": fees,
     })
     out.append_trade(row)
-    resume.mark_closed(cfg.state_dir)
+    resume.mark_closed(cfg.state_dir, live=cfg.ibkr_live)
     if cfg.live:
         try:
             broker.finish_ticket()
@@ -415,7 +439,8 @@ def _flatten(cfg, broker, notifier, out, state, reason: str, prices: dict | None
             _record_exit(cfg, broker, notifier, out, state, status["avg_price"], reason, prices)
             return True
         if status and not status.get("done"):
-            log.info("flatten %s is still working; not sending another sell", existing)
+            log_order(cfg, logging.INFO,
+                      "flatten %s is still working; not sending another sell", existing)
             return False
     bid = None if prices is None else prices.get("close_bid")
     if bid is None or bid <= 0:
@@ -433,13 +458,15 @@ def _flatten(cfg, broker, notifier, out, state, reason: str, prices: dict | None
         order_id = broker.place_combo(
             pos["legs"], "SELL", 1, limit, pos["account"], pos["ref"] + "F", tif="DAY")
     except Exception:  # noqa: BLE001
-        log.exception("flatten order was not accepted")
+        log_order(cfg, logging.ERROR, "flatten order was not accepted", exc_info=True)
         return False
     pos["exit_order_id"] = order_id
+    log_order(cfg, logging.INFO, "flatten %s working at %.2f (%s)", order_id, limit, reason)
     try:
         _persist(cfg, pos)
     except Exception:  # noqa: BLE001
-        log.exception("flatten %s is working but was not saved", order_id)
+        log_order(cfg, logging.ERROR, "flatten %s is working but was not saved", order_id,
+                  exc_info=True)
     status = _await_terminal(broker, order_id, cfg.exit_wait_s)
     if _filled(status):
         fresh = _prices_for(broker.option_quotes(), pos)
@@ -449,14 +476,14 @@ def _flatten(cfg, broker, notifier, out, state, reason: str, prices: dict | None
         try:
             broker.cancel(order_id)
         except Exception:  # noqa: BLE001
-            log.warning("cancel flatten failed", exc_info=True)
+            log_order(cfg, logging.WARNING, "cancel flatten failed", exc_info=True)
         status = _await_terminal(broker, order_id, cfg.exit_wait_s)
         if _filled(status):
             _record_exit(cfg, broker, notifier, out, state, status["avg_price"], reason, prices)
             return True
         if status and not status.get("done"):
             return False
-    log.warning("flatten order %s did not fill at %.2f", order_id, limit)
+    log_order(cfg, logging.WARNING, "flatten order %s did not fill at %.2f", order_id, limit)
     pos["exit_order_id"] = None
     return False
 
@@ -479,13 +506,14 @@ def _manage_position(cfg, broker, notifier, out, state: _State) -> bool:
             try:
                 broker.cancel(tp_id)
             except Exception:  # noqa: BLE001
-                log.warning("cancel target failed", exc_info=True)
+                log_order(cfg, logging.WARNING, "cancel target failed", exc_info=True)
             tp_state = _await_terminal(broker, tp_id, cfg.exit_wait_s)
             if _filled(tp_state):
                 _record_exit(cfg, broker, notifier, out, state, tp_state["avg_price"], "target", prices)
                 return True
             if tp_state and not tp_state.get("done"):
-                log.warning("target %s still working; not sending another sell", tp_id)
+                log_order(cfg, logging.WARNING,
+                          "target %s still working; not sending another sell", tp_id)
                 return False
         return _flatten(cfg, broker, notifier, out, state, reason, prices)
     return False
@@ -502,19 +530,20 @@ def _poll_working(cfg, broker, notifier, out, state: _State) -> None:
     try:
         broker.cancel(working["id"])
     except Exception:  # noqa: BLE001
-        log.warning("cancel entry failed", exc_info=True)
+        log_order(cfg, logging.WARNING, "cancel entry failed", exc_info=True)
     status = _await_terminal(broker, working["id"], cfg.exit_wait_s)
     if _filled(status):
         _open_position(cfg, broker, notifier, state, working, status["avg_price"])
         return
     if status is None or not status.get("done"):
         working["cancel_after"] = broker.now() + timedelta(seconds=max(cfg.exit_wait_s, 5))
-        log.warning("entry %s still working after cancel; keeping it", working["id"])
+        log_order(cfg, logging.WARNING,
+                  "entry %s still working after cancel; keeping it", working["id"])
         return
     out.append_trade(_row_from_plan(working["plan"], cfg.mode, "skip_no_fill"))
     notifier.alert("Noon no fill", f"entry {working['ref']} cancelled unfilled. Not chasing.", toast=False)
     state.working = None
-    resume.mark_closed(cfg.state_dir)
+    resume.mark_closed(cfg.state_dir, live=cfg.ibkr_live)
 
 
 def _revalidate(cfg, broker, breakout, spot: float, expiry: str):
@@ -635,7 +664,7 @@ def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: s
         try:
             order_id = broker.place_combo(plan.legs(), "BUY", 1, plan.limit, account, ref, tif="DAY")
         except Exception as exc:  # noqa: BLE001
-            log.exception("entry order failed")
+            log_order(cfg, logging.ERROR, "entry order failed", exc_info=True)
             notifier.alert("Entry failed", str(exc))
             if cfg.live:
                 try:
@@ -651,7 +680,7 @@ def _maybe_enter(cfg, broker, notifier, approver, out, state: _State, account: s
         working["cancel_after"] = _next_decision(close_at, grace)
         state.working = working
         _persist(cfg, {k: v for k, v in working.items() if k != "plan"})
-        log.info("working entry %s limit %.2f", ref, plan.limit)
+        log_order(cfg, logging.INFO, "working entry %s limit %.2f", ref, plan.limit)
         return
 
 
@@ -709,7 +738,7 @@ def _load_saved(cfg, broker, state: _State, saved: dict) -> None:
             pos["plan"] = _plan_shim(pos)
             state.working = pos
             return
-        resume.mark_closed(cfg.state_dir)
+        resume.mark_closed(cfg.state_dir, live=cfg.ibkr_live)
         return
     if pos.get("fill_price"):
         pos["had_fill"] = True
@@ -781,9 +810,10 @@ def run_session(cfg, broker, approver=None, notifier=None) -> int:
     cfg.ensure_dirs()
     notifier = notifier or Notifier(cfg.home / "logs", toast=cfg.toast and cfg.mode == "live")
     approver = approver or ConsoleApprover()
-    out = Outputs(cfg.state_dir)
+    out = Outputs(cfg.state_dir, book="live" if cfg.ibkr_live else "paper")
     _connect(cfg, broker)
     try:
+        verified = _verify_ibkr(cfg, broker) if cfg.broker == "ibkr" else None
         now = broker.now()
         day = now.date()
         try:
@@ -797,8 +827,6 @@ def run_session(cfg, broker, approver=None, notifier=None) -> int:
             notifier.alert("Noon flat", f"{day} is {calendar_status['status']}. No trade.", toast=False)
             _write_report(cfg, out, day, calendar_status)
             return 0
-        if cfg.broker == "ibkr":
-            _assert_paper_accounts(broker)
         starter = getattr(broker, "start_streams", None)
         if callable(starter):
             try:
@@ -806,12 +834,12 @@ def run_session(cfg, broker, approver=None, notifier=None) -> int:
             except Exception:  # noqa: BLE001
                 log.exception("quote stream did not start")
                 return 1
-        account = _resolve_account(cfg, broker)
+        account = verified if verified is not None else _resolve_account(cfg, broker)
         state = _State()
-        if resume.already_filled(cfg.state_dir, day):
+        if resume.already_filled(cfg.state_dir, day, live=cfg.ibkr_live):
             log.info("already filled today; no second entry")
             state.done_for_day = True
-        saved = resume.load_open(cfg.state_dir, day)
+        saved = resume.load_open(cfg.state_dir, day, live=cfg.ibkr_live)
         if saved:
             _load_saved(cfg, broker, state, saved)
             if state.position and _filled(_safe_state(broker, state.position.get("tp_order_id"))):
