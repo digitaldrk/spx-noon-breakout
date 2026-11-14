@@ -1,4 +1,4 @@
-"""Paper port, machine broker, the IBKR live gate, and the live approval gate."""
+"""Paper port, machine broker, the IBKR live gate, and the in-process order guard."""
 import subprocess
 import sys
 from pathlib import Path
@@ -16,8 +16,6 @@ from spx_noon.config import (
 )
 from spx_noon.guard import GuardError, OrderGuard
 from spx_noon.ib import check_accounts, paper_send_allowed, send_allowed
-from spx_noon.schwab import SchwabBroker, build_vertical_order, execution_price
-from spx_noon.schwabapi import select_account
 
 ROOT = Path(__file__).resolve().parent.parent
 LIVE_ACCOUNT = "U7654321"
@@ -44,7 +42,7 @@ def test_mac_example_is_paper_port_and_ignores_a_broker_key(tmp_path, monkeypatc
     assert cfg.broker == "ibkr" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.port == 7497 and cfg.client_id == 41 and not cfg.live and not cfg.paper
     flipped = tmp_path / "config.json"
-    flipped.write_text('{"broker": "schwab", "mode": "dry", "port": 7497}')
+    flipped.write_text('{"broker": "tasty", "mode": "dry", "port": 7497}')
     assert load_config(flipped).broker == "ibkr"
 
 
@@ -56,7 +54,7 @@ def test_windows_example_stays_tasty_and_does_not_send(monkeypatch):
     cfg = load_config(ROOT / "config.windows.example.json")
     assert cfg.broker == "tasty" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
-    assert cfg.live is False and cfg.real_money is False and cfg.confirms_orders is False
+    assert cfg.live is False and cfg.real_money is False
     assert cfg.sends_orders() is False
 
 
@@ -105,9 +103,10 @@ def test_windows_live_is_off_unless_asked(monkeypatch):
     assert Config().broker == "tasty" and Config().mode == "dry" and not Config().live
     live = Config(mode="live")
     assert live.broker == "tasty" and live.live and live.sends_orders()
-    assert live.confirms_orders is False and live.real_money is False
-    with pytest.raises(SafetyError):
-        Config(broker="schwab", mode="live", account="").validate()
+    assert live.real_money is False
+    # an unknown broker is not a broker, whatever the mode says
+    with pytest.raises(SafetyError, match="Noon Breakout runs on Mac"):
+        Config(broker="nope", mode="live", account="").validate()
     with pytest.raises(SafetyError):
         Config(mode="paper").validate()
 
@@ -172,7 +171,7 @@ def test_ibkr_live_takes_only_the_two_live_ports_on_localhost(monkeypatch):
             _live_cfg(host=host).validate()
 
 
-def test_ibkr_live_sends_but_is_not_the_schwab_live_path(monkeypatch):
+def test_ibkr_live_sends_but_is_not_the_tasty_live_path(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     for port in LIVE_PORTS:
         cfg = _live_cfg(port=port)
@@ -180,8 +179,7 @@ def test_ibkr_live_sends_but_is_not_the_schwab_live_path(monkeypatch):
         assert cfg.dry_run is False
         assert cfg.sends_orders() is True
         assert cfg.ibkr_live is True
-        assert cfg.live is False          # no Schwab/tasty preview and no "yes" wait
-        assert cfg.confirms_orders is False
+        assert cfg.live is False          # no tastytrade preview-and-approve path
         assert cfg.real_money is False    # that flag stays tastytrade's
         assert cfg.paper is False
 
@@ -458,85 +456,6 @@ def test_paper_send_gate():
     with pytest.raises(SafetyError):
         paper_send_allowed(cfg, "DU123", "BRK-1")
     assert ORDER_PREFIX == "SPXNOON-"
-
-
-class _FakeSchwab:
-    def __init__(self):
-        self.placed = []
-        self.order_guard = None
-
-    def place_order(self, order, ticket_id):
-        self.order_guard.authorize("place", ticket_id)
-        self.placed.append(order)
-        return "9001"
-
-
-def _legs():
-    return [
-        ("SPXW  261028C06950000", 1),
-        ("SPXW  261028C06980000", -1),
-    ]
-
-
-def test_vertical_order_is_a_debit_and_the_exit_is_gtc():
-    opened = build_vertical_order(_legs(), "BUY", 1, 12.1, tif="DAY")
-    assert opened["complexOrderStrategyType"] == "VERTICAL"
-    assert opened["orderType"] == "NET_DEBIT"
-    assert opened["duration"] == "DAY"
-    assert opened["price"] == "12.10"
-    assert opened["orderLegCollection"][0]["instruction"] == "BUY_TO_OPEN"
-    assert opened["orderLegCollection"][1]["instruction"] == "SELL_TO_OPEN"
-    closed = build_vertical_order(_legs(), "SELL", 1, 15.7, tif="GTC")
-    assert closed["orderType"] == "NET_CREDIT"
-    assert closed["duration"] == "GOOD_TILL_CANCEL"
-    assert closed["orderLegCollection"][0]["instruction"] == "SELL_TO_CLOSE"
-
-
-def test_live_schwab_refuses_without_tod_approval(tmp_path):
-    cfg = Config(broker="schwab", mode="live", account="705", base_dir=str(tmp_path))
-    client = _FakeSchwab()
-    broker = SchwabBroker(cfg, client=client)
-    with pytest.raises((GuardError, SafetyError)):
-        broker.place_combo(_legs(), "BUY", 1, 12.10, "705", "SPXNOON-20261028-1")
-    assert client.placed == []
-    broker.approve_ticket("N120000", 12.10)
-    with pytest.raises(GuardError):
-        broker.place_combo(_legs(), "BUY", 1, 12.30, "705", "SPXNOON-20261028-1")
-    order_id = broker.place_combo(_legs(), "BUY", 1, 12.10, "705", "SPXNOON-20261028-1")
-    assert order_id == "9001"
-    assert client.placed[0]["orderType"] == "NET_DEBIT"
-    dry = SchwabBroker(Config(broker="schwab", mode="dry", account="705", base_dir=str(tmp_path / "dry")),
-                       client=_FakeSchwab())
-    with pytest.raises(SafetyError):
-        dry.place_combo(_legs(), "BUY", 1, 12.10, "705", "SPXNOON-20261028-1")
-
-
-def test_schwab_fill_comes_from_executions_not_the_limit():
-    order = {
-        "price": "12.10",
-        "filledQuantity": 1,
-        "orderLegCollection": [
-            {"legId": 1, "instruction": "BUY_TO_OPEN"},
-            {"legId": 2, "instruction": "SELL_TO_OPEN"},
-        ],
-        "orderActivityCollection": [{
-            "executionLegs": [
-                {"legId": 1, "price": 40.0, "quantity": 1},
-                {"legId": 2, "price": 28.2, "quantity": 1},
-            ],
-        }],
-    }
-    assert execution_price(order, "BUY") == 11.8
-
-
-def test_two_schwab_accounts_with_the_same_suffix_are_refused():
-    accounts = [
-        {"accountNumber": "111705", "hashValue": "aaa"},
-        {"accountNumber": "222705", "hashValue": "bbb"},
-    ]
-    with pytest.raises(RuntimeError, match="exactly one"):
-        select_account(accounts, "705")
-    assert select_account(accounts[:1], "705")["hashValue"] == "aaa"
 
 
 def test_guard_refuses_when_not_live():

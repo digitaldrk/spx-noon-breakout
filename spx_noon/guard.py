@@ -1,6 +1,7 @@
-"""Order guard for the live Schwab account.
+"""In-process order guard. Tastytrade builds one per live session.
 
-Every place / cancel must name a ticket id that Tod approved by typing `yes <id>`.
+Every place / cancel must name a ticket id this process approved after a clean
+preview, and may not price above that ticket's cap.
 Dry and alerts never get a guard with send permission: ``live=False`` refuses everything.
 At most 10 order requests per rolling minute.
 """
@@ -64,7 +65,7 @@ class OrderGuard:
         if not self.live:
             raise GuardError(f"{kind} refused: bot is not in live mode")
         if not ticket_id or ticket_id not in self.approved:
-            raise GuardError(f"{kind} refused: ticket {ticket_id!r} was not approved by Tod")
+            raise GuardError(f"{kind} refused: ticket {ticket_id!r} was never approved")
         if ticket_id in self.closed and kind == "place":
             raise GuardError(f"place refused: ticket {ticket_id} is finished")
         if order_id is not None and self.owner.get(str(order_id)) != ticket_id:
