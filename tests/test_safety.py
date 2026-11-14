@@ -1,4 +1,4 @@
-"""Paper port, machine broker, the IBKR live latch, and the live approval gate."""
+"""Paper port, machine broker, the IBKR live gate, and the live approval gate."""
 import subprocess
 import sys
 from pathlib import Path
@@ -6,8 +6,6 @@ from pathlib import Path
 import pytest
 
 from spx_noon.config import (
-    LIVE_ACCOUNT_ENV,
-    LIVE_ALLOW_ENV,
     LIVE_PORTS,
     ORDER_PREFIX,
     Config,
@@ -23,16 +21,8 @@ from spx_noon.schwabapi import select_account
 
 ROOT = Path(__file__).resolve().parent.parent
 LIVE_ACCOUNT = "U7654321"
-
-
-def _latch(monkeypatch, account=LIVE_ACCOUNT):
-    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
-    monkeypatch.setenv(LIVE_ACCOUNT_ENV, account)
-
-
-def _no_latch(monkeypatch):
-    monkeypatch.delenv(LIVE_ALLOW_ENV, raising=False)
-    monkeypatch.delenv(LIVE_ACCOUNT_ENV, raising=False)
+#: Retired. Nothing in the code reads these; setting them must change nothing.
+RETIRED_ENV = ("SPX_NOON_ALLOW_LIVE", "SPX_NOON_LIVE_ACCOUNT")
 
 
 def _live_cfg(port=7496, account=LIVE_ACCOUNT, **extra):
@@ -122,49 +112,53 @@ def test_windows_live_is_off_unless_asked(monkeypatch):
         Config(mode="paper").validate()
 
 
-def test_ibkr_live_refuses_unless_the_env_latch_is_exact(monkeypatch, tmp_path):
+def test_ibkr_live_needs_a_set_non_paper_account_in_the_config(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _no_latch(monkeypatch)
-    with pytest.raises(SafetyError, match=LIVE_ALLOW_ENV):
-        _live_cfg().validate()
-    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
-    with pytest.raises(SafetyError, match=LIVE_ACCOUNT_ENV):
-        _live_cfg().validate()
-    monkeypatch.setenv(LIVE_ACCOUNT_ENV, "U0000000")
-    with pytest.raises(SafetyError, match=LIVE_ACCOUNT_ENV):
-        _live_cfg().validate()
-    # no strip and no casefold on either variable
-    for allow in ("true", "yes", "1 ", " 1", "01", ""):
-        monkeypatch.setenv(LIVE_ALLOW_ENV, allow)
-        monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
-        with pytest.raises(SafetyError, match=LIVE_ALLOW_ENV):
-            _live_cfg().validate()
-    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
-    for account_env in (LIVE_ACCOUNT + " ", " " + LIVE_ACCOUNT, LIVE_ACCOUNT.lower()):
-        monkeypatch.setenv(LIVE_ACCOUNT_ENV, account_env)
-        with pytest.raises(SafetyError, match=LIVE_ACCOUNT_ENV):
-            _live_cfg().validate()
-    # a blank account, and a paper account even when the latch names that same id
-    _latch(monkeypatch, "")
-    with pytest.raises(SafetyError, match="account"):
-        _live_cfg(account="").validate()
-    _latch(monkeypatch, "DU123456")
-    with pytest.raises(SafetyError, match="paper account"):
-        _live_cfg(account="DU123456").validate()
-    # the file alone never enables real money
-    _no_latch(monkeypatch)
+    for account in ("", "   "):
+        with pytest.raises(SafetyError, match="account"):
+            _live_cfg(account=account).validate()
+    for account in ("DU123456", "D"):
+        with pytest.raises(SafetyError, match="paper account"):
+            _live_cfg(account=account).validate()
+    # the config file plus the TWS session is the whole switch
     path = _write(tmp_path, "live.json",
                   '{"mode": "live", "port": 7496, "account": "%s"}' % LIVE_ACCOUNT)
-    with pytest.raises(SafetyError):
-        load_config(path)
-    _latch(monkeypatch)
     cfg = load_config(path)
     assert cfg.broker == "ibkr" and cfg.mode == "live" and cfg.ibkr_live is True
+    assert cfg.account == LIVE_ACCOUNT and cfg.dry_run is False
+
+
+def test_the_retired_live_env_vars_neither_enable_nor_block_live(monkeypatch, tmp_path):
+    """Nothing reads SPX_NOON_ALLOW_LIVE or SPX_NOON_LIVE_ACCOUNT any more."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    path = _write(tmp_path, "live.json",
+                  '{"mode": "live", "port": 7496, "account": "%s"}' % LIVE_ACCOUNT)
+    for values in ((), ("1", LIVE_ACCOUNT), ("0", "U0000000"), ("", "")):
+        for name in RETIRED_ENV:
+            monkeypatch.delenv(name, raising=False)
+        for name, value in zip(RETIRED_ENV, values):
+            monkeypatch.setenv(name, value)
+        cfg = load_config(path)
+        assert cfg.ibkr_live is True and cfg.sends_orders() is True
+        assert cfg.real_money_flag == "YES"
+        assert check_accounts(cfg, [LIVE_ACCOUNT]) == LIVE_ACCOUNT
+        send_allowed(cfg, LIVE_ACCOUNT, "SPXNOON-20261112-1")
+        # and they never loosen a config that is not live
+        dry = Config(broker="ibkr", mode="dry", account=LIVE_ACCOUNT)
+        dry.validate()
+        assert dry.ibkr_live is False and dry.sends_orders() is False
+
+
+def test_the_live_env_names_appear_nowhere_in_the_code():
+    paths = [ROOT / "run.sh", ROOT / "run_wrap.sh", *(ROOT / "spx_noon").glob("*.py"),
+             *(ROOT / "deploy").glob("*"), ROOT / "config.example.json"]
+    blob = "\n".join(path.read_text() for path in paths if path.is_file())
+    for name in RETIRED_ENV:
+        assert name not in blob
 
 
 def test_ibkr_live_takes_only_the_two_live_ports_on_localhost(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     assert LIVE_PORTS == (7496, 4001)
     for port in LIVE_PORTS:
         cfg = _live_cfg(port=port)
@@ -178,9 +172,8 @@ def test_ibkr_live_takes_only_the_two_live_ports_on_localhost(monkeypatch):
             _live_cfg(host=host).validate()
 
 
-def test_latched_ibkr_live_sends_but_is_not_the_schwab_live_path(monkeypatch):
+def test_ibkr_live_sends_but_is_not_the_schwab_live_path(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     for port in LIVE_PORTS:
         cfg = _live_cfg(port=port)
         cfg.validate()
@@ -193,21 +186,8 @@ def test_latched_ibkr_live_sends_but_is_not_the_schwab_live_path(monkeypatch):
         assert cfg.paper is False
 
 
-def test_ibkr_live_flags_go_dark_when_the_latch_is_dropped(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
-    cfg = _live_cfg()
-    cfg.validate()
-    assert cfg.ibkr_live and cfg.sends_orders()
-    _no_latch(monkeypatch)
-    assert cfg.ibkr_live is False
-    assert cfg.sends_orders() is False
-    assert cfg.real_money_flag == "NO"
-
-
 def test_paper_stays_on_7497_and_keeps_its_d_account(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)  # the latch must not loosen paper
     Config(broker="ibkr", mode="paper", port=7497).validate()
     for port in (7496, 4001):
         with pytest.raises(SafetyError, match="paper port"):
@@ -226,7 +206,6 @@ def test_paper_stays_on_7497_and_keeps_its_d_account(monkeypatch):
 
 def test_dry_and_alerts_keep_the_paper_port_and_never_send(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     for mode in ("dry", "alerts"):
         cfg = Config(broker="ibkr", mode=mode, account=LIVE_ACCOUNT, dry_run=False)
         cfg.validate()
@@ -239,9 +218,8 @@ def test_dry_and_alerts_keep_the_paper_port_and_never_send(monkeypatch):
             Config(broker="ibkr", mode=mode, port=7496).validate()
 
 
-def test_banner_says_real_money_only_for_latched_ibkr_live(monkeypatch):
+def test_banner_says_real_money_only_for_ibkr_live(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     live = _live_cfg()
     live.validate()
     assert startup_banner(live, LIVE_ACCOUNT) == \
@@ -256,13 +234,12 @@ def test_banner_says_real_money_only_for_latched_ibkr_live(monkeypatch):
     for mode in ("dry", "alerts"):
         cfg = Config(broker="ibkr", mode=mode, account="DU999001")
         assert startup_banner(cfg, "DU999001").endswith("REAL MONEY=NO")
-    _no_latch(monkeypatch)
-    assert startup_banner(live, LIVE_ACCOUNT).endswith("REAL MONEY=NO")
+    tasty = Config(broker="tasty", mode="live", account="705")
+    assert startup_banner(tasty, "705").endswith("REAL MONEY=NO")
 
 
 def test_ibkr_order_log_lines_carry_the_flag_and_other_brokers_do_not(monkeypatch, caplog):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     live = _live_cfg()
     live.validate()
     with caplog.at_level("INFO"):
@@ -277,7 +254,6 @@ def test_ibkr_order_log_lines_carry_the_flag_and_other_brokers_do_not(monkeypatc
 
 def test_account_verifier_needs_no_socket(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     live = _live_cfg()
     live.validate()
     assert check_accounts(live, [LIVE_ACCOUNT]) == LIVE_ACCOUNT
@@ -288,14 +264,11 @@ def test_account_verifier_needs_no_socket(monkeypatch):
         check_accounts(live, ["U1111111"])
     with pytest.raises(SafetyError, match="paper account"):
         check_accounts(live, [LIVE_ACCOUNT, "DU999001"])
-    # a D account in live mode is refused even when the latch names it
-    _latch(monkeypatch, "DU999001")
-    with pytest.raises(SafetyError):
+    # a D account in live mode is refused even though validate() would have caught it
+    with pytest.raises(SafetyError, match="paper"):
         check_accounts(_live_cfg(account="DU999001"), ["DU999001"])
-    # losing the latch mid-session is a mismatch, not a reconnect
-    _no_latch(monkeypatch)
-    with pytest.raises(SafetyError, match="not latched"):
-        check_accounts(live, [LIVE_ACCOUNT])
+    with pytest.raises(SafetyError, match="account"):
+        check_accounts(_live_cfg(account=""), [LIVE_ACCOUNT])
     paper = Config(broker="ibkr", mode="paper", account="DU999001")
     assert check_accounts(paper, ["DU999001"]) == "DU999001"
     with pytest.raises(SafetyError, match="non-paper") as err:
@@ -307,7 +280,6 @@ def test_account_verifier_needs_no_socket(monkeypatch):
 
 def test_live_send_gate(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     live = _live_cfg()
     live.validate()
     send_allowed(live, LIVE_ACCOUNT, "SPXNOON-20261112-1")
@@ -324,9 +296,14 @@ def test_live_send_gate(monkeypatch):
     off_host = _live_cfg(host="1.2.3.4")
     with pytest.raises(SafetyError, match="localhost"):
         send_allowed(off_host, LIVE_ACCOUNT, "SPXNOON-20261112-1")
-    _no_latch(monkeypatch)
-    with pytest.raises(SafetyError, match="not latched"):
-        send_allowed(live, LIVE_ACCOUNT, "SPXNOON-20261112-1")
+    blank = _live_cfg(account="")
+    with pytest.raises(SafetyError, match="account"):
+        send_allowed(blank, "", "SPXNOON-20261112-1")
+    # a live config that was turned dry after construction cannot send
+    dried = _live_cfg()
+    dried.dry_run = True
+    with pytest.raises(SafetyError, match="not IBKR live"):
+        send_allowed(dried, LIVE_ACCOUNT, "SPXNOON-20261112-1")
 
 
 class _FakeIB:
@@ -374,7 +351,6 @@ def _broker(cfg, accounts):
 
 def test_connect_dials_the_validated_port_and_verifies_before_trading(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     for port in LIVE_PORTS:
         cfg = _live_cfg(port=port)
         cfg.validate()
@@ -394,7 +370,6 @@ def test_connect_dials_the_validated_port_and_verifies_before_trading(monkeypatc
 
 def test_connect_closes_the_socket_on_an_account_mismatch(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     cfg = _live_cfg()
     cfg.validate()
     for reported in (["U1111111"], [LIVE_ACCOUNT, "DU999001"], []):
@@ -414,7 +389,6 @@ def test_connect_closes_the_socket_on_an_account_mismatch(monkeypatch):
 def test_reconnect_reverifies_and_a_mismatch_is_not_a_dropped_connection(monkeypatch):
     from spx_noon.runner import _connect
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     cfg = _live_cfg(connect_retries=6)
     cfg.validate()
     broker = _broker(cfg, [LIVE_ACCOUNT])
@@ -450,7 +424,6 @@ def test_an_account_id_never_reaches_a_log_line(monkeypatch, tmp_path):
 
     from spx_noon.config import redact_account
     monkeypatch.setattr(sys, "platform", "darwin")
-    _latch(monkeypatch)
     cfg = _live_cfg()
     cfg.validate()
     path = tmp_path / "bot.log"
@@ -574,102 +547,175 @@ def test_guard_refuses_when_not_live():
         guard.authorize("place", "N120000")
 
 
-PAPER_LABELS = ("com.derek.spxnoon.plist", "com.derek.spxnoon.wrap.plist")
-LIVE_LABELS = ("com.derek.spxnoon.live.plist", "com.derek.spxnoon.live.wrap.plist")
+INSTALLED_LABELS = ("com.derek.spxnoon.plist", "com.derek.spxnoon.wrap.plist")
+RETIRED_LABELS = ("com.derek.spxnoon.live", "com.derek.spxnoon.live.wrap")
 
 
-def _launchd(tmp_path, *args, account=None):
-    """Run deploy/install_launchd.sh against a throwaway HOME with stub launchctl/plutil."""
+def _launchd(tmp_path, *args, script="install_launchd.sh", already=()):
+    """Run a deploy script against a throwaway HOME with stub launchctl/plutil.
+
+    ``already`` pre-seeds plist names, standing in for an older install.
+    """
     stub = tmp_path / "bin"
     stub.mkdir(parents=True)
+    booted = stub / "booted.txt"
     for name in ("launchctl", "plutil"):
         tool = stub / name
         tool.write_text("#!/bin/bash\nexit 0\n")
         tool.chmod(0o755)
+    # record what launchctl was asked to bootout so removal is checked, not assumed
+    (stub / "launchctl").write_text(
+        f'#!/bin/bash\nif [ "${{1:-}}" = "bootout" ]; then echo "$3" >> {booted}; fi\nexit 0\n')
+    (stub / "launchctl").chmod(0o755)
     home = tmp_path / "home"
-    home.mkdir(parents=True)
+    agents = home / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    for name in already:
+        (agents / name).write_text("<plist/>\n")
     env = {
         "HOME": str(home),
         "PATH": f"{stub}:/usr/bin:/bin",
         "SHELL": "/bin/bash",
     }
-    if account is not None:
-        env[LIVE_ACCOUNT_ENV] = account
     done = subprocess.run(
-        ["/bin/bash", str(ROOT / "deploy" / "install_launchd.sh"), *args],
+        ["/bin/bash", str(ROOT / "deploy" / script), *args],
         env=env, capture_output=True, text=True,
     )
-    agents = home / "Library" / "LaunchAgents"
-    installed = sorted(path.name for path in agents.glob("*.plist")) if agents.exists() else []
+    installed = sorted(path.name for path in agents.glob("*.plist"))
+    done.booted_out = booted.read_text().splitlines() if booted.exists() else []
     return done, installed, agents
 
 
-def test_no_arg_install_only_touches_the_paper_jobs(tmp_path):
+def test_no_arg_install_is_the_only_install_and_it_is_the_one_pair(tmp_path):
     done, installed, agents = _launchd(tmp_path)
     assert done.returncode == 0, done.stderr
-    assert installed == sorted(PAPER_LABELS)
-    for name in PAPER_LABELS:
-        text = (agents / name).read_text()
+    assert installed == sorted(INSTALLED_LABELS)
+    session = (agents / "com.derek.spxnoon.plist").read_text()
+    wrap = (agents / "com.derek.spxnoon.wrap.plist").read_text()
+    for text in (session, wrap):
         assert "spxnoon.live" not in text
-        assert LIVE_ALLOW_ENV not in text
-    assert "run.sh</string>" in (agents / PAPER_LABELS[0]).read_text()
+        assert "__HOME__" not in text
+        for name in RETIRED_ENV:
+            assert name not in text
+    # the 11:45 job runs run.sh with no mode and the 16:20 job run_wrap.sh with no book
+    assert "run.sh</string>" in session and "<string>live</string>" not in session
+    assert "run_wrap.sh</string>" in wrap and "<string>live</string>" not in wrap
 
 
-def test_install_live_adds_new_labels_and_leaves_the_paper_plists_alone(tmp_path):
-    done, installed, agents = _launchd(tmp_path, "live", account=LIVE_ACCOUNT)
+def test_install_rejects_live_and_any_other_argument(tmp_path):
+    for index, args in enumerate((("live",), ("bogus",), ("", ), ("live", "wrap"))):
+        done, installed, _agents = _launchd(tmp_path / f"case{index}", *args)
+        assert done.returncode == 2, done.stdout
+        assert installed == []
+        assert "usage: install_launchd.sh" in done.stderr
+
+
+def test_install_boots_out_a_live_pair_an_older_install_left_behind(tmp_path):
+    """Two 11:45 jobs on one client id is the thing this consolidation removes."""
+    stale = [f"{label}.plist" for label in RETIRED_LABELS]
+    done, installed, agents = _launchd(tmp_path, already=stale)
     assert done.returncode == 0, done.stderr
-    assert installed == sorted(LIVE_LABELS)
-    session = (agents / "com.derek.spxnoon.live.plist").read_text()
-    assert "<string>live</string>" in session and "run.sh" in session
-    assert f"<key>{LIVE_ALLOW_ENV}</key><string>1</string>" in session
-    assert LIVE_ACCOUNT in session and "__LIVE_ACCOUNT__" not in session
-    wrap = (agents / "com.derek.spxnoon.live.wrap.plist").read_text()
-    assert "run_wrap.sh" in wrap and "<string>live</string>" in wrap
-    assert "did NOT disable the paper job" in done.stdout
-    assert "Candle" in done.stdout and "Fly" in done.stdout
+    assert installed == sorted(INSTALLED_LABELS)
+    for name in stale:
+        assert not (agents / name).exists()
+        assert str(agents / name) in done.booted_out
+        assert f"removed retired {agents / name}" in done.stdout
 
 
-def test_install_live_refuses_a_missing_or_paper_account(tmp_path):
-    done, installed, _agents = _launchd(tmp_path, "live")
-    assert done.returncode == 2 and installed == []
-    assert LIVE_ACCOUNT_ENV in done.stderr
-    done, installed, _agents = _launchd(tmp_path / "b", "live", account="")
-    assert done.returncode == 2 and installed == []
-    done, installed, _agents = _launchd(tmp_path / "c", "live", account="DU999001")
-    assert done.returncode == 2 and installed == []
-    assert "paper account" in done.stderr
-    done, installed, _agents = _launchd(tmp_path / "d", "bogus")
-    assert done.returncode == 2 and installed == []
+def test_install_rejecting_an_argument_leaves_an_older_install_alone(tmp_path):
+    """The usage exit happens before anything is booted out or written."""
+    stale = [f"{label}.plist" for label in RETIRED_LABELS]
+    done, installed, _agents = _launchd(tmp_path, "live", already=stale)
+    assert done.returncode == 2
+    assert installed == sorted(stale)
+    assert done.booted_out == []
 
 
-def test_uninstall_covers_both_pairs():
+def test_uninstall_removes_both_pairs_and_skips_what_is_not_there(tmp_path):
+    present = ["com.derek.spxnoon.plist", f"{RETIRED_LABELS[0]}.plist"]
+    done, installed, agents = _launchd(tmp_path, script="uninstall_launchd.sh", already=present)
+    assert done.returncode == 0, done.stderr
+    assert installed == []
+    assert sorted(done.booted_out) == sorted(str(agents / name) for name in present)
+    assert "com.derek.spxnoon.wrap.plist" not in done.stdout
+
+
+def test_no_live_plist_templates_remain():
+    names = sorted(path.name for path in (ROOT / "deploy").glob("*.template"))
+    assert names == ["com.derek.spxnoon.plist.template", "com.derek.spxnoon.wrap.plist.template"]
+    blob = "\n".join(path.read_text() for path in (ROOT / "deploy").glob("*"))
+    assert "__LIVE_ACCOUNT__" not in blob
+    assert LIVE_ACCOUNT not in blob
+
+
+def test_uninstall_still_cleans_up_the_retired_live_labels():
     text = (ROOT / "deploy" / "uninstall_launchd.sh").read_text()
-    for label in ("com.derek.spxnoon", "com.derek.spxnoon.wrap",
-                  "com.derek.spxnoon.live", "com.derek.spxnoon.live.wrap"):
+    for label in ("com.derek.spxnoon", "com.derek.spxnoon.wrap", *RETIRED_LABELS):
         assert label in text
-
-
-def test_live_templates_carry_no_real_account_id():
-    for name in ("com.derek.spxnoon.live.plist.template",
-                 "com.derek.spxnoon.live.wrap.plist.template"):
-        text = (ROOT / "deploy" / name).read_text()
-        assert "__LIVE_ACCOUNT__" in text
-        assert "__HOME__" in text
-        assert LIVE_ACCOUNT not in text
 
 
 def _code_lines(text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
 
 
-def test_run_scripts_pass_the_mode_and_the_book_but_never_the_latch():
+def _launcher(tmp_path, script, *args):
+    """Run run.sh / run_wrap.sh with a stub interpreter that echoes its arguments."""
+    base = tmp_path / "base"
+    (base / ".venv" / "bin").mkdir(parents=True)
+    python = base / ".venv" / "bin" / "python"
+    python.write_text('#!/bin/bash\necho "ARGS: $*"\n')
+    python.chmod(0o755)
+    done = subprocess.run(
+        ["/bin/bash", str(ROOT / script), *args],
+        env={"HOME": str(tmp_path), "SPX_NOON_HOME": str(base),
+             "PATH": "/usr/bin:/bin", "SHELL": "/bin/bash"},
+        capture_output=True, text=True,
+    )
+    return done, base
+
+
+@pytest.mark.skipif(not Path("/usr/bin/caffeinate").exists(), reason="macOS launcher")
+def test_the_wrap_launcher_forwards_a_book_only_when_one_is_asked_for(tmp_path):
+    """The 16:20 job runs this bare, so it must not force --book paper."""
+    done, _base = _launcher(tmp_path / "bare", "run_wrap.sh")
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "ARGS: -m spx_noon wrap"
+    for book in ("paper", "live"):
+        done, _base = _launcher(tmp_path / book, "run_wrap.sh", book, "--now")
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip() == f"ARGS: -m spx_noon wrap --book {book} --now"
+
+
+@pytest.mark.skipif(not Path("/usr/bin/caffeinate").exists(), reason="macOS launcher")
+def test_the_session_launcher_forwards_a_mode_only_when_one_is_asked_for(tmp_path):
+    """The 11:45 job runs this bare, so config.json mode is what runs."""
+    import datetime as _dt
+    if _dt.date.today().isoweekday() > 5:
+        pytest.skip("run.sh does not launch on a weekend")
+
+    def logged(done, base):
+        assert done.returncode == 0, done.stderr
+        log = next((base / "state").glob("run_*.log")).read_text()
+        return [line for line in log.splitlines() if line.startswith("ARGS: ")]
+
+    done, base = _launcher(tmp_path / "bare", "run.sh")
+    assert logged(done, base) == [f"ARGS: -m spx_noon --config {base}/config.json"]
+    for mode in ("paper", "dry", "alerts", "live"):
+        done, base = _launcher(tmp_path / mode, "run.sh", mode)
+        assert logged(done, base) == [
+            f"ARGS: -m spx_noon --config {base}/config.json --mode {mode}"]
+
+
+def test_run_scripts_override_the_mode_and_the_book_for_one_launch():
     run_sh = (ROOT / "run.sh").read_text()
     assert "paper|dry|alerts|live" in run_sh
-    code = _code_lines(run_sh)
-    assert LIVE_ALLOW_ENV not in code and LIVE_ACCOUNT_ENV not in code
     wrap_sh = (ROOT / "run_wrap.sh").read_text()
     assert "--book" in wrap_sh and "live|paper" in wrap_sh
-    assert LIVE_ALLOW_ENV not in _code_lines(wrap_sh)
+    for code in (_code_lines(run_sh), _code_lines(wrap_sh)):
+        for name in RETIRED_ENV:
+            assert name not in code
+        # neither script forces a mode or a book when launchd runs it bare
+        assert "--mode live" not in code and "--book paper" not in code
 
 
 def test_package_does_not_import_candle_or_fly():

@@ -3,8 +3,10 @@
 <!--
   Noon Breakout — weekdays 11:45 local time. launchd uses the Mac's local clock, which is
   America/New_York on Derek's Mac, so this is 11:45 AM ET. __HOME__ is replaced by install_launchd.sh.
-  The job runs run.sh, which follows config.json. The example config is dry.
-  Pass paper by setting the mode in config.json, or run ./run.sh paper by hand.
+  The job runs run.sh with no mode argument, so it follows config.json. The example config
+  is dry. This is the only 11:45 job: paper is mode paper on port 7497 with a D account,
+  live is mode live on port 7496 (TWS) or 4001 (IB Gateway) with a non-D account, and TWS
+  has to be logged into that session. ./run.sh paper and ./run.sh live are one-shot overrides.
 -->
 <plist version="1.0">
 <dict>

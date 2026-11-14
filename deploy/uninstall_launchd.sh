@@ -1,5 +1,6 @@
 #!/bin/bash
-# Removes the paper/dry labels and, when present, the real-money live labels.
+# Removes the two Noon Breakout labels, plus the retired com.derek.spxnoon.live pair
+# when an older install left those plists on disk. Nothing installs that pair any more.
 set -euo pipefail
 for label in com.derek.spxnoon com.derek.spxnoon.wrap \
              com.derek.spxnoon.live com.derek.spxnoon.live.wrap; do

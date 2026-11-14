@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from spx_noon.broker import SimBroker
-from spx_noon.config import LIVE_ACCOUNT_ENV, LIVE_ALLOW_ENV, Config
+from spx_noon.config import Config
 from spx_noon.pricing import trade_pnl
 from spx_noon.logbook import Outputs
 from spx_noon.notify import Notifier
@@ -152,8 +152,6 @@ def _live_cfg(tmp, **extra):
 
 def test_ibkr_live_keeps_its_own_book_position_file_and_report(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
-    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
     cfg = _live_cfg(tmp_path)
     cfg.validate()
     assert cfg.ibkr_live is True and cfg.live is False and cfg.sends_orders() is True
@@ -179,8 +177,6 @@ def test_ibkr_live_keeps_its_own_book_position_file_and_report(tmp_path, monkeyp
 
 def test_a_paper_position_file_cannot_be_flattened_on_the_live_account(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
-    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
     cfg = _live_cfg(tmp_path)
     cfg.ensure_dirs()
     from spx_noon.resume import save
@@ -202,8 +198,6 @@ def test_a_paper_position_file_cannot_be_flattened_on_the_live_account(tmp_path,
 
 def test_a_live_session_banner_prints_on_a_day_that_will_not_trade(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
-    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
     start = datetime(2026, 11, 26, 11, 50, tzinfo=ET)  # Thanksgiving
     bars = [Bar(datetime(2026, 11, 25, 10, 0, tzinfo=ET), 1, 2, 1, 1)]
     broker = SimBroker(start, bars, _quotes("target"), spot=7000, account=LIVE_ACCOUNT)
@@ -216,8 +210,6 @@ def test_a_live_session_banner_prints_on_a_day_that_will_not_trade(tmp_path, mon
 def test_a_live_session_stops_on_an_account_mismatch(tmp_path, monkeypatch):
     from spx_noon.config import SafetyError
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
-    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
     start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
     for reported in ("U1111111", "DU999001"):
         broker = SimBroker(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000,
@@ -230,8 +222,6 @@ def test_a_live_session_stops_on_an_account_mismatch(tmp_path, monkeypatch):
 
 def test_the_live_position_file_blocks_a_second_live_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
-    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
     cfg = _live_cfg(tmp_path)
     cfg.ensure_dirs()
     from spx_noon.resume import save
@@ -248,8 +238,6 @@ def test_the_live_position_file_blocks_a_second_live_entry(tmp_path, monkeypatch
 
 def test_a_live_restart_manages_the_open_live_spread(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
-    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
     cfg = _live_cfg(tmp_path)
     cfg.ensure_dirs()
     entry = datetime(2026, 10, 28, 12, 0, tzinfo=ET)
@@ -300,17 +288,15 @@ def test_the_paper_and_live_wraps_never_see_each_other_s_rows(tmp_path, monkeypa
     paper_text = (tmp_path / "reports" / f"wrap-{today.isoformat()}.md").read_text()
     assert "CALL" in paper_text and "PUT" not in paper_text
     assert "trades.csv" in paper_text and "trades-live.csv" not in paper_text
-    # --book live works while the config is still dry on the paper port, with no latch
+    # --book live works while the config is still dry on the paper port
     assert wrap_main(["--config", str(path), "--now", "--book", "live"]) == 0
     live_text = (tmp_path / "reports" / f"wrap-live-{today.isoformat()}.md").read_text()
     assert "PUT" in live_text and "CALL" not in live_text
     assert "trades-live.csv" in live_text
 
 
-def test_wrap_with_no_book_follows_a_latched_live_config(tmp_path, monkeypatch):
+def test_wrap_with_no_book_follows_a_live_config(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setenv(LIVE_ALLOW_ENV, "1")
-    monkeypatch.setenv(LIVE_ACCOUNT_ENV, LIVE_ACCOUNT)
     path = _wrap_config(tmp_path, mode="live", port=7496, account=LIVE_ACCOUNT)
     today = datetime.now(ET).date()
     Outputs(tmp_path / "state", book="live").append_trade(
