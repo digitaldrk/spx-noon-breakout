@@ -1,0 +1,22 @@
+# The Dockerfile copies named paths, and nothing here may reach a layer anyway.
+*
+!pyproject.toml
+!spx_noon/
+!config.render.example.json
+
+# Belt and braces: never ship a real config, a credential, or local state.
+config.json
+config.json.bak
+secrets/
+tokens.json
+.env
+.sb_secret
+.sb_refresh
+.prod_secret
+.prod_refresh
+state/
+logs/
+reports/
+.venv/
+**/__pycache__/
+**/*.pyc
