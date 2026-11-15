@@ -62,13 +62,6 @@ own edits to `/data/config.json` are still read first and are never overwritten.
 The Mac and Windows launchers keep `SPX_NOON_HOME` and `SPX_NOON_CONFIG`. This
 worker does not read them.
 
-Five of these variables used to carry the bot prefix. If `SPX_NOON_BROKER`,
-`SPX_NOON_MODE`, `SPX_NOON_TASTY_DATA`, `SPX_NOON_TASTY_ORDERS`, or
-`SPX_NOON_ACCOUNT` is still set in the dashboard while its new name
-(`BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `TASTY_ACCOUNT`) is unset, the
-worker refuses to start and names the one to set: the old value is never used,
-and the default would decide whether real orders go out.
-
 A push to `main` deploys itself, but only once the checks are green.
 `autoDeployTrigger: checksPass` in `render.yaml` tells Render to wait for the
 two GitHub checks on that commit, `test` and `docker`
