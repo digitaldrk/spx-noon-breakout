@@ -127,13 +127,11 @@ def _broker(tmp_path, *, orders="sandbox", data="production", mode="live", cap=1
     return broker, transport
 
 
-def test_aliases_and_windows_auto(monkeypatch):
+def test_aliases_and_a_missing_broker_is_refused():
     assert resolve_broker("tasty") == resolve_broker("tt") == resolve_broker("tastytrade") == "tasty"
-    monkeypatch.setattr(sys, "platform", "win32")
-    assert resolve_broker("auto") == "tasty"
-    assert resolve_broker(None) == "tasty"
-    monkeypatch.setattr(sys, "platform", "darwin")
-    assert resolve_broker("auto") == "ibkr"
+    for missing in ("auto", "", None):
+        with pytest.raises(SafetyError, match="broker must be set"):
+            resolve_broker(missing)
     # the alias table is the whole list of brokers. A retired one is not on it,
     # and anything that is not on it is refused rather than guessed at.
     assert sorted(_BROKER_ALIASES) == ["ibkr", "sim", "tasty", "tastytrade", "tt"]
@@ -157,12 +155,11 @@ def test_config_defaults_and_rejects_a_mismatch(tmp_path, monkeypatch):
         Config(broker="tasty", mode="dry", tasty_data="sandbox", tasty_orders="production").validate()
     with pytest.raises(SafetyError):
         Config(broker="tasty", mode="dry", max_orders_per_min=11).validate()
-    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("TASTYTRADE_ORDERS", "production")
     monkeypatch.setenv("tasty_allow_production_orders", "1")
     path = tmp_path / "bare.json"
     path.write_text('{"mode": "dry", "broker": "ibkr"}')
-    loaded = load_config(path)
+    loaded = load_config(path, broker="tasty")
     assert loaded.broker == "tasty"
     assert loaded.tasty_orders == "sandbox"
     assert loaded.tasty_data == "production"

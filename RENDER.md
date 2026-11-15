@@ -45,14 +45,14 @@ and need no typing:
 | --- | --- | --- | --- |
 | `DATA` | `/data` | any path | the disk: `config.json`, `state/`, `logs/`, `reports/` |
 | `PYTHONUNBUFFERED` | — | `1` | log lines appear as they happen |
-| `BROKER` | `tasty` | `tasty`, `tt`, `tastytrade` | anything else, `ibkr` included, refuses to start |
+| `BROKER` | refuses to start | `tasty`, `tt`, `tastytrade` | required. The blueprint sets `tasty`. Anything else, `ibkr` included, refuses to start |
 | `MODE` | `live` | `live`, `dry`, `alerts` | `live` transmits; `dry` and `alerts` send nothing |
 | `TASTY_DATA` | `production` | `production`, `sandbox` | the quotes, bars, chain, and greeks host |
 | `TASTY_ORDERS` | `sandbox` | `sandbox`, `production` | the order host. `production` is real money |
 | `TASTY_ACCOUNT` | the file's account | any account id, or blank | blank is the first account on the order session |
 
-`BROKER=tasty` is in the blueprint for a reason: on Linux the automatic broker is
-IBKR, and the worker refuses to start if the broker resolves to anything else.
+`BROKER` is required. The blueprint sets `BROKER=tasty`. A missing value refuses
+to start, and so does any broker other than tastytrade.
 
 These six win over `/data/config.json`. The worker resolves them once at boot,
 writes the result to `/data/state/service-config.json`, and points the session

@@ -12,7 +12,7 @@ Mac and Windows launchers keep ``SPX_NOON_HOME`` and ``SPX_NOON_CONFIG``; this
 process reads neither. ``DATA`` is the mounted disk, not the Unix ``HOME``.
 
   ``DATA``          disk mount, default ``/data``  -> ``base_dir`` for the children
-  ``BROKER``        tasty (tt, tastytrade); anything else is refused
+  ``BROKER``        required: tasty (tt, tastytrade); anything else is refused
   ``MODE``          live (default) | dry | alerts
   ``TASTY_DATA``    production (default) | sandbox
   ``TASTY_ORDERS``  sandbox (default) | production  <- real money, with production data
@@ -25,8 +25,8 @@ environment that still carries one of the retired ``SPX_NOON_*`` names without
 the new one refuses to start, naming the new variable: an operator who renamed
 nothing must not get the default instead of what they set.
 
-The broker has to resolve to tastytrade or the worker refuses to start: on Linux
-``auto`` is IBKR, so the children are launched with ``--broker tasty``.
+``BROKER`` has to be set, and it has to resolve to tastytrade. The children are
+launched with that broker on the command line. Nothing is inferred from Linux.
 
 Log lines are plain and start with one of ``boot``, ``waiting``, ``running``,
 ``done``, ``skip``, ``restart``, or ``error``.
@@ -102,7 +102,7 @@ CHILD_GRACE_S = 10.0
 #: A child that starts after the wrap hour still gets this long to finish.
 LATE_CHILD_GRACE = timedelta(minutes=40)
 
-#: Linux ``auto`` is IBKR, so the broker is on the command line, not in the file.
+#: The children are told the broker on the command line. A file cannot name one.
 SESSION_ARGV = ("-m", "spx_noon", "--broker", BROKER)
 WRAP_ARGV = ("-m", "spx_noon", "wrap", "--now", "--broker", BROKER)
 
@@ -164,7 +164,9 @@ def env_overrides(env=None) -> dict:
     mode = (env.get("MODE") or "").strip().lower() or "live"
     if mode not in MODES:
         raise SafetyError(f"MODE must be live, dry, or alerts (got {mode!r})")
-    broker = (env.get("BROKER") or "").strip().lower() or BROKER
+    broker = (env.get("BROKER") or "").strip().lower()
+    if not broker:
+        raise SafetyError("BROKER must be set to tasty, tt, or tastytrade")
     if broker not in TASTY_BROKERS:
         raise SafetyError(
             f"BROKER must be tasty, tt, or tastytrade on this worker (got {broker!r})")

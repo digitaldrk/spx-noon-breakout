@@ -883,8 +883,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="spx_noon")
     parser.add_argument("--config", default=None)
     parser.add_argument("--mode", choices=["dry", "alerts", "paper", "live"], default=None)
-    parser.add_argument("--broker", default="auto",
-                        help="auto, tasty, tt, tastytrade, or ibkr. auto is tastytrade on Windows.")
+    parser.add_argument("--broker", default=None,
+                        help="ibkr, tasty, tt, or tastytrade. Required. Nothing is inferred.")
     args = parser.parse_args(argv)
     overrides = {}
     if args.mode:

@@ -2,7 +2,7 @@
 
 This is the Windows machine. A Mac runs IBKR paper through `run.sh` and `deploy/install_launchd.sh`, using `config.example.json`. On this PC, copy `config.windows.example.json` to `config.json`.
 
-`auto` on Windows is tastytrade. Quotes, 15-minute bars, 1-minute bars, the SPXW chain, greeks, and orders all come from tastytrade. Tastytrade is the only broker this PC runs.
+`run_session.ps1` passes `--broker tasty`. Quotes, 15-minute bars, 1-minute bars, the SPXW chain, greeks, and orders all come from tastytrade. Tastytrade is the only broker this PC runs.
 
 ## What it does
 

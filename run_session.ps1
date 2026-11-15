@@ -1,12 +1,12 @@
 # Noon Breakout on Windows against tastytrade. Default is dry: nothing is transmitted.
-#   .\run_session.ps1                         dry, broker auto (tastytrade)
+#   .\run_session.ps1                         dry, broker tasty
 #   .\run_session.ps1 -Mode alerts            ticket + toast, nothing transmitted
 #   .\run_session.ps1 -Mode live              send to tasty_orders (sandbox unless config says production)
 # Keeps Windows awake while the bot runs and restores normal sleep on exit.
 # Tastytrade live auto-approves. Price caps and the 10/min limit still apply.
 param(
     [ValidateSet("live", "alerts", "dry")][string]$Mode = "dry",
-    [ValidateSet("auto", "tasty", "tt", "tastytrade")][string]$Broker = "auto"
+    [ValidateSet("tasty", "tt", "tastytrade")][string]$Broker = "tasty"
 )
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot

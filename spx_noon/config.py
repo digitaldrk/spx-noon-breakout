@@ -1,6 +1,8 @@
-"""Configuration. The computer picks the broker. A config file cannot.
+"""Configuration. The launcher names the broker. A config file cannot.
 
-Mac (darwin) is IBKR TWS. There is one job and one config: ``mode``, ``port``,
+The Mac job passes ``ibkr``. The Windows job passes ``tasty``. The Render worker
+requires ``BROKER``. Nothing here looks at the operating system and picks one.
+Mac runs IBKR TWS. There is one job and one config: ``mode``, ``port``,
 and ``account`` are the switch, together with the TWS session the operator is
 logged into. mode "paper" is 127.0.0.1:7497 with account ids starting with D.
 mode "live" is real money on 127.0.0.1:7496 (TWS) or 4001 (IB Gateway) with an
@@ -24,7 +26,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 from dataclasses import asdict, dataclass, fields
 from datetime import time
 from pathlib import Path
@@ -118,31 +119,19 @@ _BROKER_ALIASES = {
 }
 
 
-def machine_broker() -> str:
-    if sys.platform == "darwin":
-        return "ibkr"
-    if sys.platform == "win32":
-        return "tasty"
-    raise SafetyError(
-        f"Noon Breakout runs on Mac (IBKR) or Windows (tastytrade); this is {sys.platform}")
-
-
 def resolve_broker(name: str | None = None) -> str:
-    """``auto`` follows the machine. ``tasty`` / ``tt`` / ``tastytrade`` are one broker.
+    """``tasty`` / ``tt`` / ``tastytrade`` are one broker. A missing name is refused.
 
-    No environment variable takes part. Linux ``auto`` is IBKR, so the hosted
-    worker passes the broker it wants (``--broker tasty``) rather than pinning it
-    through the environment.
+    No environment variable and no operating system take part. The Mac launcher,
+    the Windows launcher, and the Render worker each pass the broker they run.
     """
-    key = str(name or "auto").strip().lower()
+    key = str(name or "").strip().lower()
     if key in ("", "auto"):
-        if sys.platform == "win32":
-            return "tasty"
-        return "ibkr"
+        raise SafetyError("broker must be set: ibkr, tasty, tt, or tastytrade")
     found = _BROKER_ALIASES.get(key)
     if found is None:
         raise SafetyError(
-            f"unknown broker {name!r}; use auto, tasty, tt, tastytrade, or ibkr")
+            f"unknown broker {name!r}; use ibkr, tasty, tt, or tastytrade")
     return found
 
 
@@ -201,11 +190,6 @@ class Config:
         self.broker = _BROKER_ALIASES.get(str(self.broker or "").strip().lower(), str(self.broker or "").strip().lower())
         if self.broker == "auto":
             self.broker = ""
-        if not self.broker:
-            if sys.platform == "darwin":
-                self.broker = "ibkr"
-            elif sys.platform == "win32":
-                self.broker = "tasty"
         if self.broker in ("ibkr", "sim"):
             if not self.mode:
                 self.mode = "dry" if self.dry_run else "paper"
@@ -300,6 +284,8 @@ class Config:
         elif self.broker == "sim":
             if self.mode not in ("dry", "alerts", "paper"):
                 raise SafetyError(f"sim mode must be dry, alerts, or paper (got {self.mode!r})")
+        elif not self.broker:
+            raise SafetyError("broker must be set: ibkr, tasty, tt, or tastytrade")
         else:
             raise SafetyError("Noon Breakout runs on Mac (IBKR) or Windows (tastytrade)")
         if self.decision_grace_s <= 0:
@@ -361,8 +347,6 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
     }
     if "broker" in overrides:
         overrides["broker"] = resolve_broker(overrides["broker"])
-    elif sys.platform not in ("darwin", "win32"):
-        overrides["broker"] = resolve_broker("auto")
     if os.environ.get("SPX_NOON_HOME") and "base_dir" not in data:
         kwargs["base_dir"] = os.environ["SPX_NOON_HOME"]
     kwargs.update(overrides)

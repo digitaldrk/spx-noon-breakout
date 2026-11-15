@@ -72,38 +72,32 @@ def _disk(tmp_path, **data):
 
 
 def _env(base, **extra):
-    """The worker's environment: the disk, plus whatever the dashboard sets."""
-    return {"DATA": str(base), **extra}
+    """The worker's environment: the disk and an explicit broker, plus the dashboard."""
+    return {"DATA": str(base), "BROKER": "tasty", **extra}
 
 
 # --------------------------------------------------------------------------
 # The broker: the machine's, or the one the worker asks for by name
 # --------------------------------------------------------------------------
 
-def test_linux_auto_is_ibkr_and_no_variable_moves_it(monkeypatch, tmp_path):
-    """``resolve_broker`` reads no environment at all. The worker passes a name."""
-    monkeypatch.setattr(sys, "platform", "linux")
+def test_a_missing_broker_is_refused_on_every_platform(monkeypatch, tmp_path):
+    """Nothing infers IBKR or tastytrade from the operating system or the environment."""
     path = _write(tmp_path, "config.json", {"broker": "tasty", "mode": "dry"})
-    for name in ("BROKER", "SPX_NOON_BROKER"):
-        monkeypatch.setenv(name, "tasty")
-    for asked in ("auto", "", None):
-        assert resolve_broker(asked) == "ibkr"
-    assert load_config(path).broker == "ibkr"          # a file broker key stays ignored
-    # an explicit broker is the only thing that moves it
+    for platform in ("linux", "darwin", "win32"):
+        monkeypatch.setattr(sys, "platform", platform)
+        for name in ("BROKER", "SPX_NOON_BROKER"):
+            monkeypatch.setenv(name, "tasty")
+        for asked in ("auto", "", None):
+            with pytest.raises(SafetyError, match="broker must be set"):
+                resolve_broker(asked)
+        with pytest.raises(SafetyError, match="broker must be set"):
+            load_config(path)
     for asked in ("tasty", "tt", "tastytrade", "  TASTY  "):
         assert resolve_broker(asked) == "tasty"
     assert load_config(path, broker="tt").broker == "tasty"
-    assert load_config(path, broker="ibkr").broker == "ibkr"
+    assert load_config(path, broker="ibkr").broker == "ibkr"   # a file key cannot override it
     with pytest.raises(SafetyError, match="unknown broker"):
         resolve_broker("nonsense")
-
-
-def test_the_machine_still_picks_the_broker_on_mac_and_windows(monkeypatch, tmp_path):
-    path = _write(tmp_path, "config.json", {"broker": "tasty", "mode": "dry"})
-    for platform, machine in (("darwin", "ibkr"), ("win32", "tasty")):
-        monkeypatch.setattr(sys, "platform", platform)
-        assert resolve_broker("auto") == machine
-        assert load_config(path).broker == machine
 
 
 # --------------------------------------------------------------------------
@@ -121,7 +115,9 @@ def test_the_defaults_are_the_disk_live_mode_and_sandbox_orders(tmp_path):
     # DATA is the disk, and /data when it is unset or blank
     assert service.env_data({}) == service.DEFAULT_DATA == "/data"
     assert service.env_data({"DATA": "   "}) == "/data"
-    assert service.env_overrides({})["base_dir"] == "/data"
+    with pytest.raises(SafetyError, match="BROKER must be set"):
+        service.env_overrides({})
+    assert service.env_overrides({"BROKER": "tasty"})["base_dir"] == "/data"
     assert service.config_path({}) == Path("/data/config.json")
     assert service.config_path({"DATA": "/mnt/two"}) == Path("/mnt/two/config.json")
 
@@ -132,8 +128,11 @@ def test_every_accepted_value_is_taken_and_nothing_else_is(tmp_path):
     def cfg(**env):
         return service.build_config(base / "config.json", _env(base, **env))
 
-    for broker in ("tasty", "tt", "tastytrade", "  TASTY  ", ""):
+    for broker in ("tasty", "tt", "tastytrade", "  TASTY  "):
         assert cfg(BROKER=broker).broker == "tasty"
+    for blank in ("", "   "):
+        with pytest.raises(SafetyError, match="BROKER must be set"):
+            cfg(BROKER=blank)
     for mode in ("live", "dry", "alerts"):
         got = cfg(MODE=mode)
         assert got.mode == mode
@@ -271,7 +270,9 @@ def test_load_config_reads_no_config_field_from_the_environment(monkeypatch, tmp
         ("BROKER", "tasty"),
     ):
         monkeypatch.setenv(name, value)
-    cfg = load_config(path)
+    cfg = load_config(path, broker="ibkr")
+    with pytest.raises(SafetyError, match="broker must be set"):
+        load_config(path)
     assert cfg.broker == "ibkr" and cfg.mode == "paper" and cfg.account == "D111"
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
     assert cfg.paper is True and cfg.real_money is False and cfg.real_money_flag == "NO"
@@ -282,14 +283,15 @@ def test_the_mac_launchers_keep_spx_noon_home_and_spx_noon_config(monkeypatch, t
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("SPX_NOON_HOME", str(tmp_path / "disk"))
     pinned = _write(tmp_path, "pinned.json", {"mode": "dry", "base_dir": str(tmp_path / "chosen")})
-    assert load_config(pinned).home == tmp_path / "chosen"
+    assert load_config(pinned, broker="ibkr").home == tmp_path / "chosen"
     blank = _write(tmp_path, "blank.json", {"mode": "dry"})
-    assert load_config(blank).home == tmp_path / "disk"
+    assert load_config(blank, broker="ibkr").home == tmp_path / "disk"
     monkeypatch.setenv("SPX_NOON_CONFIG", str(pinned))
-    assert load_config().home == tmp_path / "chosen"
+    assert load_config(broker="ibkr").home == tmp_path / "chosen"
     # and the worker reads neither of them
     assert service.env_overrides({"SPX_NOON_HOME": str(tmp_path / "disk"),
-                                  "DATA": str(tmp_path / "mount")})["base_dir"] \
+                                  "DATA": str(tmp_path / "mount"),
+                                  "BROKER": "tasty"})["base_dir"] \
         == str(tmp_path / "mount")
 
 
@@ -360,6 +362,7 @@ def _recording(taken):
 def test_the_published_config_is_what_the_children_load(monkeypatch, tmp_path):
     """Requirement: a production order environment has to reach the process that trades."""
     monkeypatch.setenv("DATA", str(tmp_path))
+    monkeypatch.setenv("BROKER", "tasty")
     monkeypatch.setenv("TASTY_ORDERS", "production")
     monkeypatch.setenv("TASTY_ACCOUNT", "5WX12345")
     taken = {}
@@ -393,6 +396,7 @@ def test_a_refused_second_worker_cannot_rewrite_the_published_config(
     environment, or account behind on the disk.
     """
     monkeypatch.setenv("DATA", str(tmp_path))
+    monkeypatch.setenv("BROKER", "tasty")
     monkeypatch.setattr(service, "Supervisor", _recording({}))
     assert service.main() == 0                        # the first worker publishes
     published = tmp_path / "state" / service.SERVICE_CONFIG
@@ -419,6 +423,7 @@ def test_the_boot_line_names_the_hosts_and_the_real_money_rule_and_no_secret(
         monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(service, "Supervisor", _recording({}))
     monkeypatch.setenv("DATA", str(tmp_path))
+    monkeypatch.setenv("BROKER", "tasty")
     monkeypatch.setenv("TASTY_ACCOUNT", "5WX12345")
 
     def boot():
@@ -453,6 +458,7 @@ def test_the_worker_refuses_a_broker_that_is_not_tastytrade(monkeypatch, tmp_pat
 
 def test_the_worker_refuses_production_orders_on_sandbox_data(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("DATA", str(tmp_path))
+    monkeypatch.setenv("BROKER", "tasty")
     monkeypatch.setenv("TASTY_ORDERS", "production")
     monkeypatch.setenv("TASTY_DATA", "sandbox")
     assert service.main() == 2

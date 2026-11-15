@@ -1,5 +1,5 @@
 {
-  "_comment": "Mac + IBKR. Copy to config.json. The Mac is the broker: this file cannot select tastytrade. This template is dry on the paper port 7497, and mode dry stays dry. There is one 11:45 job either way; this file is the switch. Paper is mode paper, port 7497, an account id starting with D, with TWS logged into paper. Real money is mode live, port 7496 for TWS or 4001 for IB Gateway, account set to the live id (it must not start with D), with TWS logged into the live account. ./run.sh paper and ./run.sh live override the mode for one launch.",
+  "_comment": "Mac + IBKR. Copy to config.json. run.sh passes --broker ibkr; this file cannot select a broker. This template is dry on the paper port 7497, and mode dry stays dry. There is one 11:45 job either way; this file is the switch. Paper is mode paper, port 7497, an account id starting with D, with TWS logged into paper. Real money is mode live, port 7496 for TWS or 4001 for IB Gateway, account set to the live id (it must not start with D), with TWS logged into the live account. ./run.sh paper and ./run.sh live override the mode for one launch.",
   "mode": "dry",
   "host": "127.0.0.1",
   "port": 7497,

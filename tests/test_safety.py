@@ -35,46 +35,42 @@ def test_examples_are_dry_and_carry_no_secrets():
         assert "private_key" not in text
 
 
-def test_mac_example_is_paper_port_and_ignores_a_broker_key(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "darwin")
+def test_mac_example_is_paper_port_and_ignores_a_broker_key(tmp_path):
     assert "dry_run" not in (ROOT / "config.example.json").read_text()
-    cfg = load_config(ROOT / "config.example.json")
+    cfg = load_config(ROOT / "config.example.json", broker="ibkr")
     assert cfg.broker == "ibkr" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.port == 7497 and cfg.client_id == 41 and not cfg.live and not cfg.paper
     flipped = tmp_path / "config.json"
     flipped.write_text('{"broker": "tasty", "mode": "dry", "port": 7497}')
-    assert load_config(flipped).broker == "ibkr"
+    assert load_config(flipped, broker="ibkr").broker == "ibkr"
 
 
-def test_windows_example_stays_tasty_and_does_not_send(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+def test_windows_example_stays_tasty_and_does_not_send():
     text = (ROOT / "config.windows.example.json").read_text()
     assert "dry_run" not in text
     assert "tasty_allow_production_orders" not in text
-    cfg = load_config(ROOT / "config.windows.example.json")
+    cfg = load_config(ROOT / "config.windows.example.json", broker="tasty")
     assert cfg.broker == "tasty" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
     assert cfg.live is False and cfg.real_money is False
     assert cfg.sends_orders() is False
 
 
-def test_mode_sets_dry_run_and_a_file_key_cannot_override(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "darwin")
-    paper = load_config(_write(tmp_path, "paper.json", '{"mode": "paper", "port": 7497}'))
+def test_mode_sets_dry_run_and_a_file_key_cannot_override(tmp_path):
+    paper = load_config(_write(tmp_path, "paper.json", '{"mode": "paper", "port": 7497}'), broker="ibkr")
     assert paper.mode == "paper" and paper.dry_run is False and paper.sends_orders()
-    alerts = load_config(_write(tmp_path, "alerts.json", '{"mode": "alerts", "port": 7497}'))
+    alerts = load_config(_write(tmp_path, "alerts.json", '{"mode": "alerts", "port": 7497}'), broker="ibkr")
     assert alerts.mode == "alerts" and alerts.dry_run is True and not alerts.sends_orders()
-    held = load_config(_write(tmp_path, "held.json", '{"mode": "paper", "dry_run": true, "port": 7497}'))
+    held = load_config(_write(tmp_path, "held.json", '{"mode": "paper", "dry_run": true, "port": 7497}'), broker="ibkr")
     assert held.mode == "paper" and held.dry_run is False and held.sends_orders()
-    blocked = load_config(_write(tmp_path, "blocked.json", '{"mode": "dry", "dry_run": false, "port": 7497}'))
+    blocked = load_config(_write(tmp_path, "blocked.json", '{"mode": "dry", "dry_run": false, "port": 7497}'), broker="ibkr")
     assert blocked.mode == "dry" and blocked.dry_run is True and not blocked.sends_orders()
-    leftover = load_config(_write(tmp_path, "leftover.json", '{"dry_run": false, "port": 7497}'))
+    leftover = load_config(_write(tmp_path, "leftover.json", '{"dry_run": false, "port": 7497}'), broker="ibkr")
     assert leftover.mode == "dry" and leftover.dry_run is True and not leftover.sends_orders()
 
-    monkeypatch.setattr(sys, "platform", "win32")
-    live = load_config(_write(tmp_path, "live.json", '{"mode": "live", "dry_run": true, "account": "705"}'))
+    live = load_config(_write(tmp_path, "live.json", '{"mode": "live", "dry_run": true, "account": "705"}'), broker="tasty")
     assert live.mode == "live" and live.dry_run is False and live.sends_orders()
-    quiet = load_config(_write(tmp_path, "quiet.json", '{"mode": "alerts", "dry_run": false, "account": "705"}'))
+    quiet = load_config(_write(tmp_path, "quiet.json", '{"mode": "alerts", "dry_run": false, "account": "705"}'), broker="tasty")
     assert quiet.mode == "alerts" and quiet.dry_run is True and not quiet.sends_orders()
 
 
@@ -84,31 +80,30 @@ def _write(tmp_path, name, text):
     return path
 
 
-def test_mac_refuses_live_and_a_non_paper_port(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "darwin")
+def test_mac_refuses_live_and_a_non_paper_port():
     with pytest.raises(SafetyError):
-        Config(mode="live").validate()
+        Config(broker="ibkr", mode="live").validate()
     with pytest.raises(SafetyError):
-        Config(port=7496).validate()
+        Config(broker="ibkr", port=7496).validate()
     with pytest.raises(SafetyError):
-        Config(host="1.2.3.4").validate()
-    paper = Config(mode="paper")
+        Config(broker="ibkr", host="1.2.3.4").validate()
+    paper = Config(broker="ibkr", mode="paper")
     assert paper.paper and paper.sends_orders()
-    dry = Config(mode="alerts", dry_run=False)
+    dry = Config(broker="ibkr", mode="alerts", dry_run=False)
     assert dry.dry_run is True and not dry.sends_orders()
 
 
-def test_windows_live_is_off_unless_asked(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
-    assert Config().broker == "tasty" and Config().mode == "dry" and not Config().live
-    live = Config(mode="live")
+def test_windows_live_is_off_unless_asked():
+    with pytest.raises(SafetyError, match="broker must be set"):
+        Config().validate()
+    live = Config(broker="tasty", mode="live")
     assert live.broker == "tasty" and live.live and live.sends_orders()
     assert live.real_money is False
     # an unknown broker is not a broker, whatever the mode says
     with pytest.raises(SafetyError, match="Noon Breakout runs on Mac"):
         Config(broker="nope", mode="live", account="").validate()
     with pytest.raises(SafetyError):
-        Config(mode="paper").validate()
+        Config(broker="tasty", mode="paper").validate()
 
 
 def test_ibkr_live_needs_a_set_non_paper_account_in_the_config(monkeypatch, tmp_path):
@@ -598,11 +593,11 @@ def test_the_wrap_launcher_forwards_a_book_only_when_one_is_asked_for(tmp_path):
     """The 16:20 job runs this bare, so it must not force --book paper."""
     done, _base = _launcher(tmp_path / "bare", "run_wrap.sh")
     assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() == "ARGS: -m spx_noon wrap"
+    assert done.stdout.strip() == "ARGS: -m spx_noon wrap --broker ibkr"
     for book in ("paper", "live"):
         done, _base = _launcher(tmp_path / book, "run_wrap.sh", book, "--now")
         assert done.returncode == 0, done.stderr
-        assert done.stdout.strip() == f"ARGS: -m spx_noon wrap --book {book} --now"
+        assert done.stdout.strip() == f"ARGS: -m spx_noon wrap --broker ibkr --book {book} --now"
 
 
 @pytest.mark.skipif(not Path("/usr/bin/caffeinate").exists(), reason="macOS launcher")
@@ -618,11 +613,11 @@ def test_the_session_launcher_forwards_a_mode_only_when_one_is_asked_for(tmp_pat
         return [line for line in log.splitlines() if line.startswith("ARGS: ")]
 
     done, base = _launcher(tmp_path / "bare", "run.sh")
-    assert logged(done, base) == [f"ARGS: -m spx_noon --config {base}/config.json"]
+    assert logged(done, base) == [f"ARGS: -m spx_noon --config {base}/config.json --broker ibkr"]
     for mode in ("paper", "dry", "alerts", "live"):
         done, base = _launcher(tmp_path / mode, "run.sh", mode)
         assert logged(done, base) == [
-            f"ARGS: -m spx_noon --config {base}/config.json --mode {mode}"]
+            f"ARGS: -m spx_noon --config {base}/config.json --broker ibkr --mode {mode}"]
 
 
 def test_run_scripts_override_the_mode_and_the_book_for_one_launch():

@@ -22,4 +22,4 @@ case "${1:-}" in
   paper|dry|alerts|live) EXTRA=(--mode "$1") ;;
 esac
 echo "$(date) starting Noon Breakout (TZ $(date +%Z)) ${EXTRA[*]:-}" >> "$LOG"
-exec /usr/bin/caffeinate -i "$BASE/.venv/bin/python" -m spx_noon --config "$BASE/config.json" ${EXTRA[@]+"${EXTRA[@]}"} >> "$LOG" 2>&1
+exec /usr/bin/caffeinate -i "$BASE/.venv/bin/python" -m spx_noon --config "$BASE/config.json" --broker ibkr ${EXTRA[@]+"${EXTRA[@]}"} >> "$LOG" 2>&1
