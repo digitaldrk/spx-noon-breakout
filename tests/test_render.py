@@ -1029,9 +1029,10 @@ def test_the_blueprint_is_one_starter_worker_with_a_disk_and_no_port():
     assert worker["name"] == "spx-noon"
     assert worker["dockerCommand"] == "python -m spx_noon.service"
     assert worker["disk"] == {"name": "spx-noon-data", "mountPath": "/data", "sizeGB": 1}
-    assert worker["autoDeploy"] is False
-    for absent in ("healthCheckPath", "numInstances", "scaling", "domains", "buildCommand",
-                   "startCommand", "previewsEnabled"):
+    # checksPass, not the deprecated autoDeploy: main deploys once CI is green.
+    assert worker["autoDeployTrigger"] == "checksPass"
+    for absent in ("autoDeploy", "healthCheckPath", "numInstances", "scaling", "domains",
+                   "buildCommand", "startCommand", "previewsEnabled"):
         assert absent not in worker
     text = (ROOT / "render.yaml").read_text()
     for forbidden in ("type: web", "type: pserv", "type: cron", "type: static",

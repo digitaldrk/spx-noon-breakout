@@ -1,0 +1,40 @@
+# The two checks a pull request and a push to main have to pass. No workflow
+# name on purpose: GitHub then reports the job names alone, so branch
+# protection can require `test` and `docker`. A top-level `name: CI` would
+# report them as `CI / test` instead.
+#
+# No secrets reach this workflow. The suite runs with the same isolation it has
+# on a laptop (tests/conftest.py): no broker credentials, no route to
+# tastytrade or TWS. Render deploys main only after both checks pass
+# (autoDeployTrigger: checksPass in render.yaml). See RENDER.md.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # 3.11 is the Dockerfile's FROM line, so CI runs what Render runs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The image installs '.[tasty]'; test adds pytest. Same interpreter as
+      # the next step, so pytest sees the package it just installed.
+      - run: python -m pip install '.[tasty,test]'
+      - run: python -m pytest -q
+
+  docker:
+    name: docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # A build only: a broken image fails the check. ubuntu-latest already has
+      # Docker, and there is no registry to push to or log in to.
+      - run: docker build .
