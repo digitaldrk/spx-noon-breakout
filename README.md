@@ -1,11 +1,11 @@
 # Noon Breakout (plan v2, version B)
 
-0DTE SPX debit vertical. The computer picks the broker:
+0DTE SPX debit vertical. The launcher names the broker:
 
 | Machine | Broker | How orders go out |
 | --- | --- | --- |
 | Mac | IBKR TWS. **paper** is `127.0.0.1:7497` with account ids starting with `D`. **live** is real money on `127.0.0.1:7496` (TWS) or `4001` (IB Gateway) | `dry` (default) logs the ticket. `paper` sends it to the paper account. `live` sends real orders to the configured non-`D` account. |
-| Windows | **tastytrade** (`--broker tasty`, `tt`, or `tastytrade`; `auto` on Windows) | `dry` (default) and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
+| Windows | **tastytrade** (`run_session.ps1` passes `--broker tasty`; `tt` and `tastytrade` are the same broker) | `dry` (default) and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
 
 A config file cannot switch brokers. On a Mac it is the one switch between paper and real money: `mode`, `port`, and `account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot trades version B only: the first qualifying 15-minute close from noon to 1:00 PM ET, one spread, long option nearest 75 delta, take-profit at +30%, flat two hours after that bar. Candle's 10:00–11:00 strategy is a different repo and is not used here.
 
@@ -13,11 +13,11 @@ A config file cannot switch brokers. On a Mac it is the one switch between paper
 
 **Windows:** see [WINDOWS_SETUP.md](WINDOWS_SETUP.md). Copy `config.windows.example.json` to `config.json`. A bare `.\run_session.ps1` stays dry. `.\run_session.ps1 -Mode live` is the send mode. Tastytrade auto-approves. The price cap and 10 orders per minute still apply.
 
-**Hosted (no computer left on):** see [RENDER.md](RENDER.md). One private Render background worker runs tastytrade from a container: real quotes, sandbox orders by default, state on a disk at `/data`. It changes nothing on this Mac or on Windows.
+**Hosted (no computer left on):** see [RENDER.md](RENDER.md). One private Render background worker runs tastytrade from a container: real quotes, sandbox orders by default, state on a disk at `/data`. Its settings are plain variable names, the same set every bot uses on Render — `DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `TASTY_ACCOUNT` — plus the four `TASTYTRADE_*` secrets. It changes nothing on this Mac or on Windows.
 
 ## Configuration
 
-`config.json` holds local overrides. Defaults are the fields on `Config` in `spx_noon/config.py`. Leave a key out and that default stays. Keys the loader does not know are ignored, including the `_comment`, `_rules`, and `_wrap` notes. The machine chooses the broker. A `broker` key in the file is ignored. A `dry_run` key is ignored too; `mode` is the only send setting.
+`config.json` holds local overrides. Defaults are the fields on `Config` in `spx_noon/config.py`. Leave a key out and that default stays. Keys the loader does not know are ignored, including the `_comment`, `_rules`, and `_wrap` notes. The launcher passes the broker (`run.sh` passes `ibkr`, `run_session.ps1` passes `tasty`, Render requires `BROKER`). A `broker` key in the file is ignored. A `dry_run` key is ignored too; `mode` is the only send setting.
 
 Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` and `tokens.json`. Tastytrade credentials stay in environment variables or files under `secrets/`, never in the repo. Any token file and any service-account json stay out of git.
 
@@ -157,7 +157,7 @@ The bot implements version B in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). Re
 | `run_wrap.sh`, `spx_noon/wrap_run.py` | 16:20 read-only note. `--book paper` or `--book live` |
 | `config.example.json` | Mac template |
 | `config.windows.example.json` | Windows tastytrade template |
-| `spx_noon/service.py` | Hosted worker supervisor: waits for 11:45, spawns the session, restarts a crash, runs the 16:20 wrap. [RENDER.md](RENDER.md) |
+| `spx_noon/service.py` | Hosted worker supervisor: reads `DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `TASTY_ACCOUNT`, waits for 11:45, spawns the session, restarts a crash, runs the 16:20 wrap. [RENDER.md](RENDER.md) |
 | `render.yaml`, `Dockerfile`, `config.render.example.json` | Render blueprint, image, and the seed copied to the disk once |
 | `run.sh`, `deploy/` | Mac launchers |
-| `run_session.ps1` | Windows launcher. Default `-Mode dry` `-Broker auto` |
+| `run_session.ps1` | Windows launcher. Default `-Mode dry` `-Broker tasty` |

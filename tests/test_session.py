@@ -276,32 +276,30 @@ def _wrap_config(tmp_path, **keys):
     return path
 
 
-def test_the_paper_and_live_wraps_never_see_each_other_s_rows(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "darwin")
+def test_the_paper_and_live_wraps_never_see_each_other_s_rows(tmp_path):
     path = _wrap_config(tmp_path)
     today = datetime.now(ET).date()
     Outputs(tmp_path / "state", book="paper").append_trade(
         {"date": today, "direction": "CALL", "exit_reason": "target", "mode": "paper"})
     Outputs(tmp_path / "state", book="live").append_trade(
         {"date": today, "direction": "PUT", "exit_reason": "time", "mode": "live"})
-    assert wrap_main(["--config", str(path), "--now"]) == 0
+    assert wrap_main(["--config", str(path), "--broker", "ibkr", "--now"]) == 0
     paper_text = (tmp_path / "reports" / f"wrap-{today.isoformat()}.md").read_text()
     assert "CALL" in paper_text and "PUT" not in paper_text
     assert "trades.csv" in paper_text and "trades-live.csv" not in paper_text
     # --book live works while the config is still dry on the paper port
-    assert wrap_main(["--config", str(path), "--now", "--book", "live"]) == 0
+    assert wrap_main(["--config", str(path), "--broker", "ibkr", "--now", "--book", "live"]) == 0
     live_text = (tmp_path / "reports" / f"wrap-live-{today.isoformat()}.md").read_text()
     assert "PUT" in live_text and "CALL" not in live_text
     assert "trades-live.csv" in live_text
 
 
-def test_wrap_with_no_book_follows_a_live_config(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys, "platform", "darwin")
+def test_wrap_with_no_book_follows_a_live_config(tmp_path):
     path = _wrap_config(tmp_path, mode="live", port=7496, account=LIVE_ACCOUNT)
     today = datetime.now(ET).date()
     Outputs(tmp_path / "state", book="live").append_trade(
         {"date": today, "direction": "PUT", "exit_reason": "time", "mode": "live"})
-    assert wrap_main(["--config", str(path), "--now"]) == 0
+    assert wrap_main(["--config", str(path), "--broker", "ibkr", "--now"]) == 0
     assert (tmp_path / "reports" / f"wrap-live-{today.isoformat()}.md").exists()
     assert not (tmp_path / "reports" / f"wrap-{today.isoformat()}.md").exists()
 

@@ -14,4 +14,4 @@ BOOK=()
 case "${1:-}" in
   live|paper) BOOK=(--book "$1"); shift ;;
 esac
-exec /usr/bin/caffeinate -i "$BASE/.venv/bin/python" -m spx_noon wrap ${BOOK[@]+"${BOOK[@]}"} "$@"
+exec /usr/bin/caffeinate -i "$BASE/.venv/bin/python" -m spx_noon wrap --broker ibkr ${BOOK[@]+"${BOOK[@]}"} "$@"

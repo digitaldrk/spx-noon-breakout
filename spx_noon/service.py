@@ -7,9 +7,23 @@ bounded number of times if it dies badly, and runs the read-only
 ``python -m spx_noon wrap --now`` once at 16:20 ET. Weekends, NYSE holidays,
 early closes, and years with no holiday list are skipped.
 
-The broker has to resolve to tastytrade or the worker refuses to start: on Linux
-``auto`` is IBKR, so ``SPX_NOON_BROKER=tasty`` is the pin. Durable state lives
-under ``Config.home`` (``SPX_NOON_HOME``), which is the mounted disk.
+Plain variable names, no bot prefix, the same set every bot uses on Render. The
+Mac and Windows launchers keep ``SPX_NOON_HOME`` and ``SPX_NOON_CONFIG``; this
+process reads neither. ``DATA`` is the mounted disk, not the Unix ``HOME``.
+
+  ``DATA``          disk mount, default ``/data``  -> ``base_dir`` for the children
+  ``BROKER``        required: tasty (tt, tastytrade); anything else is refused
+  ``MODE``          live (default) | dry | alerts
+  ``TASTY_DATA``    production (default) | sandbox
+  ``TASTY_ORDERS``  sandbox (default) | production  <- real money, with production data
+  ``TASTY_ACCOUNT`` blank means the first account on the order session
+
+Those six win over ``$DATA/config.json``, and the resolved, secret-free result is
+published to ``$DATA/state/service-config.json``, which is the file both children
+load. The seed is never overwritten and the environment is never logged.
+
+``BROKER`` has to be set, and it has to resolve to tastytrade. The children are
+launched with that broker on the command line. Nothing is inferred from Linux.
 
 Log lines are plain and start with one of ``boot``, ``waiting``, ``running``,
 ``done``, ``skip``, ``restart``, or ``error``.
@@ -35,7 +49,7 @@ except ImportError:  # pragma: no cover - Windows keeps the pid-file gate
 
 from . import resume
 from .calendar import fallback_status
-from .config import SafetyError, load_config, resolve_broker
+from .config import Config, SafetyError, load_config
 
 ET = ZoneInfo("America/New_York")
 log = logging.getLogger("spx_noon.service")
@@ -44,6 +58,18 @@ log = logging.getLogger("spx_noon.service")
 SEED_NAME = "config.render.example.json"
 #: One session child at a time, under the home directory on the disk.
 LOCK_NAME = "service.lock"
+#: The resolved, secret-free config the children load, under ``state`` on the disk.
+#: Never the seed: ``$DATA/config.json`` is the operator's file and is not rewritten.
+SERVICE_CONFIG = "service-config.json"
+
+#: The mounted disk when ``DATA`` is unset or blank.
+DEFAULT_DATA = "/data"
+#: This worker is tastytrade, whatever the machine would pick on its own.
+BROKER = "tasty"
+#: Spellings of that one broker. ``ibkr`` is not one of them.
+TASTY_BROKERS = ("tasty", "tt", "tastytrade")
+#: Modes a tastytrade session accepts. ``live`` is the only one that transmits.
+MODES = ("live", "dry", "alerts")
 
 #: The read-only wrap. 16:20 ET matches the Mac launchd job.
 WRAP_AT = time(16, 20)
@@ -61,8 +87,9 @@ CHILD_GRACE_S = 10.0
 #: A child that starts after the wrap hour still gets this long to finish.
 LATE_CHILD_GRACE = timedelta(minutes=40)
 
-SESSION_ARGV = ("-m", "spx_noon")
-WRAP_ARGV = ("-m", "spx_noon", "wrap", "--now")
+#: The children are told the broker on the command line. A file cannot name one.
+SESSION_ARGV = ("-m", "spx_noon", "--broker", BROKER)
+WRAP_ARGV = ("-m", "spx_noon", "wrap", "--now", "--broker", BROKER)
 
 
 def seed_source() -> Path | None:
@@ -74,15 +101,87 @@ def seed_source() -> Path | None:
     return None
 
 
-def config_path() -> Path:
-    """``SPX_NOON_CONFIG``, else ``config.json`` under the home directory."""
-    raw = os.environ.get("SPX_NOON_CONFIG", "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    home = os.environ.get("SPX_NOON_HOME", "").strip()
-    if home:
-        return Path(home).expanduser() / "config.json"
-    return Path(__file__).resolve().parent.parent / "config.json"
+def env_data(env=None) -> str:
+    """``DATA``, the mounted disk. Blank or unset is ``/data``. Not the Unix ``HOME``."""
+    env = os.environ if env is None else env
+    return (env.get("DATA") or "").strip() or DEFAULT_DATA
+
+
+def config_path(env=None) -> Path:
+    """``$DATA/config.json``, the operator's file on the disk.
+
+    ``SPX_NOON_CONFIG`` and ``SPX_NOON_HOME`` are the local launchers' variables
+    and take no part here, so a stale one cannot point the worker at another file.
+    """
+    return Path(os.path.expanduser(env_data(env))) / "config.json"
+
+
+def env_overrides(env=None) -> dict:
+    """The six worker variables as ``load_config`` overrides. These win over the file.
+
+    Plain names, no bot prefix. ``BROKER`` is required. For the others, a missing
+    or blank value is the default in the table at the top of this module. A
+    value that is not accepted is a :class:`SafetyError`, not a silent fallback.
+    """
+    env = os.environ if env is None else env
+    mode = (env.get("MODE") or "").strip().lower() or "live"
+    if mode not in MODES:
+        raise SafetyError(f"MODE must be live, dry, or alerts (got {mode!r})")
+    broker = (env.get("BROKER") or "").strip().lower()
+    if not broker:
+        raise SafetyError("BROKER must be set to tasty, tt, or tastytrade")
+    if broker not in TASTY_BROKERS:
+        raise SafetyError(
+            f"BROKER must be tasty, tt, or tastytrade on this worker (got {broker!r})")
+    over = {"broker": BROKER, "base_dir": env_data(env), "mode": mode}
+    for name, field in (("TASTY_DATA", "tasty_data"), ("TASTY_ORDERS", "tasty_orders")):
+        value = (env.get(name) or "").strip().lower()
+        if value:                        # blank leaves the file's value, then the default
+            over[field] = value
+    if "TASTY_ACCOUNT" in env:           # present and blank means the first account
+        over["account"] = (env["TASTY_ACCOUNT"] or "").strip()
+    return over
+
+
+def build_config(path: str | os.PathLike | None = None, env=None) -> Config:
+    """The config both children run with: the disk file, then the six variables.
+
+    ``load_config`` validates it, so production orders on sandbox data never get
+    this far.
+    """
+    env = os.environ if env is None else env
+    cfg = load_config(path, **env_overrides(env))
+    if cfg.broker != BROKER:             # belt and braces; env_overrides pins it
+        raise SafetyError(f"this worker is tastytrade only (got {cfg.broker!r})")
+    return cfg
+
+
+def real_money(cfg: Config) -> bool:
+    """Production data, production orders, live mode, and not a dry run. All four.
+
+    ``Config.real_money`` follows the order host alone, which is what the session
+    itself cares about. This is the worker's boot line: a dry run whose orders are
+    production transmits nothing, so it is not real money.
+    """
+    return (cfg.broker == BROKER
+            and str(cfg.tasty_data).strip().lower() == "production"
+            and str(cfg.tasty_orders).strip().lower() == "production"
+            and cfg.mode == "live" and not cfg.dry_run)
+
+
+def publish_config(cfg: Config, path: str | os.PathLike) -> Path:
+    """Write the resolved, secret-free config the children load.
+
+    Not the seed: ``$DATA/config.json`` stays the operator's file. ``broker`` is
+    left out because a file cannot pick the broker — the children get
+    ``--broker tasty`` on the command line. No credential is a config field.
+    """
+    data = {key: (list(value) if isinstance(value, tuple) else value)
+            for key, value in cfg.to_dict().items() if key != "broker"}
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out
 
 
 def seed_config(path: str | os.PathLike) -> bool:
@@ -246,6 +345,9 @@ class Supervisor:
         """
         env = dict(os.environ)
         if self.config_file is not None:
+            # The resolved config, which the child already honors this variable for.
+            # It is how the six worker variables reach the process that trades: the
+            # child reads no environment field of its own.
             env["SPX_NOON_CONFIG"] = str(self.config_file)
         # The child inherits the lock descriptor: if this supervisor is killed
         # while the session is still trading, the lock stays held and a
@@ -451,36 +553,39 @@ def _setup_logging(home: Path) -> None:
 
 
 def main(argv=None) -> int:
-    path = config_path()
     try:
+        path = config_path()
         seeded = seed_config(path)
-        cfg = load_config(path, broker=resolve_broker("auto"))
+        cfg = build_config(path)
+        cfg.ensure_dirs()
     except (SafetyError, ValueError, TypeError, OSError, json.JSONDecodeError) as exc:
         print(f"refusing to start: {exc}", flush=True)
         return 2
-    if cfg.broker != "tasty":
-        print(
-            f"refusing to start: this worker is tastytrade only and the broker resolved to "
-            f"{cfg.broker!r}. Set SPX_NOON_BROKER=tasty.",
-            flush=True,
-        )
-        return 2
-    cfg.ensure_dirs()
     _setup_logging(cfg.home)
+    # The lock comes before anything is written: the published config is the file
+    # the running worker's next child loads, so a worker that is turned away here
+    # must not have changed that worker's mode, order environment, or account.
+    lock = Lock(cfg.home / LOCK_NAME)
+    if not lock.take():
+        log.error("error another spx-noon worker holds %s; stopping", lock.path)
+        return 2
+    try:
+        published = publish_config(cfg, cfg.state_dir / SERVICE_CONFIG)
+    except OSError as exc:
+        log.error("error could not write %s: %s; stopping", SERVICE_CONFIG, exc)
+        lock.release()
+        return 2
     from .tasty import host_for, safety_banner
 
     if seeded:
         log.info("boot seeded %s from %s", path, SEED_NAME)
     log.info(
-        "boot broker=%s mode=%s home=%s config=%s %s",
-        cfg.broker, cfg.mode, cfg.home, path,
-        safety_banner(host_for(cfg.tasty_data), host_for(cfg.tasty_orders), cfg.tasty_orders),
+        "boot broker=%s mode=%s home=%s config=%s child-config=%s %s",
+        cfg.broker, cfg.mode, cfg.home, path, published,
+        safety_banner(host_for(cfg.tasty_data), host_for(cfg.tasty_orders),
+                      cfg.tasty_orders, real=real_money(cfg)),
     )
-    lock = Lock(cfg.home / LOCK_NAME)
-    if not lock.take():
-        log.error("error another spx-noon worker holds %s; stopping", lock.path)
-        return 2
-    worker = Supervisor(cfg, config_file=path, keep_fds=lock.fds())
+    worker = Supervisor(cfg, config_file=published, keep_fds=lock.fds())
     worker.install_signals()
     try:
         return worker.run()

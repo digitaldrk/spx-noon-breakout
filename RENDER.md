@@ -22,7 +22,7 @@ production yourself.
 
    | Variable | What it is |
    | --- | --- |
-   | `SPX_NOON_ACCOUNT` | tastytrade account to trade. Blank only works when the order session has exactly one account. |
+   | `TASTY_ACCOUNT` | tastytrade account to trade. Blank only works when the order session has exactly one account. |
    | `TASTYTRADE_PROD_CLIENT_SECRET` | production OAuth client secret (quotes) |
    | `TASTYTRADE_PROD_REFRESH_TOKEN` | production refresh token (quotes) |
    | `TASTYTRADE_SANDBOX_CLIENT_SECRET` | sandbox OAuth client secret (orders) |
@@ -35,12 +35,31 @@ production yourself.
    `/data/config.json` and prints one `boot` line. It never overwrites that file
    afterwards, so edits you make on the disk survive a deploy.
 
-The non-secret variables come from `render.yaml` and need no typing:
-`SPX_NOON_HOME=/data`, `PYTHONUNBUFFERED=1`, `SPX_NOON_BROKER=tasty`,
-`SPX_NOON_MODE=live`, `SPX_NOON_TASTY_DATA=production`,
-`SPX_NOON_TASTY_ORDERS=sandbox`. `SPX_NOON_BROKER=tasty` is not optional: on
-Linux the automatic broker is IBKR, and the worker refuses to start if the
-broker resolves to anything but tastytrade.
+## The worker's variables
+
+Plain names, no bot prefix, the same set every bot uses on Render. `DATA` is the
+mounted disk, not the Unix `HOME`. The non-secret ones come from `render.yaml`
+and need no typing:
+
+| Variable | Unset or blank | Accepted | What it does |
+| --- | --- | --- | --- |
+| `DATA` | `/data` | any path | the disk: `config.json`, `state/`, `logs/`, `reports/` |
+| `PYTHONUNBUFFERED` | — | `1` | log lines appear as they happen |
+| `BROKER` | refuses to start | `tasty`, `tt`, `tastytrade` | required. The blueprint sets `tasty`. Anything else, `ibkr` included, refuses to start |
+| `MODE` | `live` | `live`, `dry`, `alerts` | `live` transmits; `dry` and `alerts` send nothing |
+| `TASTY_DATA` | `production` | `production`, `sandbox` | the quotes, bars, chain, and greeks host |
+| `TASTY_ORDERS` | `sandbox` | `sandbox`, `production` | the order host. `production` is real money |
+| `TASTY_ACCOUNT` | the file's account | any account id, or blank | blank is the first account on the order session |
+
+`BROKER` is required. The blueprint sets `BROKER=tasty`. A missing value refuses
+to start, and so does any broker other than tastytrade.
+
+These six win over `/data/config.json`. The worker resolves them once at boot,
+writes the result to `/data/state/service-config.json`, and points the session
+and the wrap at that file, so what you set in the dashboard is what trades. Your
+own edits to `/data/config.json` are still read first and are never overwritten.
+The Mac and Windows launchers keep `SPX_NOON_HOME` and `SPX_NOON_CONFIG`. This
+worker does not read them.
 
 `autoDeploy` is off. Deploys interrupt the process, so you choose when: **Manual
 Deploy → Deploy latest commit**. Never between 11:45 and 15:10 ET, when a trade
@@ -77,10 +96,16 @@ URL to open and no health check to read. Lines are plain and start with one of
 `boot`, `waiting`, `running`, `done`, `skip`, `restart`, or `error`:
 
 ```
-boot broker=tasty mode=live home=/data config=/data/config.json DATA=api.tastyworks.com ORDERS=api.cert.tastyworks.com REAL MONEY=NO
+boot broker=tasty mode=live home=/data config=/data/config.json child-config=/data/state/service-config.json DATA=api.tastyworks.com ORDERS=api.cert.tastyworks.com REAL MONEY=NO
 waiting the 2026-11-16 session at 2026-11-16 11:45 ET, 3h12m away
 running session 2026-11-16 try 1
 ```
+
+`DATA=` and `ORDERS=` on that line are the two hosts, not the variables.
+`REAL MONEY=YES` needs all three of `TASTY_DATA=production`,
+`TASTY_ORDERS=production`, and `MODE=live`: a `dry` or `alerts` run transmits
+nothing, so it says `NO` even with production orders. The environment itself is
+never logged.
 
 The session child's own lines (the safety banner, the decisions, the order log)
 go to the same place. Account ids are shortened and secrets are redacted. The
@@ -93,11 +118,12 @@ Both variables, then a redeploy. One alone is refused: `tasty_orders=production`
 with sandbox data raises a `SafetyError` and the process will not start.
 
 1. The worker → **Environment**.
-2. `SPX_NOON_TASTY_ORDERS` → `production`.
-3. `SPX_NOON_TASTY_DATA` is already `production`. Confirm it, do not remove it.
-4. Save, then **Manual Deploy**. Outside 11:45–15:10 ET.
-5. Check the next `boot` line: `ORDERS=api.tastyworks.com` and `REAL MONEY=YES`.
-   The orders now go to the production account in `SPX_NOON_ACCOUNT` with the
+2. `TASTY_ORDERS` → `production`.
+3. `TASTY_DATA` is already `production`. Confirm it, do not remove it.
+4. `MODE` is already `live`. Confirm it: `dry` and `alerts` send nothing.
+5. Save, then **Manual Deploy**. Outside 11:45–15:10 ET.
+6. Check the next `boot` line: `ORDERS=api.tastyworks.com` and `REAL MONEY=YES`.
+   The orders now go to the production account in `TASTY_ACCOUNT` with the
    production credentials. Going back is the same trip with `sandbox`.
 
 Sandbox orders need the sandbox credential pair; production orders need the
@@ -105,15 +131,19 @@ production pair. Keep both pasted so flipping back takes one variable.
 
 ## Another account
 
-A second account is a second worker, not a code change.
+A second account is a second worker, not a code change. Nothing in the image or
+the blueprint is specific to one account, and the variable names are the same for
+every worker.
 
 1. Render → **New → Blueprint** on the same repo, or **New → Background Worker**
    from the same Dockerfile, and give it its own name (`spx-noon-two`).
-2. Its own disk at `/data`. Disks are not shared, and two workers must never
-   share one.
-3. Its own five secrets, with that account's `SPX_NOON_ACCOUNT` and its own
-   credential pairs.
-4. The same six non-secret variables.
+2. Its own disk, mounted at `/data` again. Disks are not shared, and two workers
+   must never share one.
+3. Its own five secrets: that account's `TASTY_ACCOUNT` and its own credential
+   pairs. A worker only ever trades the account its own `TASTY_ACCOUNT` names.
+4. The same non-secret variables, same values: `DATA=/data`,
+   `PYTHONUNBUFFERED=1`, `BROKER=tasty`, `MODE=live`, `TASTY_DATA=production`,
+   `TASTY_ORDERS=sandbox` until you switch that one worker to real money.
 
 One rule: do not run this worker and the Windows or Mac job against the same
 tastytrade account on the same day. They do not see each other's position file,

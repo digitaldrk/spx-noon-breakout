@@ -1,12 +1,11 @@
 """Read-only smoke test. Places no orders.
 
-Mac auto: TWS paper on 127.0.0.1:7497. It never dials a live port.
-Windows auto: tastytrade (quotes, bars, chain, orders host).
+``--broker ibkr`` checks TWS paper on 127.0.0.1:7497. It never dials a live port.
+``--broker tasty`` checks tastytrade (quotes, bars, chain, orders host).
 """
 from __future__ import annotations
 
 import argparse
-import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -17,17 +16,14 @@ ET = ZoneInfo("America/New_York")
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="spx_noon check")
-    parser.add_argument("--broker", default="auto",
-                        help="auto, tasty, tt, tastytrade, or ibkr")
+    parser.add_argument("--broker", default=None,
+                        help="ibkr, tasty, tt, or tastytrade. Required.")
     parser.add_argument("--client-id", type=int, default=None)
     args = parser.parse_args(argv)
     try:
         broker = resolve_broker(args.broker)
     except SafetyError as exc:
         print(f"refusing: {exc}")
-        return 2
-    if args.broker == "auto" and sys.platform not in ("darwin", "win32"):
-        print("Noon Breakout check runs on Mac (IBKR paper) or Windows (tastytrade). Pass --broker to override.")
         return 2
     if broker == "tasty":
         from .check_tasty import main as tasty_main
