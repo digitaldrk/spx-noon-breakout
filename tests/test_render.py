@@ -42,8 +42,16 @@ posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX flock and sign
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """Every test starts with the worker's and the launchers' variables unset."""
-    for name in (*WORKER_ENV, "SPX_NOON_HOME", "SPX_NOON_CONFIG"):
+    """Every test starts with the worker's six variables unset.
+
+    The launchers' names are left to ``isolate_machine`` in ``conftest.py``,
+    which points ``SPX_NOON_CONFIG`` at a file that does not exist and
+    ``SPX_NOON_HOME`` at a temporary directory. This fixture runs after it, so
+    deleting those two here would hand the suite back the machine's
+    ``config.json``. A worker test that wants one of them sets it itself, and
+    ``build_config`` overrides ``base_dir`` from ``DATA`` regardless.
+    """
+    for name in WORKER_ENV:
         monkeypatch.delenv(name, raising=False)
 
 
