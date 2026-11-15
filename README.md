@@ -5,7 +5,7 @@
 | Machine | Broker | How orders go out |
 | --- | --- | --- |
 | Mac | IBKR TWS. **paper** is `127.0.0.1:7497` with account ids starting with `D`. **live** is real money on `127.0.0.1:7496` (TWS) or `4001` (IB Gateway) | `dry` (default) logs the ticket. `paper` sends it to the paper account. `live` sends real orders to the configured non-`D` account. |
-| Windows | **tastytrade** (`run_session.ps1` passes `--broker tasty`; `tt` and `tastytrade` are the same broker) | `dry` (default) and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
+| Windows | **tastytrade** (`run_session.ps1` passes `--broker tasty`; `tasty` is the one spelling) | `dry` (default) and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
 
 A config file cannot switch brokers. On a Mac it is the one switch between paper and real money: `mode`, `port`, and `account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot trades version B only: the first qualifying 15-minute close from noon to 1:00 PM ET, one spread, long option nearest 75 delta, take-profit at +30%, flat two hours after that bar. Candle's 10:00–11:00 strategy is a different repo and is not used here.
 
@@ -24,7 +24,7 @@ Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` 
 | Machine | Copy | Where the launcher reads it |
 | --- | --- | --- |
 | Mac (IBKR paper) | `config.example.json` → `config.json` | `run.sh` loads `$SPX_NOON_HOME/config.json`. `SPX_NOON_HOME` defaults to `~/Documents/spx-noon-breakout`. |
-| Windows (tastytrade) | `config.windows.example.json` → `config.json` | `run_session.ps1` loads `config.json` next to the script when the file exists. `-Mode` overrides `mode`. `-Broker` defaults to `tasty` and accepts `tasty`, `tt`, or `tastytrade`. |
+| Windows (tastytrade) | `config.windows.example.json` → `config.json` | `run_session.ps1` loads `config.json` next to the script when the file exists. `-Mode` overrides `mode`. `-Broker` defaults to `tasty` and accepts `tasty` only. |
 
 `python -m spx_noon` with no `--config` uses `SPX_NOON_CONFIG` when that variable is set, otherwise `config.json` in the repo root.
 

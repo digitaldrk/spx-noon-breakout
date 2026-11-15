@@ -28,7 +28,7 @@ def main(argv=None) -> int:
                         help="paper reads state/trades.csv; live reads state/trades-live.csv")
     parser.add_argument("--now", action="store_true", help="Write immediately instead of waiting for 16:20 ET")
     parser.add_argument("--broker", default=None,
-                        help="ibkr, tasty, tt, or tastytrade. Required. Nothing is inferred.")
+                        help="ibkr or tasty. Required. Nothing is inferred.")
     args = parser.parse_args(argv)
     try:
         cfg = load_config(args.config, broker=resolve_broker(args.broker))

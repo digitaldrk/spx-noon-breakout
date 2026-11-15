@@ -884,7 +884,7 @@ def main(argv=None) -> int:
     parser.add_argument("--config", default=None)
     parser.add_argument("--mode", choices=["dry", "alerts", "paper", "live"], default=None)
     parser.add_argument("--broker", default=None,
-                        help="ibkr, tasty, tt, or tastytrade. Required. Nothing is inferred.")
+                        help="ibkr or tasty. Required. Nothing is inferred.")
     args = parser.parse_args(argv)
     overrides = {}
     if args.mode:

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from spx_noon.config import _BROKER_ALIASES, Config, SafetyError, load_config, resolve_broker
+from spx_noon.config import VALID_BROKERS, Config, SafetyError, load_config, resolve_broker
 from spx_noon.guard import GuardError
 from spx_noon.tasty import (
     CERT_HOST,
@@ -127,13 +127,32 @@ def _broker(tmp_path, *, orders="sandbox", data="production", mode="live", cap=1
     return broker, transport
 
 
-def test_aliases_and_a_missing_broker_is_refused():
-    assert resolve_broker("tasty") == resolve_broker("tt") == resolve_broker("tastytrade") == "tasty"
-    for missing in ("", None):
-        with pytest.raises(SafetyError, match="broker must be set"):
+def test_one_broker_name_each_and_a_missing_broker_is_refused(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"mode": "dry", "base_dir": str(tmp_path)}))
+    assert VALID_BROKERS == ("ibkr", "tasty")
+    for asked in ("tasty", "  TASTY  ", "Tasty"):
+        assert resolve_broker(asked) == "tasty"
+    for asked in ("ibkr", "  IBKR  ", "Ibkr"):
+        assert resolve_broker(asked) == "ibkr"
+    assert load_config(path, broker="  TASTY  ").broker == "tasty"
+    assert Config(broker="  SIM  ", mode="dry").broker == "sim"   # internal, tests only
+    for missing in ("", None, "   "):
+        with pytest.raises(SafetyError, match="broker must be set: ibkr or tasty"):
             resolve_broker(missing)
-    assert sorted(_BROKER_ALIASES) == ["ibkr", "sim", "tasty", "tastytrade", "tt"]
-    for name in ("nope", "tda", "etrade", "ib"):
+    # the dropped spellings name the one spelling to use, and never resolve
+    for asked, use in (("tt", "tasty"), ("TT", "tasty"), ("  tastytrade ", "tasty"),
+                       ("ib", "ibkr"), ("IB", "ibkr")):
+        token = asked.strip().lower()
+        want = f"broker '{token}' is not valid; use {use}. Valid brokers: ibkr, tasty."
+        for call in (lambda: resolve_broker(asked),
+                     lambda: load_config(path, broker=asked),
+                     lambda: Config(broker=asked)):
+            with pytest.raises(SafetyError) as caught:
+                call()
+            assert str(caught.value) == want
+    # auto and sim are unknown brokers, not an empty name and not a platform guess
+    for name in ("nope", "tda", "etrade", "auto", "sim", "ibkr2"):
         with pytest.raises(SafetyError, match="unknown broker"):
             resolve_broker(name)
 

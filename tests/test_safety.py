@@ -566,6 +566,23 @@ def test_run_scripts_override_the_mode_and_the_book_for_one_launch():
         assert "--mode live" not in code and "--book paper" not in code
 
 
+def test_the_windows_launcher_refuses_a_former_spelling_before_python_starts():
+    """``pwsh`` is not on this Mac, so the script itself is the assertion."""
+    text = (ROOT / "run_session.ps1").read_text()
+    assert '[string]$Broker = "tasty"' in text            # plain string, still the default
+    for dropped in ('"tt"', '"tastytrade"'):
+        assert f"ValidateSet({dropped}" not in text and f", {dropped}" not in text
+    launch = text.index("& $py")
+    for message in ("broker 'tt' is not valid; use tasty. Valid brokers: ibkr, tasty.",
+                    "broker 'tastytrade' is not valid; use tasty. Valid brokers: ibkr, tasty.",
+                    "broker 'ib' is not valid; use ibkr. Valid brokers: ibkr, tasty."):
+        assert message in text
+        assert text.index(message) < launch                # refused before the Python process
+    # anything else, ibkr and auto included, is refused before Python as well
+    assert text.index('if ($wanted -ne "tasty")') < launch
+    assert "exit 2" in text and "--broker" in text
+
+
 def test_package_does_not_import_candle_or_fly():
     blob = "\n".join(path.read_text() for path in (ROOT / "spx_noon").glob("*.py"))
     lowered = blob.lower()

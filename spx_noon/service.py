@@ -12,7 +12,7 @@ Mac and Windows launchers keep ``SPX_NOON_HOME`` and ``SPX_NOON_CONFIG``; this
 process reads neither. ``DATA`` is the mounted disk, not the Unix ``HOME``.
 
   ``DATA``          disk mount, default ``/data``  -> ``base_dir`` for the children
-  ``BROKER``        required: tasty (tt, tastytrade); anything else is refused
+  ``BROKER``        required: tasty, the one spelling; anything else is refused
   ``MODE``          live (default) | dry | alerts
   ``TASTY_DATA``    production (default) | sandbox
   ``TASTY_ORDERS``  sandbox (default) | production  <- real money, with production data
@@ -22,7 +22,7 @@ Those six win over ``$DATA/config.json``, and the resolved, secret-free result i
 published to ``$DATA/state/service-config.json``, which is the file both children
 load. The seed is never overwritten and the environment is never logged.
 
-``BROKER`` has to be set, and it has to resolve to tastytrade. The children are
+``BROKER`` has to be set, and it has to be ``tasty``. The children are
 launched with that broker on the command line. Nothing is inferred from Linux.
 
 Log lines are plain and start with one of ``boot``, ``waiting``, ``running``,
@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover - Windows keeps the pid-file gate
 
 from . import resume
 from .calendar import fallback_status
-from .config import Config, SafetyError, load_config
+from .config import Config, SafetyError, load_config, refuse_former_broker_spelling
 
 ET = ZoneInfo("America/New_York")
 log = logging.getLogger("spx_noon.service")
@@ -64,8 +64,8 @@ SERVICE_CONFIG = "service-config.json"
 
 #: The mounted disk when ``DATA`` is unset or blank.
 DEFAULT_DATA = "/data"
+#: The one broker this worker runs, and the one accepted ``BROKER`` value.
 BROKER = "tasty"
-TASTY_BROKERS = ("tasty", "tt", "tastytrade")
 #: Modes a tastytrade session accepts. ``live`` is the only one that transmits.
 MODES = ("live", "dry", "alerts")
 
@@ -123,10 +123,12 @@ def env_overrides(env=None) -> dict:
         raise SafetyError(f"MODE must be live, dry, or alerts (got {mode!r})")
     broker = (env.get("BROKER") or "").strip().lower()
     if not broker:
-        raise SafetyError("BROKER must be set to tasty, tt, or tastytrade")
-    if broker not in TASTY_BROKERS:
-        raise SafetyError(
-            f"BROKER must be tasty, tt, or tastytrade on this worker (got {broker!r})")
+        raise SafetyError("BROKER must be set to tasty")
+    # A former spelling names its one spelling, before the tasty-only check, so
+    # BROKER=tt says "use tasty" instead of a generic refusal.
+    refuse_former_broker_spelling(broker)
+    if broker != BROKER:
+        raise SafetyError(f"BROKER must be tasty on this worker (got {broker!r})")
     over = {"broker": BROKER, "base_dir": env_data(env), "mode": mode}
     for name, field in (("TASTY_DATA", "tasty_data"), ("TASTY_ORDERS", "tasty_orders")):
         value = (env.get(name) or "").strip().lower()

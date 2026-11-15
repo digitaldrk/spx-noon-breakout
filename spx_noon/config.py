@@ -110,29 +110,44 @@ def _t(value: str) -> time:
     return time(parts[0], parts[1], parts[2])
 
 
-_BROKER_ALIASES = {
-    "tt": "tasty",
-    "tastytrade": "tasty",
-    "tasty": "tasty",
-    "ibkr": "ibkr",
-    "sim": "sim",
-}
+#: One name each. These are the only broker values a launcher may pass.
+#: ``sim`` is the in-process test broker and is not a public name: it is valid on
+#: :class:`Config` only, never out of :func:`resolve_broker`.
+VALID_BROKERS = ("ibkr", "tasty")
+
+#: Spellings that used to resolve to a broker and no longer do. The value is the
+#: one spelling the error tells the operator to use. Nothing looks a broker up
+#: here: the only thing read out of it is the message.
+_FORMER_SPELLINGS = {"tt": "tasty", "tastytrade": "tasty", "ib": "ibkr"}
+
+
+def refuse_former_broker_spelling(key: str) -> None:
+    """Raise for a dropped spelling of a broker that still exists.
+
+    ``key`` is already stripped and lowercased. Used by every gate an operator
+    can reach: the CLIs, :func:`load_config`, :class:`Config`, and the worker's
+    ``BROKER`` variable, so one spelling is wrong in the same way everywhere.
+    """
+    use = _FORMER_SPELLINGS.get(key)
+    if use is not None:
+        raise SafetyError(
+            f"broker {key!r} is not valid; use {use}. Valid brokers: ibkr, tasty.")
 
 
 def resolve_broker(name: str | None = None) -> str:
-    """``tasty`` / ``tt`` / ``tastytrade`` are one broker. A missing name is refused.
+    """``ibkr`` and ``tasty`` are the only broker names. A missing name is refused.
 
     No environment variable and no operating system take part. The Mac launcher,
     the Windows launcher, and the Render worker each pass the broker they run.
+    ``auto`` and ``sim`` are unknown brokers here.
     """
     key = str(name or "").strip().lower()
     if not key:
-        raise SafetyError("broker must be set: ibkr, tasty, tt, or tastytrade")
-    found = _BROKER_ALIASES.get(key)
-    if found is None:
-        raise SafetyError(
-            f"unknown broker {name!r}; use ibkr, tasty, tt, or tastytrade")
-    return found
+        raise SafetyError("broker must be set: ibkr or tasty")
+    refuse_former_broker_spelling(key)
+    if key not in VALID_BROKERS:
+        raise SafetyError(f"unknown broker {name!r}; use ibkr or tasty")
+    return key
 
 
 @dataclass
@@ -187,7 +202,10 @@ class Config:
             path.mkdir(parents=True, exist_ok=True)
 
     def __post_init__(self) -> None:
-        self.broker = _BROKER_ALIASES.get(str(self.broker or "").strip().lower(), str(self.broker or "").strip().lower())
+        # Case and whitespace only. No spelling is remapped to another broker:
+        # Config(broker="tt") refuses here, it does not become tasty.
+        self.broker = str(self.broker or "").strip().lower()
+        refuse_former_broker_spelling(self.broker)
         if self.broker in ("ibkr", "sim"):
             if not self.mode:
                 self.mode = "dry" if self.dry_run else "paper"
@@ -283,7 +301,7 @@ class Config:
             if self.mode not in ("dry", "alerts", "paper"):
                 raise SafetyError(f"sim mode must be dry, alerts, or paper (got {self.mode!r})")
         elif not self.broker:
-            raise SafetyError("broker must be set: ibkr, tasty, tt, or tastytrade")
+            raise SafetyError("broker must be set: ibkr or tasty")
         else:
             raise SafetyError("Noon Breakout runs on Mac (IBKR) or Windows (tastytrade)")
         if self.decision_grace_s <= 0:
