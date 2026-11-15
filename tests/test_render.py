@@ -81,12 +81,21 @@ def test_a_missing_broker_is_refused_on_every_platform(monkeypatch, tmp_path):
                 resolve_broker(asked)
         with pytest.raises(SafetyError, match="broker must be set"):
             load_config(path)
-    for asked in ("tasty", "tt", "tastytrade", "  TASTY  "):
+    for asked in ("tasty", "  TASTY  "):
         assert resolve_broker(asked) == "tasty"
-    assert load_config(path, broker="tt").broker == "tasty"
+    assert load_config(path, broker="  TASTY  ").broker == "tasty"
     assert load_config(path, broker="ibkr").broker == "ibkr"   # a file key cannot override it
-    with pytest.raises(SafetyError, match="unknown broker"):
-        resolve_broker("nonsense")
+    for asked in ("nonsense", "auto"):                         # auto is not a broker here
+        with pytest.raises(SafetyError, match="unknown broker"):
+            resolve_broker(asked)
+    for asked, use in (("tt", "tasty"), ("tastytrade", "tasty"), ("ib", "ibkr")):
+        want = f"broker '{asked}' is not valid; use {use}. Valid brokers: ibkr, tasty."
+        with pytest.raises(SafetyError) as caught:
+            resolve_broker(asked)
+        assert str(caught.value) == want
+        with pytest.raises(SafetyError) as caught:
+            load_config(path, broker=asked)
+        assert str(caught.value) == want
 
 
 # --------------------------------------------------------------------------
@@ -117,11 +126,23 @@ def test_every_accepted_value_is_taken_and_nothing_else_is(tmp_path):
     def cfg(**env):
         return service.build_config(base / "config.json", _env(base, **env))
 
-    for broker in ("tasty", "tt", "tastytrade", "  TASTY  "):
+    for broker in ("tasty", "Tasty", "  TASTY  "):
         assert cfg(BROKER=broker).broker == "tasty"
     for blank in ("", "   "):
         with pytest.raises(SafetyError, match="BROKER must be set"):
             cfg(BROKER=blank)
+    # a dropped spelling names its one spelling instead of the generic refusal
+    for broker, use in (("tt", "tasty"), ("TASTYTRADE", "tasty"), ("  ib ", "ibkr")):
+        token = broker.strip().lower()
+        with pytest.raises(SafetyError) as caught:
+            cfg(BROKER=broker)
+        assert str(caught.value) == (
+            f"broker '{token}' is not valid; use {use}. Valid brokers: ibkr, tasty.")
+    # this worker is tasty only, and the refusal no longer lists the old spellings
+    for broker in ("ibkr", "auto", "sim", "nonsense"):
+        with pytest.raises(SafetyError, match="BROKER must be tasty on this worker") as caught:
+            cfg(BROKER=broker)
+        assert "tt" not in str(caught.value) and "tastytrade" not in str(caught.value)
     for mode in ("live", "dry", "alerts"):
         got = cfg(MODE=mode)
         assert got.mode == mode

@@ -17,7 +17,7 @@ ET = ZoneInfo("America/New_York")
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="spx_noon check")
     parser.add_argument("--broker", default=None,
-                        help="ibkr, tasty, tt, or tastytrade. Required.")
+                        help="ibkr or tasty. Required.")
     parser.add_argument("--client-id", type=int, default=None)
     args = parser.parse_args(argv)
     try:

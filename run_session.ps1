@@ -6,10 +6,34 @@
 # Tastytrade live auto-approves. Price caps and the 10/min limit still apply.
 param(
     [ValidateSet("live", "alerts", "dry")][string]$Mode = "dry",
-    [ValidateSet("tasty", "tt", "tastytrade")][string]$Broker = "tasty"
+    [string]$Broker = "tasty"
 )
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
+# One name each. This PC launches tasty only, and tasty is the only accepted
+# spelling: 'tt' and 'tastytrade' are not, and 'ib' is not a spelling of ibkr.
+# ValidateSet cannot say which spelling to use, so -Broker is a plain string
+# checked here, before Python starts.
+$wanted = "$Broker".Trim().ToLower()
+switch ($wanted) {
+    "tt" {
+        [Console]::Error.WriteLine("broker 'tt' is not valid; use tasty. Valid brokers: ibkr, tasty.")
+        exit 2
+    }
+    "tastytrade" {
+        [Console]::Error.WriteLine("broker 'tastytrade' is not valid; use tasty. Valid brokers: ibkr, tasty.")
+        exit 2
+    }
+    "ib" {
+        [Console]::Error.WriteLine("broker 'ib' is not valid; use ibkr. Valid brokers: ibkr, tasty.")
+        exit 2
+    }
+}
+if ($wanted -ne "tasty") {
+    [Console]::Error.WriteLine("this PC runs tasty only (got '$wanted'). Use -Broker tasty.")
+    exit 2
+}
+$Broker = $wanted
 if (-not $env:SPX_NOON_HOME) { $env:SPX_NOON_HOME = $PSScriptRoot }
 if ((Get-Date).DayOfWeek -in @("Saturday", "Sunday")) { Write-Host "weekend - not running"; exit 0 }
 New-Item -ItemType Directory -Force -Path (Join-Path $env:SPX_NOON_HOME "state") | Out-Null
