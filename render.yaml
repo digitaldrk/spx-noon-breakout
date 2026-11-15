@@ -13,7 +13,9 @@ services:
     region: ohio
     dockerfilePath: ./Dockerfile
     dockerCommand: python -m spx_noon.service
-    autoDeploy: false
+    # A push to the repo's default branch deploys only after the GitHub checks
+    # pass. A red `test` or `docker` check leaves the running worker alone.
+    autoDeployTrigger: checksPass
     disk:
       name: spx-noon-data
       mountPath: /data

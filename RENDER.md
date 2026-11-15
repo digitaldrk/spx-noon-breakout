@@ -62,9 +62,20 @@ own edits to `/data/config.json` are still read first and are never overwritten.
 The Mac and Windows launchers keep `SPX_NOON_HOME` and `SPX_NOON_CONFIG`. This
 worker does not read them.
 
-`autoDeploy` is off. Deploys interrupt the process, so you choose when: **Manual
-Deploy → Deploy latest commit**. Never between 11:45 and 15:10 ET, when a trade
-can be open.
+A push to `main` deploys itself, but only once the checks are green.
+`autoDeployTrigger: checksPass` in `render.yaml` tells Render to wait for the
+two GitHub checks on that commit, `test` and `docker`
+(`.github/workflows/ci.yml`). Both pass and Render builds and deploys. Either
+one fails and nothing deploys: the worker keeps running the commit it is on.
+The trigger only takes effect once the Blueprint has been synced on Render;
+until then the dashboard keeps the old manual setting.
+
+A deploy still restarts the single worker, which interrupts the process, so time
+the merge: no deploy between 11:45 and 15:10 ET, when a trade can be open. Time
+the merge, not the deploy — the checks and then the image build run first, so a
+merge at 11:40 can land the restart inside the window. Leave room, or wait until
+after 15:10. That is advice to whoever merges, not a gate: neither Actions nor
+Render refuses a deploy by the clock.
 
 ## What it does each day
 
