@@ -1,0 +1,45 @@
+# One private background worker. No web service, no port, no health check,
+# no public URL. Starter, because a free worker sleeps and would miss 11:45 ET.
+# The disk at /data holds config.json, state/, logs/, and reports/, so a
+# restart mid-day still sees today's open position. See RENDER.md.
+services:
+  - type: worker
+    name: spx-noon
+    runtime: docker
+    plan: starter
+    region: ohio
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m spx_noon.service
+    autoDeploy: false
+    disk:
+      name: spx-noon-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: SPX_NOON_HOME
+        value: /data
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # Linux auto is IBKR. This pin is what makes the worker tastytrade.
+      - key: SPX_NOON_BROKER
+        value: tasty
+      # live is the mode that transmits; dry and alerts never send.
+      - key: SPX_NOON_MODE
+        value: live
+      # Real quotes, sandbox orders. Real money needs BOTH of the next two at
+      # production, then a redeploy. Production orders on sandbox data refuse to start.
+      - key: SPX_NOON_TASTY_DATA
+        value: production
+      - key: SPX_NOON_TASTY_ORDERS
+        value: sandbox
+      # Pasted in the dashboard, never in the repo, the image, or a log line.
+      - key: SPX_NOON_ACCOUNT
+        sync: false
+      - key: TASTYTRADE_PROD_CLIENT_SECRET
+        sync: false
+      - key: TASTYTRADE_PROD_REFRESH_TOKEN
+        sync: false
+      - key: TASTYTRADE_SANDBOX_CLIENT_SECRET
+        sync: false
+      - key: TASTYTRADE_SANDBOX_REFRESH_TOKEN
+        sync: false
