@@ -3,9 +3,11 @@
 # secrets/, tokens, state/, logs/, and reports/ live on the mounted disk.
 FROM python:3.11-slim
 
+# DATA is the mounted disk. MODE and TASTY_ORDERS are deliberately not here: an
+# image default would hide a dashboard that still has only an old SPX_NOON_ name.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    SPX_NOON_HOME=/data
+    DATA=/data
 
 # tzdata so America/New_York resolves; the session clock is Eastern.
 RUN apt-get update \

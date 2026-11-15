@@ -8,10 +8,11 @@ mode "live" is real money on 127.0.0.1:7496 (TWS) or 4001 (IB Gateway) with an
 Windows is tastytrade. ``tasty_data`` (default production) and ``tasty_orders``
 (default sandbox) choose the hosts.
 ``tasty_orders=production`` is real money and requires ``tasty_data=production``.
-A hosted worker has no file to edit, so ``mode``, ``tasty_data``, ``tasty_orders``,
-and ``account`` can also come from the four ``SPX_NOON_`` variables in
-:data:`ENV_FIELDS`, and ``SPX_NOON_BROKER`` pins ``auto``. That list is the whole
-set; the port, the host, and the IBKR live gate are never environment knobs.
+No field here is an environment knob. ``SPX_NOON_HOME`` fills ``base_dir`` when
+the file has none and ``SPX_NOON_CONFIG`` names the default file; both belong to
+the local Mac and Windows launchers. The hosted worker reads its own plain
+variables in :mod:`spx_noon.service`, resolves them there, and hands its children
+the resolved file.
 Tastytrade orders auto-approve: no console prompt takes part. mode "dry" (the
 default) and "alerts" never transmit.
 
@@ -129,19 +130,12 @@ def machine_broker() -> str:
 def resolve_broker(name: str | None = None) -> str:
     """``auto`` follows the machine. ``tasty`` / ``tt`` / ``tastytrade`` are one broker.
 
-    ``auto`` consults ``SPX_NOON_BROKER`` first: a hosted worker pins the broker in
-    its environment because Linux ``auto`` is IBKR. An explicit broker argument
-    never consults it, and with the variable unset nothing changes.
+    No environment variable takes part. Linux ``auto`` is IBKR, so the hosted
+    worker passes the broker it wants (``--broker tasty``) rather than pinning it
+    through the environment.
     """
     key = str(name or "auto").strip().lower()
     if key in ("", "auto"):
-        pinned = os.environ.get("SPX_NOON_BROKER", "").strip().lower()
-        if pinned and pinned not in ("", "auto"):
-            picked = _BROKER_ALIASES.get(pinned)
-            if picked is None:
-                raise SafetyError(
-                    f"unknown SPX_NOON_BROKER {pinned!r}; use tasty, tt, tastytrade, or ibkr")
-            return picked
         if sys.platform == "win32":
             return "tasty"
         return "ibkr"
@@ -340,35 +334,15 @@ def log_order(cfg, level, msg, *args, **kwargs) -> None:
     _order_log.log(level, str(msg) + order_log_suffix(cfg), *args, **kwargs)
 
 
-#: Environment overrides a hosted worker needs. Each one wins over the file and
-#: only when it is set to something. There is no general ``SPX_NOON_<FIELD>``
-#: overlay: the port, the host, and the IBKR live gate are not environment knobs.
-ENV_FIELDS = {
-    "SPX_NOON_MODE": "mode",
-    "SPX_NOON_TASTY_DATA": "tasty_data",
-    "SPX_NOON_TASTY_ORDERS": "tasty_orders",
-    "SPX_NOON_ACCOUNT": "account",
-}
-
-
-def env_overrides(environ=None) -> dict:
-    """The four hosted-worker fields that are set, trimmed. Empty is unset."""
-    environ = os.environ if environ is None else environ
-    found = {}
-    for name, field in ENV_FIELDS.items():
-        value = str(environ.get(name, "") or "").strip()
-        if value:
-            found[field] = value
-    return found
-
-
 def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
     """Load config.json over the defaults, then apply keyword overrides.
 
     A ``broker`` key inside the file is ignored. Tests may pass ``broker=``.
     A ``dry_run`` key inside the file is ignored. ``mode`` sets that flag.
-    The :data:`ENV_FIELDS` variables sit between the file and the keyword
-    overrides, so a hosted worker can set them and an explicit argument still wins.
+    No config field is read from the environment. ``mode``, ``tasty_data``,
+    ``tasty_orders``, and ``account`` come from the file or from a keyword, and
+    the hosted worker resolves its own plain variables in
+    :mod:`spx_noon.service` before its children ever call this.
     """
     data: dict = {}
     if path is None:
@@ -391,7 +365,6 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
         overrides["broker"] = resolve_broker("auto")
     if os.environ.get("SPX_NOON_HOME") and "base_dir" not in data:
         kwargs["base_dir"] = os.environ["SPX_NOON_HOME"]
-    kwargs.update(env_overrides())
     kwargs.update(overrides)
     cfg = Config(**kwargs)
     cfg.validate()

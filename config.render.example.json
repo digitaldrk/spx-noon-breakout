@@ -1,5 +1,5 @@
 {
-  "_comment": "Seed for the hosted tastytrade worker (see RENDER.md). The worker copies this to $SPX_NOON_HOME/config.json once, only when that file is missing, and never overwrites it. There are no credentials here and none belong here: the five secrets are env vars pasted in the Render dashboard. There is no broker key - SPX_NOON_BROKER pins the broker - and no base_dir, so SPX_NOON_HOME (/data, the mounted disk) is the home directory.",
+  "_comment": "Seed for the hosted tastytrade worker (see RENDER.md). The worker copies this to $DATA/config.json once, only when that file is missing, and never overwrites it. There are no credentials here and none belong here: the five secrets are env vars pasted in the Render dashboard. There is no broker key - the worker launches its children with --broker tasty - and no base_dir, so DATA (/data, the mounted disk) is the home directory. The worker's six variables, listed in RENDER.md, win over the values below.",
   "mode": "live",
   "tasty_data": "production",
   "tasty_orders": "sandbox",

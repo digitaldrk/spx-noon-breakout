@@ -13,7 +13,7 @@ A config file cannot switch brokers. On a Mac it is the one switch between paper
 
 **Windows:** see [WINDOWS_SETUP.md](WINDOWS_SETUP.md). Copy `config.windows.example.json` to `config.json`. A bare `.\run_session.ps1` stays dry. `.\run_session.ps1 -Mode live` is the send mode. Tastytrade auto-approves. The price cap and 10 orders per minute still apply.
 
-**Hosted (no computer left on):** see [RENDER.md](RENDER.md). One private Render background worker runs tastytrade from a container: real quotes, sandbox orders by default, state on a disk at `/data`. It changes nothing on this Mac or on Windows.
+**Hosted (no computer left on):** see [RENDER.md](RENDER.md). One private Render background worker runs tastytrade from a container: real quotes, sandbox orders by default, state on a disk at `/data`. Its settings are plain variable names, the same set every bot uses on Render — `DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `TASTY_ACCOUNT` — plus the four `TASTYTRADE_*` secrets. It changes nothing on this Mac or on Windows.
 
 ## Configuration
 
@@ -157,7 +157,7 @@ The bot implements version B in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). Re
 | `run_wrap.sh`, `spx_noon/wrap_run.py` | 16:20 read-only note. `--book paper` or `--book live` |
 | `config.example.json` | Mac template |
 | `config.windows.example.json` | Windows tastytrade template |
-| `spx_noon/service.py` | Hosted worker supervisor: waits for 11:45, spawns the session, restarts a crash, runs the 16:20 wrap. [RENDER.md](RENDER.md) |
+| `spx_noon/service.py` | Hosted worker supervisor: reads `DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `TASTY_ACCOUNT`, waits for 11:45, spawns the session, restarts a crash, runs the 16:20 wrap. [RENDER.md](RENDER.md) |
 | `render.yaml`, `Dockerfile`, `config.render.example.json` | Render blueprint, image, and the seed copied to the disk once |
 | `run.sh`, `deploy/` | Mac launchers |
 | `run_session.ps1` | Windows launcher. Default `-Mode dry` `-Broker auto` |

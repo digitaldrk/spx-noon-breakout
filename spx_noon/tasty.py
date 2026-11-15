@@ -146,9 +146,16 @@ def _hostname(host: str) -> str:
     return text.split("/")[0]
 
 
-def safety_banner(data_host: str, order_host: str, orders_mode: str) -> str:
-    real = "YES" if orders_mode == "production" else "NO"
-    return f"DATA={_hostname(data_host)} ORDERS={_hostname(order_host)} REAL MONEY={real}"
+def safety_banner(data_host: str, order_host: str, orders_mode: str, real: bool | None = None) -> str:
+    """The two hosts and the real-money flag, in one line.
+
+    The flag follows the order host, which is the whole rule inside a session
+    that is already running. ``real`` lets a caller state a stricter rule of its
+    own: the hosted worker also needs ``MODE=live``, so a dry run whose orders
+    are production still prints ``REAL MONEY=NO``.
+    """
+    flag = (orders_mode == "production") if real is None else bool(real)
+    return f"DATA={_hostname(data_host)} ORDERS={_hostname(order_host)} REAL MONEY={'YES' if flag else 'NO'}"
 
 
 def _finite(value):
