@@ -58,17 +58,8 @@ These six win over `/data/config.json`. The worker resolves them once at boot,
 writes the result to `/data/state/service-config.json`, and points the session
 and the wrap at that file, so what you set in the dashboard is what trades. Your
 own edits to `/data/config.json` are still read first and are never overwritten.
-
-**Renamed from `SPX_NOON_*`.** An older worker used `SPX_NOON_HOME`,
-`SPX_NOON_BROKER`, `SPX_NOON_MODE`, `SPX_NOON_TASTY_DATA`,
-`SPX_NOON_TASTY_ORDERS`, and `SPX_NOON_ACCOUNT`. If one of those is still in the
-service environment and the new name is not set, the worker refuses to start and
-names the variable to set. It never applies the old value and never falls back
-to a default: `SPX_NOON_TASTY_ORDERS=production` must not come back as sandbox
-orders, and `SPX_NOON_MODE=dry` must not come back as a mode that transmits. Set
-the new key, delete the old one, redeploy. The Mac and Windows launchers are
-untouched — they keep `SPX_NOON_HOME` and `SPX_NOON_CONFIG`, which this worker
-does not read.
+The Mac and Windows launchers keep `SPX_NOON_HOME` and `SPX_NOON_CONFIG`. This
+worker does not read them.
 
 `autoDeploy` is off. Deploys interrupt the process, so you choose when: **Manual
 Deploy → Deploy latest commit**. Never between 11:45 and 15:10 ET, when a trade

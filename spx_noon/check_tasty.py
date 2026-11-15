@@ -17,7 +17,7 @@ ET = ZoneInfo("America/New_York")
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="spx_noon check --broker tasty")
-    parser.add_argument("--broker", default="tasty")
+    parser.add_argument("--broker", default=None)
     args = parser.parse_args(argv)
     try:
         broker_name = resolve_broker(args.broker)

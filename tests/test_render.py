@@ -24,15 +24,6 @@ ET = ZoneInfo("America/New_York")
 
 #: The worker's own settings. Plain names, no bot prefix, the same set on every bot.
 WORKER_ENV = ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "TASTY_ACCOUNT")
-#: Renamed. One of these without its replacement is a refusal, not a default.
-RETIRED_ENV = (
-    "SPX_NOON_HOME",
-    "SPX_NOON_BROKER",
-    "SPX_NOON_MODE",
-    "SPX_NOON_TASTY_DATA",
-    "SPX_NOON_TASTY_ORDERS",
-    "SPX_NOON_ACCOUNT",
-)
 #: Pasted in the dashboard: the account to trade, and what tasty.load_creds reads.
 SECRET_NAMES = (
     "TASTY_ACCOUNT",
@@ -53,7 +44,7 @@ posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX flock and sign
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Every test starts with the worker's and the launchers' variables unset."""
-    for name in (*WORKER_ENV, *RETIRED_ENV, "SPX_NOON_CONFIG"):
+    for name in (*WORKER_ENV, "SPX_NOON_HOME", "SPX_NOON_CONFIG"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -190,36 +181,14 @@ def test_real_money_needs_production_data_production_orders_and_live_mode(tmp_pa
     assert service.real_money(cfg(TASTY_DATA="sandbox")) is False
 
 
-def test_an_old_name_on_its_own_refuses_to_start_and_names_the_new_one(tmp_path):
-    """Never the old value, never a default. This is the renamed-dashboard case."""
-    assert service.RETIRED_NAMES == {
-        "SPX_NOON_HOME": "DATA",
-        "SPX_NOON_BROKER": "BROKER",
-        "SPX_NOON_MODE": "MODE",
-        "SPX_NOON_TASTY_DATA": "TASTY_DATA",
-        "SPX_NOON_TASTY_ORDERS": "TASTY_ORDERS",
-        "SPX_NOON_ACCOUNT": "TASTY_ACCOUNT",
-    }
-    for old, new in service.RETIRED_NAMES.items():
-        for value in ("5WX12345", "production", "dry", ""):
-            for fresh in ({}, {new: ""}, {new: "   "}):      # absent, blank, whitespace
-                with pytest.raises(SafetyError) as caught:
-                    service.check_retired({old: value, **fresh})
-                message = str(caught.value)
-                assert new in message                        # the variable to set
-                assert old not in message and "SPX_NOON" not in message
-                if value:
-                    assert value not in message              # never the retired value
-
-
-def test_the_new_name_wins_and_the_old_one_is_never_read(tmp_path):
+def test_old_launcher_names_are_not_worker_settings(tmp_path):
+    """SPX_NOON_* belongs to the Mac and Windows launchers. The worker does not read it."""
     base = _disk(tmp_path, mode="dry")
     env = _env(base, BROKER="tasty", MODE="live", TASTY_DATA="production",
                TASTY_ORDERS="sandbox", TASTY_ACCOUNT="mine",
                SPX_NOON_HOME="/nowhere", SPX_NOON_BROKER="ibkr", SPX_NOON_MODE="dry",
                SPX_NOON_TASTY_DATA="sandbox", SPX_NOON_TASTY_ORDERS="production",
                SPX_NOON_ACCOUNT="theirs")
-    service.check_retired(env)                     # every new name is set; nothing is refused
     cfg = service.build_config(base / "config.json", env)
     assert cfg.broker == "tasty" and cfg.mode == "live" and cfg.home == base
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
@@ -243,7 +212,6 @@ def test_the_workers_list_of_variables_is_closed(tmp_path):
         "SPX_NOON_LIVE_ACCOUNT": "U7654321",
     }
     env = {**noise, **_env(base)}
-    service.check_retired(env)                     # none of those names is guarded
     cfg = service.build_config(base / "config.json", env)
     assert cfg.tasty_orders == "sandbox" and service.real_money(cfg) is False
     assert cfg.port == 7497 and cfg.host == "127.0.0.1"
@@ -311,8 +279,7 @@ def test_the_seed_carries_no_secrets_no_base_dir_and_no_broker():
         assert word not in lowered
     for name in SECRET_NAMES:
         assert name not in text
-    for name in RETIRED_ENV:                       # the comment names no retired variable
-        assert name not in text
+    assert "SPX_NOON_" not in text
 
 
 def test_the_seed_loads_as_a_sandbox_worker(tmp_path):
@@ -436,7 +403,7 @@ def test_the_boot_line_names_the_hosts_and_the_real_money_rule_and_no_secret(
     assert "broker=tasty mode=live" in line and f"home={tmp_path}" in line
     assert "DATA=api.tastyworks.com ORDERS=api.cert.tastyworks.com REAL MONEY=NO" in line
     assert "5WX12345" not in line                     # the account is not in a boot line
-    for name in (*RETIRED_ENV, "TASTY_ACCOUNT", "TASTY_ORDERS", "TASTY_DATA", "BROKER=",
+    for name in ("SPX_NOON_", "TASTY_ACCOUNT", "TASTY_ORDERS", "TASTY_DATA", "BROKER=",
                  "TASTYTRADE_PROD_REFRESH_TOKEN"):
         assert name not in line                       # no environment dump, no secret
 
@@ -465,19 +432,6 @@ def test_the_worker_refuses_production_orders_on_sandbox_data(monkeypatch, tmp_p
     out = capsys.readouterr().out
     assert "refusing to start" in out and "tasty_orders=production" in out
     assert not (tmp_path / "state" / service.SERVICE_CONFIG).exists()
-
-
-def test_the_worker_refuses_to_boot_on_a_retired_name_alone(monkeypatch, tmp_path, capsys):
-    """An existing service that still has only SPX_NOON_TASTY_ORDERS fails closed."""
-    monkeypatch.setenv("DATA", str(tmp_path))
-    monkeypatch.setenv("SPX_NOON_TASTY_ORDERS", "production")
-    monkeypatch.setenv("SPX_NOON_MODE", "dry")
-    assert service.main() == 2
-    out = capsys.readouterr().out
-    assert "refusing to start" in out
-    assert "TASTY_ORDERS" in out and "MODE" in out
-    assert "SPX_NOON_" not in out and "production" not in out and "dry" not in out
-    assert not (tmp_path / "config.json").exists()   # it refused before touching the disk
 
 
 def test_the_wrap_child_writes_the_paper_book_and_sends_nothing(monkeypatch, tmp_path):
@@ -1086,7 +1040,7 @@ def test_the_blueprint_sets_the_plain_env_and_leaves_the_five_secrets_blank():
     for name in PLAIN_NAMES:
         assert "sync" not in env[name]
     text = (ROOT / "render.yaml").read_text()
-    assert "key: SPX_NOON_" not in text      # no retired key is left in the blueprint
+    assert "key: SPX_NOON_" not in text
     for leak in ("secret:", "token:", "password"):
         assert leak not in text.lower()
 
@@ -1100,10 +1054,8 @@ def test_the_image_has_no_port_no_health_check_and_copies_no_state():
     assert 'CMD ["python", "-m", "spx_noon.service"]' in text
     assert "tzdata" in text and "'.[tasty]'" in text
     assert "DATA=/data" in text and "PYTHONUNBUFFERED=1" in text
-    # the image sets no retired name, and no default that would hide a dashboard
-    # which still has only the old one
-    for absent in (*(f"{name}=" for name in RETIRED_ENV),
-                   "MODE=", "TASTY_ORDERS=", "TASTY_DATA=", "BROKER=", "TASTY_ACCOUNT="):
+    assert "SPX_NOON_" not in text
+    for absent in ("MODE=", "TASTY_ORDERS=", "TASTY_DATA=", "BROKER=", "TASTY_ACCOUNT="):
         assert absent not in text, absent
     copied = [line.split()[1] for line in lines if line.startswith("COPY ")]
     assert copied == ["pyproject.toml", "spx_noon", service.SEED_NAME]
@@ -1119,8 +1071,8 @@ def test_render_md_covers_the_four_operator_jobs():
                    "BROKER=tasty", "REAL MONEY=NO", "REAL MONEY=YES",
                    "11:45", "16:20", "15:10"):
         assert needle in text, needle
-    for name in (*SECRET_NAMES, *PLAIN_NAMES, *RETIRED_ENV):
-        assert name in text, name              # the new names, and the pairs to rename
+    for name in (*SECRET_NAMES, *PLAIN_NAMES):
+        assert name in text, name
     assert "python -m spx_noon wrap --now" in text
     # a second account is a second worker: its own disk, its own account, no code change
     for needle in ("own disk", "TASTY_ACCOUNT", "not a code change"):
@@ -1129,7 +1081,7 @@ def test_render_md_covers_the_four_operator_jobs():
 
 
 def test_the_docs_use_the_new_names_for_the_worker():
-    """README and the seed stop telling an operator to set a retired variable."""
+    """README names the worker's variables. The seed does not mention a launcher variable."""
     readme = (ROOT / "README.md").read_text()
     for name in ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "TASTY_ACCOUNT"):
         assert f"`{name}`" in readme, name

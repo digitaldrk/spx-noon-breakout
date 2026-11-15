@@ -20,10 +20,7 @@ process reads neither. ``DATA`` is the mounted disk, not the Unix ``HOME``.
 
 Those six win over ``$DATA/config.json``, and the resolved, secret-free result is
 published to ``$DATA/state/service-config.json``, which is the file both children
-load. The seed is never overwritten and the environment is never logged. A worker
-environment that still carries one of the retired ``SPX_NOON_*`` names without
-the new one refuses to start, naming the new variable: an operator who renamed
-nothing must not get the default instead of what they set.
+load. The seed is never overwritten and the environment is never logged.
 
 ``BROKER`` has to be set, and it has to resolve to tastytrade. The children are
 launched with that broker on the command line. Nothing is inferred from Linux.
@@ -74,18 +71,6 @@ TASTY_BROKERS = ("tasty", "tt", "tastytrade")
 #: Modes a tastytrade session accepts. ``live`` is the only one that transmits.
 MODES = ("live", "dry", "alerts")
 
-#: A retired worker name and the name that replaced it. An environment that still
-#: has the old one and not the new one fails closed: the old value is never read,
-#: never logged, and never falls through to a default.
-RETIRED_NAMES = {
-    "SPX_NOON_HOME": "DATA",
-    "SPX_NOON_BROKER": "BROKER",
-    "SPX_NOON_MODE": "MODE",
-    "SPX_NOON_TASTY_DATA": "TASTY_DATA",
-    "SPX_NOON_TASTY_ORDERS": "TASTY_ORDERS",
-    "SPX_NOON_ACCOUNT": "TASTY_ACCOUNT",
-}
-
 #: The read-only wrap. 16:20 ET matches the Mac launchd job.
 WRAP_AT = time(16, 20)
 #: The runner itself stops looking for an entry at 15:10 ET with nothing open.
@@ -131,34 +116,12 @@ def config_path(env=None) -> Path:
     return Path(os.path.expanduser(env_data(env))) / "config.json"
 
 
-def check_retired(env=None) -> None:
-    """Refuse to start when a renamed variable is still the only one that is set.
-
-    Applying the old value would be guessing, and defaulting would quietly turn
-    ``SPX_NOON_TASTY_ORDERS=production`` back into sandbox orders or
-    ``SPX_NOON_MODE=dry`` into a mode that transmits. The error names the new
-    variable and nothing else: an old value can be an account id, and RENDER.md
-    is where the pairs are written down.
-    """
-    env = os.environ if env is None else env
-    stale = [(old, new) for old, new in RETIRED_NAMES.items()
-             if old in env and not str(env.get(new, "") or "").strip()]
-    if not stale:
-        return
-    raise SafetyError(
-        "a retired variable is set and its replacement is not. Set "
-        + ", ".join(new for _old, new in stale)
-        + " in the service environment, then delete the retired key. RENDER.md lists the "
-          "pairs. The retired value is not read and not printed."
-    )
-
-
 def env_overrides(env=None) -> dict:
     """The six worker variables as ``load_config`` overrides. These win over the file.
 
-    Plain names, no bot prefix. A missing or blank value is the default in the
-    table at the top of this module; a value that is not accepted is a
-    :class:`SafetyError`, not a silent fallback.
+    Plain names, no bot prefix. ``BROKER`` is required. For the others, a missing
+    or blank value is the default in the table at the top of this module. A
+    value that is not accepted is a :class:`SafetyError`, not a silent fallback.
     """
     env = os.environ if env is None else env
     mode = (env.get("MODE") or "").strip().lower() or "live"
@@ -591,7 +554,6 @@ def _setup_logging(home: Path) -> None:
 
 def main(argv=None) -> int:
     try:
-        check_retired()
         path = config_path()
         seeded = seed_config(path)
         cfg = build_config(path)

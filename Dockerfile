@@ -3,8 +3,8 @@
 # secrets/, tokens, state/, logs/, and reports/ live on the mounted disk.
 FROM python:3.11-slim
 
-# DATA is the mounted disk. MODE and TASTY_ORDERS are deliberately not here: an
-# image default would hide a dashboard that still has only an old SPX_NOON_ name.
+# DATA is the mounted disk. MODE, BROKER, and the tastytrade hosts stay in the
+# service environment.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     DATA=/data

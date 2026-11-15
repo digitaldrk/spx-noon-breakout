@@ -117,7 +117,7 @@ def test_ibkr_live_needs_a_set_non_paper_account_in_the_config(monkeypatch, tmp_
     # the config file plus the TWS session is the whole switch
     path = _write(tmp_path, "live.json",
                   '{"mode": "live", "port": 7496, "account": "%s"}' % LIVE_ACCOUNT)
-    cfg = load_config(path)
+    cfg = load_config(path, broker="ibkr")
     assert cfg.broker == "ibkr" and cfg.mode == "live" and cfg.ibkr_live is True
     assert cfg.account == LIVE_ACCOUNT and cfg.dry_run is False
 
@@ -132,7 +132,7 @@ def test_the_retired_live_env_vars_neither_enable_nor_block_live(monkeypatch, tm
             monkeypatch.delenv(name, raising=False)
         for name, value in zip(RETIRED_ENV, values):
             monkeypatch.setenv(name, value)
-        cfg = load_config(path)
+        cfg = load_config(path, broker="ibkr")
         assert cfg.ibkr_live is True and cfg.sends_orders() is True
         assert cfg.real_money_flag == "YES"
         assert check_accounts(cfg, [LIVE_ACCOUNT]) == LIVE_ACCOUNT
