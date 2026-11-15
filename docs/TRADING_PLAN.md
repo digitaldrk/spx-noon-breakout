@@ -150,7 +150,7 @@ logged into paper. No environment variable takes part in either. Tastytrade is u
 - TWS (or IB Gateway) logged into the **live** account, API enabled, Read-Only API off, socket port 7496 (Gateway 4001).
 - The live account has SPX index + SPX options market data subscriptions and options trading permissions for spreads.
 - First live day: watch the banner and the first order ticket.
-- `config.json`: `mode` `live`, `port` 7496 (or 4001), `account` set to the live id. The same 11:45 job runs it; `./deploy/install_launchd.sh` takes no arguments and there is no second job to install. Run it once when upgrading from the old two-job setup: it deletes the retired `com.derek.spxnoon.live` pair so a stale real-money job cannot fire beside this one.
+- `config.json`: `mode` `live`, `port` 7496 (or 4001), `account` set to the live id. The same 11:45 job runs it; `./deploy/install_launchd.sh` takes no arguments and there is no second job to install.
 - `./run.sh live` is a one-shot override of that same script. It still needs the live port, the live account, and the live TWS session.
 - Live fills are in `state/trades-live.csv` and `reports/wrap-live-<date>.md`, not in the paper total.
 

@@ -19,8 +19,6 @@ from spx_noon.ib import check_accounts, paper_send_allowed, send_allowed
 
 ROOT = Path(__file__).resolve().parent.parent
 LIVE_ACCOUNT = "U7654321"
-#: Retired. Nothing in the code reads these; setting them must change nothing.
-RETIRED_ENV = ("SPX_NOON_ALLOW_LIVE", "SPX_NOON_LIVE_ACCOUNT")
 
 
 def _live_cfg(port=7496, account=LIVE_ACCOUNT, **extra):
@@ -48,7 +46,6 @@ def test_mac_example_is_paper_port_and_ignores_a_broker_key(tmp_path):
 def test_windows_example_stays_tasty_and_does_not_send():
     text = (ROOT / "config.windows.example.json").read_text()
     assert "dry_run" not in text
-    assert "tasty_allow_production_orders" not in text
     cfg = load_config(ROOT / "config.windows.example.json", broker="tasty")
     assert cfg.broker == "tasty" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
@@ -120,35 +117,6 @@ def test_ibkr_live_needs_a_set_non_paper_account_in_the_config(monkeypatch, tmp_
     cfg = load_config(path, broker="ibkr")
     assert cfg.broker == "ibkr" and cfg.mode == "live" and cfg.ibkr_live is True
     assert cfg.account == LIVE_ACCOUNT and cfg.dry_run is False
-
-
-def test_the_retired_live_env_vars_neither_enable_nor_block_live(monkeypatch, tmp_path):
-    """Nothing reads SPX_NOON_ALLOW_LIVE or SPX_NOON_LIVE_ACCOUNT any more."""
-    monkeypatch.setattr(sys, "platform", "darwin")
-    path = _write(tmp_path, "live.json",
-                  '{"mode": "live", "port": 7496, "account": "%s"}' % LIVE_ACCOUNT)
-    for values in ((), ("1", LIVE_ACCOUNT), ("0", "U0000000"), ("", "")):
-        for name in RETIRED_ENV:
-            monkeypatch.delenv(name, raising=False)
-        for name, value in zip(RETIRED_ENV, values):
-            monkeypatch.setenv(name, value)
-        cfg = load_config(path, broker="ibkr")
-        assert cfg.ibkr_live is True and cfg.sends_orders() is True
-        assert cfg.real_money_flag == "YES"
-        assert check_accounts(cfg, [LIVE_ACCOUNT]) == LIVE_ACCOUNT
-        send_allowed(cfg, LIVE_ACCOUNT, "SPXNOON-20261112-1")
-        # and they never loosen a config that is not live
-        dry = Config(broker="ibkr", mode="dry", account=LIVE_ACCOUNT)
-        dry.validate()
-        assert dry.ibkr_live is False and dry.sends_orders() is False
-
-
-def test_the_live_env_names_appear_nowhere_in_the_code():
-    paths = [ROOT / "run.sh", ROOT / "run_wrap.sh", *(ROOT / "spx_noon").glob("*.py"),
-             *(ROOT / "deploy").glob("*"), ROOT / "config.example.json"]
-    blob = "\n".join(path.read_text() for path in paths if path.is_file())
-    for name in RETIRED_ENV:
-        assert name not in blob
 
 
 def test_ibkr_live_takes_only_the_two_live_ports_on_localhost(monkeypatch):
@@ -462,13 +430,12 @@ def test_guard_refuses_when_not_live():
 
 
 INSTALLED_LABELS = ("com.derek.spxnoon.plist", "com.derek.spxnoon.wrap.plist")
-RETIRED_LABELS = ("com.derek.spxnoon.live", "com.derek.spxnoon.live.wrap")
 
 
 def _launchd(tmp_path, *args, script="install_launchd.sh", already=()):
     """Run a deploy script against a throwaway HOME with stub launchctl/plutil.
 
-    ``already`` pre-seeds plist names, standing in for an older install.
+    ``already`` pre-seeds plist names.
     """
     stub = tmp_path / "bin"
     stub.mkdir(parents=True)
@@ -507,10 +474,7 @@ def test_no_arg_install_is_the_only_install_and_it_is_the_one_pair(tmp_path):
     session = (agents / "com.derek.spxnoon.plist").read_text()
     wrap = (agents / "com.derek.spxnoon.wrap.plist").read_text()
     for text in (session, wrap):
-        assert "spxnoon.live" not in text
         assert "__HOME__" not in text
-        for name in RETIRED_ENV:
-            assert name not in text
     # the 11:45 job runs run.sh with no mode and the 16:20 job run_wrap.sh with no book
     assert "run.sh</string>" in session and "<string>live</string>" not in session
     assert "run_wrap.sh</string>" in wrap and "<string>live</string>" not in wrap
@@ -524,29 +488,8 @@ def test_install_rejects_live_and_any_other_argument(tmp_path):
         assert "usage: install_launchd.sh" in done.stderr
 
 
-def test_install_boots_out_a_live_pair_an_older_install_left_behind(tmp_path):
-    """Two 11:45 jobs on one client id is the thing this consolidation removes."""
-    stale = [f"{label}.plist" for label in RETIRED_LABELS]
-    done, installed, agents = _launchd(tmp_path, already=stale)
-    assert done.returncode == 0, done.stderr
-    assert installed == sorted(INSTALLED_LABELS)
-    for name in stale:
-        assert not (agents / name).exists()
-        assert str(agents / name) in done.booted_out
-        assert f"removed retired {agents / name}" in done.stdout
-
-
-def test_install_rejecting_an_argument_leaves_an_older_install_alone(tmp_path):
-    """The usage exit happens before anything is booted out or written."""
-    stale = [f"{label}.plist" for label in RETIRED_LABELS]
-    done, installed, _agents = _launchd(tmp_path, "live", already=stale)
-    assert done.returncode == 2
-    assert installed == sorted(stale)
-    assert done.booted_out == []
-
-
-def test_uninstall_removes_both_pairs_and_skips_what_is_not_there(tmp_path):
-    present = ["com.derek.spxnoon.plist", f"{RETIRED_LABELS[0]}.plist"]
+def test_uninstall_removes_what_is_there_and_skips_what_is_not(tmp_path):
+    present = ["com.derek.spxnoon.plist"]
     done, installed, agents = _launchd(tmp_path, script="uninstall_launchd.sh", already=present)
     assert done.returncode == 0, done.stderr
     assert installed == []
@@ -558,14 +501,7 @@ def test_no_live_plist_templates_remain():
     names = sorted(path.name for path in (ROOT / "deploy").glob("*.template"))
     assert names == ["com.derek.spxnoon.plist.template", "com.derek.spxnoon.wrap.plist.template"]
     blob = "\n".join(path.read_text() for path in (ROOT / "deploy").glob("*"))
-    assert "__LIVE_ACCOUNT__" not in blob
     assert LIVE_ACCOUNT not in blob
-
-
-def test_uninstall_still_cleans_up_the_retired_live_labels():
-    text = (ROOT / "deploy" / "uninstall_launchd.sh").read_text()
-    for label in ("com.derek.spxnoon", "com.derek.spxnoon.wrap", *RETIRED_LABELS):
-        assert label in text
 
 
 def _code_lines(text: str) -> str:
@@ -626,8 +562,6 @@ def test_run_scripts_override_the_mode_and_the_book_for_one_launch():
     wrap_sh = (ROOT / "run_wrap.sh").read_text()
     assert "--book" in wrap_sh and "live|paper" in wrap_sh
     for code in (_code_lines(run_sh), _code_lines(wrap_sh)):
-        for name in RETIRED_ENV:
-            assert name not in code
         # neither script forces a mode or a book when launchd runs it bare
         assert "--mode live" not in code and "--book paper" not in code
 

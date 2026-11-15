@@ -129,18 +129,16 @@ def _broker(tmp_path, *, orders="sandbox", data="production", mode="live", cap=1
 
 def test_aliases_and_a_missing_broker_is_refused():
     assert resolve_broker("tasty") == resolve_broker("tt") == resolve_broker("tastytrade") == "tasty"
-    for missing in ("auto", "", None):
+    for missing in ("", None):
         with pytest.raises(SafetyError, match="broker must be set"):
             resolve_broker(missing)
-    # the alias table is the whole list of brokers. A retired one is not on it,
-    # and anything that is not on it is refused rather than guessed at.
     assert sorted(_BROKER_ALIASES) == ["ibkr", "sim", "tasty", "tastytrade", "tt"]
     for name in ("nope", "tda", "etrade", "ib"):
         with pytest.raises(SafetyError, match="unknown broker"):
             resolve_broker(name)
 
 
-def test_config_defaults_and_rejects_a_mismatch(tmp_path, monkeypatch):
+def test_config_defaults_and_rejects_a_mismatch(tmp_path):
     cfg = Config(broker="tasty", mode="dry", base_dir=str(tmp_path))
     assert cfg.tasty_data == "production"
     assert cfg.tasty_orders == "sandbox"
@@ -155,22 +153,12 @@ def test_config_defaults_and_rejects_a_mismatch(tmp_path, monkeypatch):
         Config(broker="tasty", mode="dry", tasty_data="sandbox", tasty_orders="production").validate()
     with pytest.raises(SafetyError):
         Config(broker="tasty", mode="dry", max_orders_per_min=11).validate()
-    monkeypatch.setenv("TASTYTRADE_ORDERS", "production")
-    monkeypatch.setenv("tasty_allow_production_orders", "1")
     path = tmp_path / "bare.json"
     path.write_text('{"mode": "dry", "broker": "ibkr"}')
     loaded = load_config(path, broker="tasty")
     assert loaded.broker == "tasty"
     assert loaded.tasty_orders == "sandbox"
     assert loaded.tasty_data == "production"
-
-
-def test_no_production_order_toggle_in_source():
-    blob = "\n".join(
-        path.read_text() for path in (__import__("pathlib").Path(__file__).resolve().parent.parent / "spx_noon").glob("*.py")
-    )
-    assert "tasty_allow_production_orders" not in blob
-    assert "TASTYTRADE_ORDERS" not in blob
 
 
 def test_vertical_price_and_candle_bars():

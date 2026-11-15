@@ -1,7 +1,7 @@
 """Configuration. The launcher names the broker. A config file cannot.
 
 The Mac job passes ``ibkr``. The Windows job passes ``tasty``. The Render worker
-requires ``BROKER``. Nothing here looks at the operating system and picks one.
+requires ``BROKER``.
 Mac runs IBKR TWS. There is one job and one config: ``mode``, ``port``,
 and ``account`` are the switch, together with the TWS session the operator is
 logged into. mode "paper" is 127.0.0.1:7497 with account ids starting with D.
@@ -126,7 +126,7 @@ def resolve_broker(name: str | None = None) -> str:
     the Windows launcher, and the Render worker each pass the broker they run.
     """
     key = str(name or "").strip().lower()
-    if key in ("", "auto"):
+    if not key:
         raise SafetyError("broker must be set: ibkr, tasty, tt, or tastytrade")
     found = _BROKER_ALIASES.get(key)
     if found is None:
@@ -188,8 +188,6 @@ class Config:
 
     def __post_init__(self) -> None:
         self.broker = _BROKER_ALIASES.get(str(self.broker or "").strip().lower(), str(self.broker or "").strip().lower())
-        if self.broker == "auto":
-            self.broker = ""
         if self.broker in ("ibkr", "sim"):
             if not self.mode:
                 self.mode = "dry" if self.dry_run else "paper"

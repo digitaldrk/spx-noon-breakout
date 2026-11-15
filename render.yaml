@@ -24,7 +24,6 @@ services:
         value: /data
       - key: PYTHONUNBUFFERED
         value: "1"
-      # Linux auto is IBKR. This worker refuses anything but tastytrade.
       - key: BROKER
         value: tasty
       # live is the mode that transmits; dry and alerts never send.
