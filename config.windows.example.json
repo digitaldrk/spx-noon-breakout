@@ -1,5 +1,5 @@
 {
-  "_comment": "Windows + tastytrade. Copy to config.json. run_session.ps1 passes --broker tasty; this file cannot select a broker. tasty_orders=sandbox (the default) sends to api.cert.tastyworks.com. tasty_orders=production is real money and requires tasty_data=production. There is no env toggle. run_session.ps1 defaults to dry. -Mode live auto-approves; nothing waits on a human.",
+  "_comment": "Windows + tastytrade. Copy to config.json. run_session.ps1 passes --broker tasty; this file cannot select a broker. tasty_orders=sandbox (the default) sends to api.cert.tastyworks.com. tasty_orders=production is real money and requires tasty_data=production. run_session.ps1 defaults to dry. -Mode live auto-approves; nothing waits on a human.",
   "mode": "dry",
   "account": "",
   "tasty_data": "production",

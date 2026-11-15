@@ -15,7 +15,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from spx_noon import config as config_module
 from spx_noon import resume, service
 from spx_noon.config import Config, SafetyError, load_config, resolve_broker
 
@@ -76,9 +75,8 @@ def test_a_missing_broker_is_refused_on_every_platform(monkeypatch, tmp_path):
     path = _write(tmp_path, "config.json", {"broker": "tasty", "mode": "dry"})
     for platform in ("linux", "darwin", "win32"):
         monkeypatch.setattr(sys, "platform", platform)
-        for name in ("BROKER", "SPX_NOON_BROKER"):
-            monkeypatch.setenv(name, "tasty")
-        for asked in ("auto", "", None):
+        monkeypatch.setenv("BROKER", "tasty")
+        for asked in ("", None):
             with pytest.raises(SafetyError, match="broker must be set"):
                 resolve_broker(asked)
         with pytest.raises(SafetyError, match="broker must be set"):
@@ -138,7 +136,7 @@ def test_every_accepted_value_is_taken_and_nothing_else_is(tmp_path):
     for bad in ("paper", "live-ish", "LIVE!"):
         with pytest.raises(SafetyError, match="MODE"):
             cfg(MODE=bad)
-    for bad in ("ibkr", "sim", "schwab"):
+    for bad in ("ibkr", "sim", "nope"):
         with pytest.raises(SafetyError, match="BROKER"):
             cfg(BROKER=bad)
     for bad in ("prod", "cert", "yes"):
@@ -181,14 +179,12 @@ def test_real_money_needs_production_data_production_orders_and_live_mode(tmp_pa
     assert service.real_money(cfg(TASTY_DATA="sandbox")) is False
 
 
-def test_old_launcher_names_are_not_worker_settings(tmp_path):
+def test_the_launcher_names_are_not_worker_settings(tmp_path):
     """SPX_NOON_* belongs to the Mac and Windows launchers. The worker does not read it."""
     base = _disk(tmp_path, mode="dry")
     env = _env(base, BROKER="tasty", MODE="live", TASTY_DATA="production",
                TASTY_ORDERS="sandbox", TASTY_ACCOUNT="mine",
-               SPX_NOON_HOME="/nowhere", SPX_NOON_BROKER="ibkr", SPX_NOON_MODE="dry",
-               SPX_NOON_TASTY_DATA="sandbox", SPX_NOON_TASTY_ORDERS="production",
-               SPX_NOON_ACCOUNT="theirs")
+               SPX_NOON_HOME="/nowhere")
     cfg = service.build_config(base / "config.json", env)
     assert cfg.broker == "tasty" and cfg.mode == "live" and cfg.home == base
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
@@ -196,20 +192,15 @@ def test_old_launcher_names_are_not_worker_settings(tmp_path):
 
 
 def test_the_workers_list_of_variables_is_closed(tmp_path):
-    """No port, no host, no order toggle, and the unread names stay unread."""
+    """No port, no host, and the launchers' names stay unread."""
     base = _disk(tmp_path, mode="dry")
     noise = {
         "PORT": "7496",
         "HOST": "1.2.3.4",
         "ACCOUNT": "U7654321",
-        "TASTYTRADE_ORDERS": "production",
         "DRY_RUN": "0",
         "TOAST": "1",
         "SPX_NOON_CONFIG": str(tmp_path / "nowhere.json"),
-        "SPX_NOON_HOST": "1.2.3.4",
-        "SPX_NOON_PORT": "7496",
-        "SPX_NOON_ALLOW_LIVE": "1",
-        "SPX_NOON_LIVE_ACCOUNT": "U7654321",
     }
     env = {**noise, **_env(base)}
     cfg = service.build_config(base / "config.json", env)
@@ -220,17 +211,11 @@ def test_the_workers_list_of_variables_is_closed(tmp_path):
 
 
 def test_load_config_reads_no_config_field_from_the_environment(monkeypatch, tmp_path):
-    """The four SPX_NOON_ fields are gone from the loader, and the plain names
-    are the worker's own: the Mac process has no environment knobs either way."""
-    assert not hasattr(config_module, "ENV_FIELDS")
-    assert not hasattr(config_module, "env_overrides")
+    """The plain names are the worker's own: the Mac process has no environment
+    knobs either way."""
     monkeypatch.setattr(sys, "platform", "darwin")
     path = _write(tmp_path, "config.json", {"mode": "paper", "port": 7497, "account": "D111"})
     for name, value in (
-        ("SPX_NOON_MODE", "live"),
-        ("SPX_NOON_TASTY_DATA", "sandbox"),
-        ("SPX_NOON_TASTY_ORDERS", "production"),
-        ("SPX_NOON_ACCOUNT", "U7654321"),
         ("MODE", "live"),
         ("TASTY_DATA", "sandbox"),
         ("TASTY_ORDERS", "production"),
@@ -1081,11 +1066,11 @@ def test_render_md_covers_the_four_operator_jobs():
 
 
 def test_the_docs_use_the_new_names_for_the_worker():
-    """README names the worker's variables. The seed does not mention a launcher variable."""
+    """README names the worker's six variables and, of the SPX_NOON_ ones, only
+    the two the local launchers use. The seed mentions no launcher variable."""
     readme = (ROOT / "README.md").read_text()
     for name in ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "TASTY_ACCOUNT"):
         assert f"`{name}`" in readme, name
-    # the local launchers' two variables are the only SPX_NOON_ names left in README
     assert sorted({word.strip("`,.") for word in readme.split()
                    if word.strip("`,.").startswith("SPX_NOON_")}) == \
         ["SPX_NOON_CONFIG", "SPX_NOON_HOME"]

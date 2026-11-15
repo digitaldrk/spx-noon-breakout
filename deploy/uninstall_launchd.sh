@@ -1,9 +1,7 @@
 #!/bin/bash
-# Removes the two Noon Breakout labels, plus the retired com.derek.spxnoon.live pair
-# when an older install left those plists on disk. Nothing installs that pair any more.
+# Removes the two Noon Breakout labels, com.derek.spxnoon and com.derek.spxnoon.wrap.
 set -euo pipefail
-for label in com.derek.spxnoon com.derek.spxnoon.wrap \
-             com.derek.spxnoon.live com.derek.spxnoon.live.wrap; do
+for label in com.derek.spxnoon com.derek.spxnoon.wrap; do
   DST="$HOME/Library/LaunchAgents/$label.plist"
   if [ ! -e "$DST" ]; then
     continue

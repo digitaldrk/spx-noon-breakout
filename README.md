@@ -24,7 +24,7 @@ Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` 
 | Machine | Copy | Where the launcher reads it |
 | --- | --- | --- |
 | Mac (IBKR paper) | `config.example.json` → `config.json` | `run.sh` loads `$SPX_NOON_HOME/config.json`. `SPX_NOON_HOME` defaults to `~/Documents/spx-noon-breakout`. |
-| Windows (tastytrade) | `config.windows.example.json` → `config.json` | `run_session.ps1` loads `config.json` next to the script when the file exists. `-Mode` overrides `mode`. `-Broker` overrides `auto`. |
+| Windows (tastytrade) | `config.windows.example.json` → `config.json` | `run_session.ps1` loads `config.json` next to the script when the file exists. `-Mode` overrides `mode`. `-Broker` defaults to `tasty` and accepts `tasty`, `tt`, or `tastytrade`. |
 
 `python -m spx_noon` with no `--config` uses `SPX_NOON_CONFIG` when that variable is set, otherwise `config.json` in the repo root.
 
@@ -112,11 +112,6 @@ only, send nothing, and work from any config, including a dry one.
 follow `config.json`, so there is nothing to reinstall when you switch between paper and live.
 Any argument, `live` included, prints usage and exits 2; no account id is ever written into a
 plist.
-
-Upgrading from the old two-job setup: run `./deploy/install_launchd.sh` once. It boots out and
-deletes `com.derek.spxnoon.live` and `com.derek.spxnoon.live.wrap` if an older install left them
-scheduled, so the stale real-money job cannot fire at 11:45 next to this one. It prints
-`removed retired …` for each. `./deploy/uninstall_launchd.sh` removes all four labels.
 
 ## Shared account
 

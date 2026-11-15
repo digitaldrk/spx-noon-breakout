@@ -64,9 +64,7 @@ SERVICE_CONFIG = "service-config.json"
 
 #: The mounted disk when ``DATA`` is unset or blank.
 DEFAULT_DATA = "/data"
-#: This worker is tastytrade, whatever the machine would pick on its own.
 BROKER = "tasty"
-#: Spellings of that one broker. ``ibkr`` is not one of them.
 TASTY_BROKERS = ("tasty", "tt", "tastytrade")
 #: Modes a tastytrade session accepts. ``live`` is the only one that transmits.
 MODES = ("live", "dry", "alerts")
@@ -108,11 +106,7 @@ def env_data(env=None) -> str:
 
 
 def config_path(env=None) -> Path:
-    """``$DATA/config.json``, the operator's file on the disk.
-
-    ``SPX_NOON_CONFIG`` and ``SPX_NOON_HOME`` are the local launchers' variables
-    and take no part here, so a stale one cannot point the worker at another file.
-    """
+    """``$DATA/config.json``, the operator's file on the disk."""
     return Path(os.path.expanduser(env_data(env))) / "config.json"
 
 
