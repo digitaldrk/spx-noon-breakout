@@ -22,6 +22,10 @@ Those six win over ``$DATA/config.json``, and the resolved, secret-free result i
 published to ``$DATA/state/service-config.json``, which is the file both children
 load. The seed is never overwritten and the environment is never logged.
 
+Five of them used to carry the bot prefix. A leftover ``SPX_NOON_`` spelling of
+one whose new name is unset refuses to start rather than quietly taking this
+module's default; see :data:`RENAMED_ENV`.
+
 ``BROKER`` has to be set, and it has to be ``tasty``. The children are
 launched with that broker on the command line. Nothing is inferred from Linux.
 
@@ -85,6 +89,18 @@ CHILD_GRACE_S = 10.0
 #: A child that starts after the wrap hour still gets this long to finish.
 LATE_CHILD_GRACE = timedelta(minutes=40)
 
+#: Deployment variables this worker used to read, and the one variable each of
+#: them became. ``SPX_NOON_HOME`` and ``SPX_NOON_CONFIG`` are deliberately not
+#: here: they are still the Mac and Windows launchers' own, and the supervisor
+#: hands ``SPX_NOON_CONFIG`` to the child on purpose.
+RENAMED_ENV = (
+    ("SPX_NOON_BROKER", "BROKER"),
+    ("SPX_NOON_MODE", "MODE"),
+    ("SPX_NOON_TASTY_DATA", "TASTY_DATA"),
+    ("SPX_NOON_TASTY_ORDERS", "TASTY_ORDERS"),
+    ("SPX_NOON_ACCOUNT", "TASTY_ACCOUNT"),
+)
+
 #: The children are told the broker on the command line. A file cannot name one.
 SESSION_ARGV = ("-m", "spx_noon", "--broker", BROKER)
 WRAP_ARGV = ("-m", "spx_noon", "wrap", "--now", "--broker", BROKER)
@@ -110,6 +126,31 @@ def config_path(env=None) -> Path:
     return Path(os.path.expanduser(env_data(env))) / "config.json"
 
 
+def refuse_renamed_env(env=None) -> None:
+    """A dashboard leftover from before the rename refuses to start the worker.
+
+    Only when its replacement is unset. The old value is never read and never
+    copied onto the new name: an operator who left ``SPX_NOON_TASTY_ORDERS`` or
+    ``SPX_NOON_MODE`` behind would otherwise get this module's default instead,
+    which decides whether real orders go out. Presence is the whole test, so a
+    blank or whitespace-only leftover is caught too.
+
+    A new name that is present wins, blank included — ``MODE=""`` already means
+    live and ``TASTY_ACCOUNT=""`` already means the first account — so a worker
+    configured under the new names starts with the old key still sitting in the
+    dashboard. The message names variables only: ``SPX_NOON_ACCOUNT`` can hold
+    an account id, and the environment is never logged.
+    """
+    env = os.environ if env is None else env
+    stale = [(old, new) for old, new in RENAMED_ENV if old in env and new not in env]
+    if not stale:
+        return
+    pairs = ", ".join(f"{old} is now {new}" for old, new in stale)
+    raise SafetyError(
+        f"renamed worker variables: {pairs}. Set the new name and remove the old "
+        "one; the old value is not used.")
+
+
 def env_overrides(env=None) -> dict:
     """The six worker variables as ``load_config`` overrides. These win over the file.
 
@@ -118,6 +159,9 @@ def env_overrides(env=None) -> dict:
     value that is not accepted is a :class:`SafetyError`, not a silent fallback.
     """
     env = os.environ if env is None else env
+    # Before anything is read or defaulted, so a leftover old name cannot be
+    # answered with a default. BROKER-required comes after it on purpose.
+    refuse_renamed_env(env)
     mode = (env.get("MODE") or "").strip().lower() or "live"
     if mode not in MODES:
         raise SafetyError(f"MODE must be live, dry, or alerts (got {mode!r})")

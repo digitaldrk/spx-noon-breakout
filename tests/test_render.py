@@ -278,6 +278,136 @@ def test_the_mac_launchers_keep_spx_noon_home_and_spx_noon_config(monkeypatch, t
 
 
 # --------------------------------------------------------------------------
+# The five renamed deployment variables
+# --------------------------------------------------------------------------
+
+def test_the_renamed_pairs_are_the_five_deployment_names_and_no_launcher_name():
+    assert service.RENAMED_ENV == (
+        ("SPX_NOON_BROKER", "BROKER"),
+        ("SPX_NOON_MODE", "MODE"),
+        ("SPX_NOON_TASTY_DATA", "TASTY_DATA"),
+        ("SPX_NOON_TASTY_ORDERS", "TASTY_ORDERS"),
+        ("SPX_NOON_ACCOUNT", "TASTY_ACCOUNT"),
+    )
+    olds = [old for old, _new in service.RENAMED_ENV]
+    for launcher in ("SPX_NOON_HOME", "SPX_NOON_CONFIG", "SPX_NOON_ALLOW_LIVE",
+                     "SPX_NOON_LIVE_ACCOUNT", "SPX_NOON_HOST", "SPX_NOON_PORT",
+                     "SPX_NOON_TOAST"):
+        assert launcher not in olds, launcher
+    # every replacement is one of the worker's own six, and DATA is not renamed
+    assert {new for _old, new in service.RENAMED_ENV} == set(WORKER_ENV) - {"DATA"}
+
+
+def test_a_leftover_old_name_without_its_new_one_refuses_to_start(tmp_path):
+    """Old set, new unset: the refusal, not the old value and not the default."""
+    base = _disk(tmp_path, mode="dry")
+    for old, new in service.RENAMED_ENV:
+        for value in ("production", "live", "5WX12345", "", "   "):
+            env = {"DATA": str(base), "BROKER": "tasty", old: value}
+            if old == "SPX_NOON_BROKER":
+                del env["BROKER"]
+            with pytest.raises(SafetyError) as caught:
+                service.env_overrides(env)
+            message = str(caught.value)
+            assert old in message and new in message, message
+            # the rename is reported, not the generic missing-broker refusal
+            assert "BROKER must be set" not in message
+            if value.strip():                     # names only, never a value
+                assert value not in message
+
+
+def test_several_leftovers_are_one_refusal_that_names_every_pair(tmp_path):
+    base = _disk(tmp_path, mode="dry")
+    env = {
+        "DATA": str(base),
+        "SPX_NOON_BROKER": "tasty",
+        "SPX_NOON_MODE": "live",
+        "SPX_NOON_TASTY_ORDERS": "production",
+        "SPX_NOON_ACCOUNT": "5WX12345",
+        "TASTY_DATA": "production",               # this one was renamed already
+        "SPX_NOON_TASTY_DATA": "sandbox",
+    }
+    with pytest.raises(SafetyError) as caught:
+        service.env_overrides(env)
+    assert str(caught.value) == (
+        "renamed worker variables: SPX_NOON_BROKER is now BROKER, "
+        "SPX_NOON_MODE is now MODE, SPX_NOON_TASTY_ORDERS is now TASTY_ORDERS, "
+        "SPX_NOON_ACCOUNT is now TASTY_ACCOUNT. Set the new name and remove the "
+        "old one; the old value is not used.")
+    message = str(caught.value)
+    assert "SPX_NOON_TASTY_DATA" not in message   # its new name is set, so it is ignored
+    assert "5WX12345" not in message and "sandbox" not in message
+
+
+def test_a_real_money_leftover_does_not_change_orders_mode_or_account(tmp_path):
+    """Both names set: the new one wins and the dashboard leftover does nothing."""
+    base = _disk(tmp_path, mode="dry", account="file-account")
+    env = _env(base, MODE="dry", TASTY_DATA="production", TASTY_ORDERS="sandbox",
+               TASTY_ACCOUNT="5WX12345",
+               SPX_NOON_BROKER="ibkr", SPX_NOON_MODE="live",
+               SPX_NOON_TASTY_DATA="sandbox", SPX_NOON_TASTY_ORDERS="production",
+               SPX_NOON_ACCOUNT="9ZZ99999")
+    cfg = service.build_config(base / "config.json", env)
+    assert cfg.broker == "tasty" and cfg.mode == "dry" and cfg.dry_run is True
+    assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
+    assert cfg.account == "5WX12345"
+    assert service.real_money(cfg) is False and cfg.sends_orders() is False
+
+
+def test_a_blank_new_name_counts_as_set_and_keeps_its_own_default(tmp_path):
+    """``MODE=""`` already means live and ``TASTY_ACCOUNT=""`` the first account."""
+    base = _disk(tmp_path, mode="dry", account="file-account")
+    env = _env(base, MODE="", TASTY_DATA="", TASTY_ORDERS="", TASTY_ACCOUNT="",
+               SPX_NOON_MODE="dry", SPX_NOON_TASTY_DATA="sandbox",
+               SPX_NOON_TASTY_ORDERS="production", SPX_NOON_ACCOUNT="9ZZ99999")
+    cfg = service.build_config(base / "config.json", env)
+    assert cfg.mode == "live" and cfg.account == ""
+    assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
+    assert service.real_money(cfg) is False
+
+
+def test_the_launcher_names_do_not_trip_the_rename_check(tmp_path):
+    """Requirement 3 and the issue's open names: outside the check, as they were."""
+    base = _disk(tmp_path, mode="dry")
+    env = _env(base, SPX_NOON_HOME="/nowhere", SPX_NOON_CONFIG=str(tmp_path / "gone.json"),
+               SPX_NOON_ALLOW_LIVE="1", SPX_NOON_LIVE_ACCOUNT="5WX12345",
+               SPX_NOON_HOST="1.2.3.4", SPX_NOON_PORT="7496", SPX_NOON_TOAST="1")
+    assert service.refuse_renamed_env(env) is None
+    cfg = service.build_config(base / "config.json", env)
+    assert cfg.home == base and cfg.mode == "live" and cfg.account == ""
+    assert cfg.host == "127.0.0.1" and cfg.port == 7497
+    # and the suite's own environment, which has SPX_NOON_HOME and SPX_NOON_CONFIG
+    # set by isolate_machine with DATA unset, is not a refusal either
+    assert service.refuse_renamed_env() is None
+
+
+def test_the_check_reads_the_mapping_it_was_given_not_the_process(monkeypatch, tmp_path):
+    base = _disk(tmp_path, mode="dry")
+    monkeypatch.setenv("SPX_NOON_MODE", "live")
+    assert service.env_overrides(_env(base))["mode"] == "live"   # the dict has no old name
+    with pytest.raises(SafetyError, match="SPX_NOON_MODE is now MODE"):
+        service.env_overrides()                                  # os.environ does
+
+
+def test_main_refuses_a_leftover_old_name_and_names_the_new_one(monkeypatch, tmp_path, capsys):
+    """Exit 2, one printed line, the new variable in it, and nothing published."""
+    for old, new in service.RENAMED_ENV:
+        disk = tmp_path / old.lower()
+        monkeypatch.setenv("DATA", str(disk))
+        monkeypatch.setenv("BROKER", "tasty")
+        if old == "SPX_NOON_BROKER":
+            monkeypatch.delenv("BROKER")
+        monkeypatch.setenv(old, "5WX12345")
+        assert service.main() == 2
+        out = capsys.readouterr().out
+        assert "refusing to start" in out
+        assert old in out and new in out, out
+        assert "5WX12345" not in out                  # no value, no account id
+        assert not (disk / "state" / service.SERVICE_CONFIG).exists()
+        monkeypatch.delenv(old)
+
+
+# --------------------------------------------------------------------------
 # The seed, the config path, and the file the children load
 # --------------------------------------------------------------------------
 
