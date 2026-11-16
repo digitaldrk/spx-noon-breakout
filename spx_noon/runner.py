@@ -23,7 +23,6 @@ from .config import (
     load_config,
     log_order,
     redact_account,
-    resolve_broker,
     startup_banner,
 )
 from .logbook import Outputs
@@ -1015,14 +1014,11 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="spx_noon")
     parser.add_argument("--config", default=None)
     parser.add_argument("--mode", choices=["dry", "alerts", "paper", "live"], default=None)
-    parser.add_argument("--broker", default=None,
-                        help="ibkr or tasty. Required. Nothing is inferred.")
     args = parser.parse_args(argv)
     overrides = {}
     if args.mode:
         overrides["mode"] = args.mode
     try:
-        overrides["broker"] = resolve_broker(args.broker)
         cfg = load_config(args.config, **overrides)
     except (SafetyError, ValueError, TypeError) as exc:
         print(f"refusing to start: {exc}")

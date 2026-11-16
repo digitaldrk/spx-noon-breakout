@@ -1,7 +1,8 @@
 """Read-only smoke test. Places no orders.
 
-``--broker ibkr`` checks TWS paper on 127.0.0.1:7497. It never dials a live port.
-``--broker tasty`` checks tastytrade (quotes, bars, chain, orders host).
+``config.json`` names the broker. ``ibkr`` checks TWS paper on 127.0.0.1:7497
+and never dials a live port. ``tasty`` checks tastytrade (quotes, bars, chain,
+orders host).
 """
 from __future__ import annotations
 
@@ -9,38 +10,29 @@ import argparse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from .config import PAPER_PORT, SafetyError, load_config, resolve_broker
+from .config import PAPER_PORT, SafetyError, load_config
 
 ET = ZoneInfo("America/New_York")
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="spx_noon check")
-    parser.add_argument("--broker", default=None,
-                        help="ibkr or tasty. Required.")
+    parser.add_argument("--config", default=None)
     parser.add_argument("--client-id", type=int, default=None)
     args = parser.parse_args(argv)
     try:
-        broker = resolve_broker(args.broker)
-    except SafetyError as exc:
-        print(f"refusing: {exc}")
-        return 2
-    if broker == "tasty":
-        from .check_tasty import main as tasty_main
-        return tasty_main(["--broker", "tasty"])
-    if broker == "ibkr":
-        return ib_main(args.client_id)
-    print(f"refusing: check does not run for {broker}")
-    return 2
-
-
-def ib_main(client_id_arg=None) -> int:
-    """Paper only. check never dials 7496 or 4001; a live config fails closed here."""
-    try:
-        cfg = load_config(broker="ibkr")
+        cfg = load_config(args.config)
     except (SafetyError, ValueError, TypeError) as exc:
         print(f"refusing: {exc}")
         return 2
+    if cfg.broker == "tasty":
+        from .check_tasty import main as tasty_main
+        return tasty_main(["--config", args.config] if args.config else [])
+    return ib_main(cfg, args.client_id)
+
+
+def ib_main(cfg, client_id_arg=None) -> int:
+    """Paper only. check never dials 7496 or 4001; a live config fails closed here."""
     client_id = client_id_arg or cfg.check_client_id
     if cfg.mode == "live" or int(cfg.port) != PAPER_PORT:
         print("refusing: not the paper port. check does not connect to a live port.")

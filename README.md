@@ -1,13 +1,13 @@
 # Noon Breakout (plan v2, version B or A1)
 
-0DTE SPX debit vertical. The launcher names the broker:
+0DTE SPX debit vertical. `broker` in `config.json` names the broker — `ibkr` or `tasty`, and nothing else sets it:
 
 | Machine | Broker | How orders go out |
 | --- | --- | --- |
-| Mac | IBKR TWS. **paper** is `127.0.0.1:7497` with account ids starting with `D`. **live** is real money on `127.0.0.1:7496` (TWS) or `4001` (IB Gateway) | `dry` (default) logs the ticket. `paper` sends it to the paper account. `live` sends real orders to the configured non-`D` account. |
-| Windows | **tastytrade** (`run_session.ps1` passes `--broker tasty`; `tasty` is the one spelling) | `dry` (default) and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
+| Mac | **IBKR** TWS (`"broker": "ibkr"`). **paper** is `127.0.0.1:7497` with account ids starting with `D`. **live** is real money on `127.0.0.1:7496` (TWS) or `4001` (IB Gateway) | `dry` (default) logs the ticket. `paper` sends it to the paper account. `live` sends real orders to the configured non-`D` account. |
+| Windows | **tastytrade** (`"broker": "tasty"`; `tasty` is the one spelling) | `dry` (default) and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
 
-A config file cannot switch brokers. On a Mac it is the one switch between paper and real money: `mode`, `port`, and `account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first qualifying 15-minute close from noon to 1:00 PM ET, one spread, flat two hours after that bar. `plan` in `config.json` picks the rules: `B` (the default) is 75 delta with a +30% take-profit, and `A1` is 80 delta with a +8-point exit and a morning filter — see [Trading plan](#trading-plan). Candle's 10:00–11:00 strategy is a different repo and is not used here.
+A missing or blank `broker` refuses to start. On a Mac the config file is also the one switch between paper and real money: `mode`, `port`, and `account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first qualifying 15-minute close from noon to 1:00 PM ET, one spread, flat two hours after that bar. `plan` in `config.json` picks the rules: `B` (the default) is 75 delta with a +30% take-profit, and `A1` is 80 delta with a +8-point exit and a morning filter — see [Trading plan](#trading-plan). Candle's 10:00–11:00 strategy is a different repo and is not used here.
 
 **Mac:** copy `config.example.json` to `config.json`, keep TWS logged into paper on port 7497 with Read-Only API off, and use `run.sh`. `./run.sh paper` is the launch that transmits. State goes in `~/Documents/spx-noon-breakout/state`. For real money see [IBKR live mode](#ibkr-live-mode-real-money).
 
@@ -17,14 +17,14 @@ A config file cannot switch brokers. On a Mac it is the one switch between paper
 
 ## Configuration
 
-`config.json` holds local overrides. Defaults are the fields on `Config` in `spx_noon/config.py`. Leave a key out and that default stays. Keys the loader does not know are ignored, including the `_comment`, `_rules`, and `_wrap` notes. The launcher passes the broker (`run.sh` passes `ibkr`, `run_session.ps1` passes `tasty`, Render requires `BROKER`). A `broker` key in the file is ignored. A `dry_run` key is ignored too; `mode` is the only send setting.
+`config.json` holds local overrides. Defaults are the fields on `Config` in `spx_noon/config.py`. Leave a key out and that default stays. Keys the loader does not know are ignored, including the `_comment`, `_rules`, and `_wrap` notes. The file's `broker` key names the broker: `ibkr` or `tasty`, after stripping whitespace and lower-casing. No launcher, flag, or platform check sets it, and a missing or blank value refuses to start. On the Render worker a non-blank `BROKER` overrides that one key. A `dry_run` key is ignored; `mode` is the only send setting.
 
 Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` and `tokens.json`. Tastytrade credentials stay in environment variables or files under `secrets/`, never in the repo. Any token file and any service-account json stay out of git.
 
 | Machine | Copy | Where the launcher reads it |
 | --- | --- | --- |
-| Mac (IBKR paper) | `config.example.json` → `config.json` | `run.sh` loads `$SPX_NOON_HOME/config.json`. `SPX_NOON_HOME` defaults to `~/Documents/spx-noon-breakout`. |
-| Windows (tastytrade) | `config.windows.example.json` → `config.json` | `run_session.ps1` loads `config.json` next to the script when the file exists. `-Mode` overrides `mode`. `-Broker` defaults to `tasty` and accepts `tasty` only. |
+| Mac (IBKR paper) | `config.example.json` → `config.json` (`"broker": "ibkr"`) | `run.sh` loads `$SPX_NOON_HOME/config.json`. `SPX_NOON_HOME` defaults to `~/Documents/spx-noon-breakout`. |
+| Windows (tastytrade) | `config.windows.example.json` → `config.json` (`"broker": "tasty"`) | `run_session.ps1` loads `config.json` next to the script when the file exists. `-Mode` overrides `mode`. |
 
 `python -m spx_noon` with no `--config` uses `SPX_NOON_CONFIG` when that variable is set, otherwise `config.json` in the repo root.
 
@@ -32,6 +32,7 @@ The delta, the width, the $0.20 skip, the +30% target, A1's 8 points, and the tw
 
 | Key | In the examples | Role |
 | --- | --- | --- |
+| `broker` | `ibkr` (Mac), `tasty` (Windows, Render) | The broker: `ibkr` or `tasty`. Missing or blank refuses to start, and so does any other value. The Render worker's `BROKER` overrides it. |
 | `plan` | `B` | The trading plan: `B` or `A1`. A missing key is `B`. Anything else refuses to start. There is no `PLAN` environment variable, including on the Render worker. |
 | `mode` | `dry` | Mac: `dry`, `alerts`, `paper`, or `live`. Windows tastytrade: `dry`, `alerts`, or `live`. `dry` and `alerts` never send. `paper` (Mac), `live` (Mac, real money), and `live` (Windows) can. |
 | `tasty_data` | `production` | Quote, bar, chain, and greek host. Missing production credentials fail startup. No fallback to sandbox data. |
@@ -163,11 +164,11 @@ A skipped morning sends no order and writes one `skip_morning` row in the trade 
 | `spx_noon/ib.py` | Mac broker. `ib_async` against TWS paper (7497) or live (7496/4001) |
 | `spx_noon/tasty.py`, `check_tasty.py` | Windows broker. Production data session, sandbox orders unless configured. Auto-approves. |
 | `spx_noon/guard.py` | In-process ticket guard. Refuses a live order with no approved ticket, a price over the cap, or more than 10 requests a minute |
-| `spx_noon/config.py` | Machine broker, the mode gate, the IBKR live port/account gate, and the real-money banner |
+| `spx_noon/config.py` | The file's broker, the mode gate, the IBKR live port/account gate, and the real-money banner |
 | `run_wrap.sh`, `spx_noon/wrap_run.py` | 16:20 read-only note. `--book paper` or `--book live` |
 | `config.example.json` | Mac template |
 | `config.windows.example.json` | Windows tastytrade template |
 | `spx_noon/service.py` | Hosted worker supervisor: reads `DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `TASTY_ACCOUNT`, waits for 11:45, spawns the session, restarts a crash, runs the 16:20 wrap. [RENDER.md](RENDER.md) |
 | `render.yaml`, `Dockerfile`, `config.render.example.json` | Render blueprint, image, and the seed copied to the disk once |
 | `run.sh`, `deploy/` | Mac launchers |
-| `run_session.ps1` | Windows launcher. Default `-Mode dry` `-Broker tasty` |
+| `run_session.ps1` | Windows launcher. Default `-Mode dry` |

@@ -1,5 +1,6 @@
 {
-  "_comment": "Seed for the hosted tastytrade worker (see RENDER.md). The worker copies this to $DATA/config.json once, only when that file is missing, and never overwrites it. There are no credentials here and none belong here: the five secrets are env vars pasted in the Render dashboard. There is no broker key - the worker launches its children with --broker tasty - and no base_dir, so DATA (/data, the mounted disk) is the home directory. The worker's six variables, listed in RENDER.md, win over the values below.",
+  "_comment": "Seed for the hosted tastytrade worker (see RENDER.md). The worker copies this to $DATA/config.json once, only when that file is missing, and never overwrites it. There are no credentials here and none belong here: the five secrets are env vars pasted in the Render dashboard. broker names the broker, tasty here, and the dashboard's BROKER overrides it. There is no base_dir, so DATA (/data, the mounted disk) is the home directory. The worker's six variables, listed in RENDER.md, win over the values below.",
+  "broker": "tasty",
   "mode": "live",
   "plan": "B",
   "tasty_data": "production",
