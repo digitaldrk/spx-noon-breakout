@@ -1,6 +1,6 @@
 # Readings
 
-The bot follows plan v2 version B. These are the spots where the checklist does not spell out a mechanical detail.
+The bot follows the trading plan. These are the spots where the checklist does not spell out a mechanical detail.
 
 1. **Per side.** Slippage per side is `(marketable debit − spread mid) / 2`. The trade is skipped when that is greater than $0.20. $0.20 exactly is still taken. The order itself is the mid, rounded down to the nearest $0.05, so a sent order does not bid through the mid.
 2. **A skip is not a fill.** If the first qualifying bar is too wide, a later bar in the noon window can still be the one trade. An unfilled entry is cancelled at the next 15-minute close and is not chased. A cancel that the broker has not confirmed stays on the books; the bot does not forget it and does not send a second entry. One fill ends the day, including after a restart: a closed fill in `state/own_position.json` blocks another entry that day.
@@ -12,3 +12,4 @@ The bot follows plan v2 version B. These are the spots where the checklist does 
 8. **Take-profit order.** The resting limit is `debit × 1.30` floored to $0.05, sent GTC. The exit reason is `target` when that order fills, or when the spread bid is at or through `debit × 1.30` (the session then sells the bid). If the broker rejects the GTC, the session stays up and still uses that bid check. A known GTC id is kept even if saving the position file fails. The two-hour exit sells at the spread bid, and a second sell is not sent while an exit order is still working.
 9. **Fees.** P&L subtracts $0.65 per contract per leg on the open and again on the close ($2.60 for one spread). That matches the published +$378 on a $1,271 debit within a dollar.
 10. **Late start.** A close is acted on only during the 90 seconds after it prints. A noon bar that is already stale when the process starts is not sent late. Missing or stale option quotes inside that window are retried; the bar is dropped only when the window is about to end. After tastytrade auto-approves, the plan is rebuilt from fresh quotes and is not sent if the window has closed or the spread no longer qualifies.
+11. **A1, once open.** A missing SPX print is not a +8 hit. After the print has reached +8, the exit stays on if the print comes back, including across a restart. The position file keeps the plan the order went out under. A file with no plan is managed as B, and changing `plan` does not change a position that is already open.

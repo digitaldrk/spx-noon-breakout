@@ -1,6 +1,6 @@
 # Noon Breakout Plan v2 — 2026-10-28
 
-The bot implements **version B only** (section 1 and the checklist in section 8). Version A is recorded below and is not coded. Candle Boy is a different repo.
+The bot implements **version B** (section 1 and the checklist in section 8) by default, and **plan A1** (section 10) when `config.json` says `"plan": "A1"`. One code base runs both; nothing is forked. The original version A of this note — 70 delta, +17% target — is recorded in section 1 and is still not coded. Candle Boy is a different repo.
 
 
 *Sources: `filter-backtests-2026-10-28.md`, `filter-bt/stress/stress_out.md`, `filter-bt/noon_B_trades_k0.6.csv` and `filter-bt/noon_B_trades_k0.42.csv`. Sample: 181 SPX sessions, 2026-02-09 to 2026-10-27, 118 trades. Two pricing levels: **fair** = 0.42× VIX (**the default scenario used throughout**) and **rich** = 0.6× VIX (secondary reference). Read-only research. No bot code was changed.*
@@ -174,3 +174,46 @@ logged into paper. No environment variable takes part in either. Tastytrade is u
    `reports/wrap-live-<date>.md`, anything else wraps `state/trades.csv` into
    `reports/wrap-<date>.md`. The books are separate files, not separate processes, and no row
    ever lands in both.
+
+---
+
+## 10. Plan A1 (`"plan": "A1"`)
+
+A1 is the same strategy with three rules changed. It is one config key, not a fork:
+`plan` in `config.json` is `B` (the default, and what a missing key means) or `A1`,
+whitespace and case are forgiven, and any other value refuses to start. No
+environment variable takes part, on any machine or on the hosted worker, and the
+committed templates stay on `B`.
+
+| Rule | B | A1 |
+|---|---|---|
+| Morning | no filter | **skip the day** when any 15-minute close from 10:15 through 11:00 ET was already beyond PDH or PDL |
+| Long leg | nearest **0.75** delta | nearest **0.80** delta |
+| Exit | GTC at debit × 1.30, else the two-hour flat | **+8 SPX points** in the trade direction, else the two-hour flat |
+
+**Morning skip.** The window is the four closes at 10:15, 10:30, 10:45, and 11:00.
+Beyond is strict, the same as the trigger rule: a close equal to PDH or PDL does
+not skip. One such close skips the whole day, either side of the levels, and that
+day sends no order, does not try a later noon bar, and writes one trade-log row
+with `exit_reason` `skip_morning`. A 9:45 close beyond the level is still a valid
+trigger for both plans and does not, by itself, skip the day. A bar the broker did
+not return is not a break.
+
+**Long leg.** Absolute delta nearest 0.80, in the money only, with the same
+tie-break as 0.75: the strike closer to spot, then the lower strike. The width, the
+short strike, the mid limit, and the $0.20-per-side skip are unchanged.
+
+**Exit.** The spread leaves when the live SPX print is 8.0 or more points through
+the entry print in the trade direction — calls at entry + 8, puts at entry − 8,
+exactly 8 counts — or at the same two-hour flat, whichever comes first. The
+reference is the live print at the entry decision, the `spx` column in the trade
+log. A1 rests no take-profit order and never exits because the spread bid reached
+debit × 1.30. There is no stop. The point exit reads `points` in `exit_reason`, and
+the two-hour flat still reads `time`. Both sell at the spread bid.
+
+Everything else is identical to version B: the 12:00–1:00 PM ET closes, the first
+qualifying bar, one fill per day, calls before puts, the trigger from the 9:45
+close on, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20 skip, one
+spread, the fees, the two-hour clock measured from the entry bar's close, the
+calendar and live gates, the books, and the order prefix. The 0.75, the 0.80, and
+the 8 points are code, not config keys.

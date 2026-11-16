@@ -1,4 +1,5 @@
-"""Paper port, machine broker, the IBKR live gate, and the in-process order guard."""
+"""Paper port, machine broker, the trading plan, the IBKR live gate, and the order guard."""
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -75,6 +76,38 @@ def _write(tmp_path, name, text):
     path = tmp_path / name
     path.write_text(text)
     return path
+
+
+EXAMPLES = ("config.example.json", "config.windows.example.json", "config.render.example.json")
+
+
+def test_every_example_config_stays_on_plan_b():
+    """A copied template trades version B. Switching is the operator's edit."""
+    for name in EXAMPLES:
+        assert json.loads((ROOT / name).read_text())["plan"] == "B", name
+
+
+def test_the_trading_plan_is_b_or_a1_and_is_never_an_environment_knob(monkeypatch, tmp_path):
+    def cfg(plan=None):
+        keys = '{"mode": "dry", "port": 7497'
+        keys += "}" if plan is None else f', "plan": {plan}}}'
+        return load_config(_write(tmp_path, "plan.json", keys), broker="ibkr")
+
+    assert cfg().plan == "B"                       # a missing key is version B
+    for given, want in (('"B"', "B"), ('"b"', "B"), ('"A1"', "A1"),
+                        ('"a1"', "A1"), ('"  a1  "', "A1")):
+        assert cfg(given).plan == want
+    for bad in ('""', '"   "', '"A"', '"B1"', '"a2"', '"version B"', "null", "0", "true"):
+        with pytest.raises(SafetyError, match="plan must be B or A1"):
+            cfg(bad)
+    # the field is not read from the environment on any platform
+    for name in ("PLAN", "SPX_NOON_PLAN", "TASTY_PLAN"):
+        monkeypatch.setenv(name, "A1")
+    assert cfg().plan == "B"
+    assert cfg('"A1"').plan == "A1"                # the file is the only switch
+    # and Config itself refuses it, so no caller can skip the gate by hand
+    with pytest.raises(SafetyError, match="plan must be B or A1"):
+        Config(broker="sim", mode="dry", plan="A2").validate()
 
 
 def test_mac_refuses_live_and_a_non_paper_port():

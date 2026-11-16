@@ -1,4 +1,4 @@
-"""Noon breakout, plan v2 version B.
+"""Noon breakout, plan v2. Version B is the default; A1 is the config key ``plan``.
 
 Window: 15-minute bars that close at 12:00, 12:15, 12:30, 12:45, and 1:00 PM ET.
 The first bar that qualifies is the candidate. At most one fill per day.
@@ -12,6 +12,15 @@ A call bar qualifies when all three are true:
   * this close is above the trigger bar's low
 
 Puts mirror that with PDL and the trigger bar's high.
+
+Both plans share that window, the trigger, the width, the mid limit, the $0.20
+skip, and the two-hour flat. Plan ``A1`` changes exactly three things:
+
+  * the day is skipped when a 15m close from 10:15 through 11:00 ET was already
+    beyond PDH or PDL (:func:`morning_break`)
+  * the long leg is the strike nearest 0.80 delta, not 0.75
+  * the exit is +8 SPX points in the trade direction (:func:`point_exit_reached`)
+    or the two-hour flat, whichever comes first. No premium target.
 """
 from __future__ import annotations
 
@@ -34,6 +43,17 @@ TARGET_DELTA = 0.75
 STRIKE_STEP = 5.0
 RTH_OPEN = time(9, 30)
 RTH_LAST_START = time(16, 0)
+
+#: The two trading plans. ``B`` is the default and is what a missing key means.
+#: The operator picks one in their own ``config.json``; nothing else selects it.
+PLANS = ("B", "A1")
+#: Plan A1's long leg. Plan B's is :data:`TARGET_DELTA`.
+A1_TARGET_DELTA = 0.80
+#: Plan A1's morning skip: these four closes only. A 9:45 close (bar start 9:30)
+#: and an 11:15 close (bar start 11:00) are outside the window.
+A1_MORNING_CLOSES = (time(10, 15), time(10, 30), time(10, 45), time(11, 0))
+#: Plan A1's point exit, in SPX points from the entry print. Not a config key.
+A1_EXIT_POINTS = 8.0
 
 
 @dataclass
@@ -200,6 +220,51 @@ def first_breakout(today_bars: list[Bar], pdh: float, pdl: float,
     return None
 
 
+def plan_target_delta(plan: str = "B") -> float:
+    """The long leg's delta for this plan: 0.80 on A1, 0.75 on B."""
+    return A1_TARGET_DELTA if str(plan).strip().upper() == "A1" else TARGET_DELTA
+
+
+def morning_break(today_bars: list[Bar], pdh: float, pdl: float) -> Bar | None:
+    """Plan A1's morning skip. The first 10:15–11:00 close beyond PDH/PDL, or None.
+
+    ``today_bars`` are today's RTH bars. Timestamps are bar starts, so the
+    window is the bars starting 10:00, 10:15, 10:30, and 10:45. Beyond is
+    strict: a close equal to PDH or PDL is not a break. Either side skips the
+    whole day. A bar the broker did not return is not a break.
+    """
+    pdh, pdl = float(pdh), float(pdl)
+    for bar in sorted((b for b in today_bars if is_rth(b)), key=lambda b: b.t):
+        if close_time(bar).time() not in A1_MORNING_CLOSES:
+            continue
+        if bar.c > pdh or bar.c < pdl:
+            return bar
+    return None
+
+
+def point_exit_reached(right: str, entry_print, live_print,
+                       points: float = A1_EXIT_POINTS) -> bool:
+    """Plan A1's point exit: is the live SPX print ``points`` through the entry print?
+
+    ``entry_print`` is the live print at the entry decision, the ``spx`` stored
+    on the position. Calls need ``live >= entry + points``, puts
+    ``live <= entry − points``. Exactly ``points`` counts. A missing or
+    non-finite print is not a hit.
+    """
+    try:
+        entry, live = float(entry_print), float(live_print)
+    except (TypeError, ValueError):
+        return False
+    if not (math.isfinite(entry) and math.isfinite(live)):
+        return False
+    distance = float(points)
+    if right == "C":
+        return live + 1e-9 >= entry + distance
+    if right == "P":
+        return live - 1e-9 <= entry - distance
+    return False
+
+
 def bar_closing_at(bars: list[Bar], when: datetime) -> Bar | None:
     for bar in bars:
         if abs((close_time(bar) - when).total_seconds()) < 1.0:
@@ -289,8 +354,13 @@ def _norm_quotes(quotes: dict) -> dict:
     return out
 
 
-def build_order_plan(breakout: Breakout, quotes: dict, spot: float) -> tuple[OrderPlan | None, str]:
-    """Turn a qualified bar into a 1-lot debit vertical, or a reason string."""
+def build_order_plan(breakout: Breakout, quotes: dict, spot: float,
+                     plan: str = "B") -> tuple[OrderPlan | None, str]:
+    """Turn a qualified bar into a 1-lot debit vertical, or a reason string.
+
+    ``plan`` picks the long leg only: 0.75 delta on B, 0.80 on A1. The width,
+    the short strike, the mid limit, and the $0.20 skip are the same on both.
+    """
     if spot is None:
         return None, "no spot"
     try:
@@ -304,9 +374,10 @@ def build_order_plan(breakout: Breakout, quotes: dict, spot: float) -> tuple[Ord
         return None, "no atm straddle"
     atm, em = em_pair
     width = vertical_width(em)
-    picked = select_long_strike(quotes, breakout.right, spot_f, TARGET_DELTA)
+    target = plan_target_delta(plan)
+    picked = select_long_strike(quotes, breakout.right, spot_f, target)
     if picked is None:
-        return None, "no 75-delta strike"
+        return None, f"no {round(target * 100)}-delta strike"
     long_strike, long_delta = picked
     short_k = short_strike(long_strike, width, breakout.right)
     book = _norm_quotes(quotes)

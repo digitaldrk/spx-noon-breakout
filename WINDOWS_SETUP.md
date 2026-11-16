@@ -6,7 +6,14 @@ This is the Windows machine. A Mac runs IBKR paper through `run.sh` and `deploy/
 
 ## What it does
 
-Noon Breakout, plan v2 version B: one 0DTE SPX debit vertical on the first qualifying 15-minute close from noon to 1:00 PM ET. Long strike nearest 75 delta. Take-profit at +30% of the debit. Flat two hours after the entry bar. The session does not chase.
+Noon Breakout, plan v2: one 0DTE SPX debit vertical on the first qualifying 15-minute close from noon to 1:00 PM ET. Flat two hours after the entry bar. The session does not chase.
+
+`plan` in `config.json` picks the rules, and the template is `"plan": "B"`:
+
+- **B** (the default, and what a missing key means): long strike nearest 75 delta, take-profit at +30% of the debit.
+- **A1**: skip the day when any 15-minute close from 10:15 through 11:00 ET was already beyond the prior day's high or low, long strike nearest 80 delta, and exit at +8 SPX points in the trade direction or the two-hour flat, whichever comes first. No premium target.
+
+Neither plan has a stop, and `plan` is a file key only — there is no `PLAN` environment variable. Everything else (the window, the trigger, the width, the mid limit, the $0.20 skip, one fill per day) is the same on both.
 
 | Command | Orders |
 | --- | --- |

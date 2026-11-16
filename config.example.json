@@ -1,6 +1,7 @@
 {
   "_comment": "Mac + IBKR. Copy to config.json. run.sh passes --broker ibkr; this file cannot select a broker. This template is dry on the paper port 7497, and mode dry stays dry. There is one 11:45 job either way; this file is the switch. Paper is mode paper, port 7497, an account id starting with D, with TWS logged into paper. Real money is mode live, port 7496 for TWS or 4001 for IB Gateway, account set to the live id (it must not start with D), with TWS logged into the live account. ./run.sh paper and ./run.sh live override the mode for one launch.",
   "mode": "dry",
+  "plan": "B",
   "host": "127.0.0.1",
   "port": 7497,
   "client_id": 41,
@@ -12,6 +13,7 @@
   "decision_grace_s": 90,
   "loop_interval_s": 5,
   "chain_band_pts": 150,
-  "_rules": "Version B only. 15m closes 12:00–1:00 PM ET, first qualifying bar, 1 spread. Long nearest 75 delta. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. GTC close at debit x 1.30. Flat 2 hours after the entry bar. No stop.",
+  "_rules": "Shared by both plans: 15m closes 12:00–1:00 PM ET, first qualifying bar, 1 spread. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. Flat 2 hours after the entry bar. No stop.",
+  "_plan": "plan is the only trading rule that is a config key: B (the default, and what a missing key means) or A1. B: long nearest 75 delta, GTC close at debit x 1.30. A1: skip the day if any 15m close from 10:15 through 11:00 ET was already beyond the prior day's high or low, long nearest 80 delta, and exit at +8 SPX points in the trade direction or the 2-hour flat, whichever comes first - no premium target. Nothing else differs, and there is no PLAN environment variable.",
   "_wrap": "Read-only log summary at 16:20 ET: python -m spx_noon wrap with no --book follows this file's mode, so an IBKR live config reads state/trades-live.csv and everything else reads state/trades.csv. --book paper and --book live pick one by hand. Neither sends orders. Client id 142 is reserved and unused by that job."
 }

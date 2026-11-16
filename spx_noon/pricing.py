@@ -1,8 +1,13 @@
-"""Debit-spread prices for plan v2 version B.
+"""Debit-spread prices for plan v2.
 
 One spread. Entry limit is the mid, rounded down to the nickel, so the order
 never bids through the mid. The trade is skipped when the marketable debit is
-more than $0.20 per side worse than that mid. Take-profit is debit × 1.30.
+more than $0.20 per side worse than that mid. Both plans share all of that and
+the two-hour flat (:func:`time_exit_deadline`).
+
+Take-profit is debit × 1.30 on version B only. Plan A1 has no premium target:
+its exit is +8 SPX points (``strategy.point_exit_reached``) or the same
+two-hour flat, so ``take_profit_limit`` and ``target_reached`` are not on its path.
 """
 from __future__ import annotations
 
