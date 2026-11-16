@@ -18,8 +18,11 @@ the resolved file.
 Tastytrade orders auto-approve: no console prompt takes part. mode "dry" (the
 default) and "alerts" never transmit.
 
-Plan v2 version B prices (75 delta, +30%, $0.20/side, 2h flat, 1 spread) live in
-strategy.py. They are not config keys.
+``plan`` is the one trading rule that is a config key: ``B`` (the default, and
+what a missing key means) or ``A1``. It is read from the file, never from the
+environment, and each operator picks it in their own ``config.json``. Everything
+else about both plans (75 or 80 delta, +30%, $0.20/side, 2h flat, A1's morning
+skip and +8 points, 1 spread) lives in strategy.py and is not a config key.
 """
 from __future__ import annotations
 
@@ -29,6 +32,8 @@ import os
 from dataclasses import asdict, dataclass, fields
 from datetime import time
 from pathlib import Path
+
+from .strategy import PLANS
 
 PAPER_PORT = 7497
 LIVE_PORTS = (7496, 4001)
@@ -103,6 +108,19 @@ def _env_name(value, key: str) -> str:
     return text
 
 
+def plan_name(value) -> str:
+    """``B`` or ``A1``, after stripping whitespace and upper-casing.
+
+    ``b`` and ``a1`` canonicalize. Anything else, including a blank string, is a
+    :class:`SafetyError`: a plan the code does not have must not quietly become
+    version B. The valid names are :data:`spx_noon.strategy.PLANS`.
+    """
+    key = str(value or "").strip().upper()
+    if key not in PLANS:
+        raise SafetyError(f"plan must be {' or '.join(PLANS)} (got {value!r})")
+    return key
+
+
 def _t(value: str) -> time:
     parts = [int(x) for x in str(value).split(":")]
     while len(parts) < 3:
@@ -158,6 +176,10 @@ class Config:
     account: str = ""
     tasty_data: str = "production"
     tasty_orders: str = "sandbox"
+
+    #: The trading plan: ``B`` (default) or ``A1``. ``validate`` canonicalizes
+    #: it and refuses anything else. Not an environment knob on any platform.
+    plan: str = "B"
 
     host: str = "127.0.0.1"
     port: int = PAPER_PORT
@@ -265,6 +287,7 @@ class Config:
         return self.paper or self.live or self.ibkr_live
 
     def validate(self) -> None:
+        self.plan = plan_name(self.plan)
         self.tasty_data = _env_name(self.tasty_data, "tasty_data")
         self.tasty_orders = _env_name(self.tasty_orders, "tasty_orders")
         if self.tasty_orders == "production" and self.tasty_data != "production":
@@ -341,8 +364,9 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
 
     A ``broker`` key inside the file is ignored. Tests may pass ``broker=``.
     A ``dry_run`` key inside the file is ignored. ``mode`` sets that flag.
-    No config field is read from the environment. ``mode``, ``tasty_data``,
-    ``tasty_orders``, and ``account`` come from the file or from a keyword, and
+    No config field is read from the environment. ``plan``, ``mode``,
+    ``tasty_data``, ``tasty_orders``, and ``account`` come from the file or from
+    a keyword — there is no ``PLAN`` variable on any platform — and
     the hosted worker resolves its own plain variables in
     :mod:`spx_noon.service` before its children ever call this.
     """

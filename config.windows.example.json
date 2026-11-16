@@ -1,6 +1,7 @@
 {
   "_comment": "Windows + tastytrade. Copy to config.json. run_session.ps1 passes --broker tasty; this file cannot select a broker. tasty_orders=sandbox (the default) sends to api.cert.tastyworks.com. tasty_orders=production is real money and requires tasty_data=production. run_session.ps1 defaults to dry. -Mode live auto-approves; nothing waits on a human.",
   "mode": "dry",
+  "plan": "B",
   "account": "",
   "tasty_data": "production",
   "tasty_orders": "sandbox",
@@ -10,6 +11,7 @@
   "decision_grace_s": 90,
   "loop_interval_s": 5,
   "chain_band_pts": 150,
-  "_rules": "Version B only. 15m closes 12:00–1:00 PM ET, first qualifying bar, 1 spread. Long nearest 75 delta. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. GTC close at debit x 1.30. Flat 2 hours after the entry bar. No stop. Tastytrade does not chase a missed fill.",
+  "_rules": "Shared by both plans: 15m closes 12:00–1:00 PM ET, first qualifying bar, 1 spread. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. Flat 2 hours after the entry bar. No stop. Tastytrade does not chase a missed fill.",
+  "_plan": "plan is the only trading rule that is a config key: B (the default, and what a missing key means) or A1. B: long nearest 75 delta, GTC close at debit x 1.30. A1: skip the day if any 15m close from 10:15 through 11:00 ET was already beyond the prior day's high or low, long nearest 80 delta, and exit at +8 SPX points in the trade direction or the 2-hour flat, whichever comes first - no premium target. Nothing else differs, and there is no PLAN environment variable.",
   "_wrap": "Read-only log summary: python -m spx_noon wrap (run_wrap.ps1). It does not send orders."
 }

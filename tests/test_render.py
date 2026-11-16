@@ -239,6 +239,24 @@ def test_the_workers_list_of_variables_is_closed(tmp_path):
     assert sorted(service.env_overrides(_env(base))) == ["base_dir", "broker", "mode"]
 
 
+def test_the_trading_plan_comes_off_the_disk_and_is_not_a_worker_variable(tmp_path):
+    """``plan`` is a file key. The worker's list of variables stays the six it has."""
+    base = _disk(tmp_path / "a1", mode="dry", plan="a1")
+    cfg = service.build_config(base / "config.json", _env(base))
+    assert cfg.plan == "A1"                                  # it survives build_config
+    published = service.publish_config(cfg, cfg.state_dir / service.SERVICE_CONFIG)
+    assert json.loads(published.read_text())["plan"] == "A1"  # and is published
+    assert load_config(published, broker="tasty").plan == "A1"
+    # a PLAN variable is not an override: the disk file is the only switch
+    flat = _disk(tmp_path / "b", mode="dry")
+    env = _env(flat, PLAN="A1")
+    assert service.build_config(flat / "config.json", env).plan == "B"
+    assert sorted(service.env_overrides(env)) == ["base_dir", "broker", "mode"]
+    with pytest.raises(SafetyError, match="plan must be B or A1"):
+        service.build_config(_disk(tmp_path / "bad", mode="dry", plan="A") / "config.json",
+                             _env(tmp_path / "bad"))
+
+
 def test_load_config_reads_no_config_field_from_the_environment(monkeypatch, tmp_path):
     """The plain names are the worker's own: the Mac process has no environment
     knobs either way."""

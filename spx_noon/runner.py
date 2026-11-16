@@ -1,7 +1,10 @@
 """One noon session.
 
 Waits for the 12:00–1:00 PM ET closes, takes the first qualifying bar, and
-sends at most one spread. One job runs it either way: paper on a Mac goes to
+sends at most one spread. Config ``plan`` picks the rules: ``B`` (the default)
+rests a debit × 1.30 GTC, and ``A1`` skips a day whose 10:15–11:00 closes
+already broke PDH/PDL, buys the 80 delta, and sells at +8 SPX points. Both flatten
+two hours after the entry bar. One job runs it either way: paper on a Mac goes to
 TWS 7497, and IBKR live — config ``mode`` ``live`` with a non-``D`` account —
 goes to TWS 7496 or IB Gateway 4001 and keeps its own book and position file.
 Tastytrade live previews, then approves its own ticket. Nothing waits on a human.
@@ -29,12 +32,16 @@ from .pricing import floor_tick, take_profit_limit, target_reached, time_exit_de
 from . import resume
 from .strategy import (
     build_order_plan,
+    close_time,
     decision_closes,
     lookup_quote,
+    morning_break,
     pdh_pdl,
+    point_exit_reached,
     qualifies,
     session_bars,
     bar_closing_at,
+    A1_EXIT_POINTS,
     WINDOW_CLOSES,
 )
 from .pricing import spread_prices
@@ -51,6 +58,9 @@ class _State:
     seq: int = 1
     done_for_day: bool = False
     halt: bool = False
+    #: The plan this session actually ran: today's config, or the plan stored on
+    #: a position it reloaded. The report names this one, not the config key.
+    plan: str = "B"
 
 
 def _setup_logging(cfg) -> None:
@@ -222,19 +232,26 @@ def _ensure_position_quotes(cfg, broker, pos: dict) -> None:
         log.warning("could not subscribe the open spread: %s", exc)
 
 
-def _ticket_text(plan, account: str = "", *, broker: str = "") -> str:
+def _ticket_text(plan, account: str = "", *, broker: str = "", plan_name: str = "B") -> str:
     if broker == "tasty":
         tail = "No stop. Tastytrade live auto-approves this ticket. The price cap is the mid limit."
     else:
         tail = "No stop."
+    flat = f"{time_exit_deadline(plan.entry_close):%H:%M}"
+    if plan_name == "A1":
+        exit_line = (f"limit {plan.limit:.2f}   exit +{A1_EXIT_POINTS:.0f} SPX points "
+                     f"or flat at {flat} ET")
+    else:
+        exit_line = (f"limit {plan.limit:.2f}   target {plan.limit * 1.30:.2f} "
+                     f"then flat at {flat} ET")
     lines = [
-        f"{plan.direction} debit vertical  1 spread",
+        f"{plan.direction} debit vertical  1 spread  plan {plan_name}",
         f"SPX {plan.spot:.2f}   PDH {plan.pdh:.2f}   PDL {plan.pdl:.2f}",
         f"expected move {plan.em:.2f}   width {plan.width}",
         f"long {plan.long_strike:.0f}{plan.right} Δ {plan.long_delta:.3f}",
         f"short {plan.short_strike:.0f}{plan.right} Δ {plan.short_delta if plan.short_delta is not None else float('nan'):.3f}",
         f"mid {plan.mid:.2f}   natural {plan.natural:.2f}   slippage {plan.slippage_per_side:.3f}/side",
-        f"limit {plan.limit:.2f}   target {plan.limit * 1.30:.2f} then flat at {time_exit_deadline(plan.entry_close):%H:%M} ET",
+        exit_line,
         tail,
     ]
     if account:
@@ -290,11 +307,47 @@ def _row_from_plan(plan, mode: str, reason: str, **extra) -> dict:
     return row
 
 
-def _pos_from_plan(plan, fill, **extra) -> dict:
+def _pos_plan(pos: dict) -> str:
+    """The plan this spread was opened under. A position with none is version B.
+
+    A file written before the ``plan`` key existed, or by a B session, has no
+    plan on it, so a restart manages it exactly as it does today.
+    """
+    return str(pos.get("plan") or "B").strip().upper()
+
+
+def _live_print(broker):
+    """The live SPX print, or None. A broker that cannot answer is not a hit."""
+    try:
+        px = broker.spx_px()
+    except Exception:  # noqa: BLE001
+        log.warning("SPX print unavailable", exc_info=True)
+        return None
+    return getattr(px, "value", None)
+
+
+def _skip_row(cfg, when: datetime, pdh: float, pdl: float, reason: str, note: str) -> dict:
+    """A trade-log row for a day that was never a candidate: no strikes, no fill."""
+    return {
+        "date": when.date(),
+        "timestamp": when,
+        "pdh": pdh,
+        "pdl": pdl,
+        "exit_reason": reason,
+        "mode": cfg.mode,
+        "note": note,
+    }
+
+
+def _pos_from_plan(order_plan, fill, **extra) -> dict:
+    """The saved position dict. ``plan`` is the trading plan's name, ``B`` unless
+    the caller says otherwise; ``order_plan`` is today's :class:`OrderPlan`."""
+    plan = order_plan
     entry_close = plan.entry_close
     pos = {
         "date": entry_close.date().isoformat(),
         "status": "working",
+        "plan": "B",
         "direction": plan.direction,
         "right": plan.right,
         "spx": plan.spot,
@@ -346,11 +399,16 @@ def _rest_target(cfg, broker, pos: dict) -> None:
 
 
 def _open_position(cfg, broker, notifier, state: _State, working: dict, fill: float) -> None:
-    plan = working["plan"]
-    tp_limit = take_profit_limit(fill)
+    plan = working["order_plan"]
+    # The plan the entry went out under, not today's config: a working file with
+    # no plan on it was written by a version B build, so it stays version B.
+    plan_name = _pos_plan(working)
+    a1 = plan_name == "A1"
+    tp_limit = None if a1 else take_profit_limit(fill)
     pos = _pos_from_plan(
         plan, fill,
         status="open",
+        plan=plan_name,
         fill_price=fill,
         tp_limit=tp_limit,
         account=working["account"],
@@ -365,12 +423,16 @@ def _open_position(cfg, broker, notifier, state: _State, working: dict, fill: fl
     state.position = pos
     _persist(cfg, pos)
     _ensure_position_quotes(cfg, broker, pos)
-    _rest_target(cfg, broker, pos)
-    parked = (
-        f"GTC close at {tp_limit:.2f}"
-        if pos.get("tp_order_id")
-        else f"watching the bid for {tp_limit:.2f}"
-    )
+    if a1:
+        # A1 has no premium target, so nothing rests: the session watches the print.
+        parked = f"selling at +{A1_EXIT_POINTS:.0f} SPX points"
+    else:
+        _rest_target(cfg, broker, pos)
+        parked = (
+            f"GTC close at {tp_limit:.2f}"
+            if pos.get("tp_order_id")
+            else f"watching the bid for {tp_limit:.2f}"
+        )
     notifier.alert(
         "Noon filled",
         f"{pos['direction']} filled {fill:.2f} (mid was {plan.mid:.2f}). "
@@ -486,12 +548,45 @@ def _flatten(cfg, broker, notifier, out, state, reason: str, prices: dict | None
     return False
 
 
+def _manage_a1(cfg, broker, notifier, out, state: _State, now: datetime,
+               prices: dict | None) -> bool:
+    """Plan A1: +8 points from the entry print, else the same two-hour deadline.
+
+    The print is read every loop, the same cadence as B's bid watch, and the
+    reference is the print stored on the position. There is no premium target to
+    cancel and no stop. Both exits sell at the spread bid through ``_flatten``.
+
+    The hit latches, and is saved as soon as it does. A1 has no resting GTC
+    behind it, so a sell that was rejected, had no bid, or is still working has
+    to keep being worked even if the print comes back under +8 — across a
+    restart too. The decision to leave was already made and the exit stays
+    ``points``.
+    """
+    pos = state.position
+    if not pos.get("points_hit") and point_exit_reached(
+            pos["right"], pos.get("spx"), _live_print(broker)):
+        pos["points_hit"] = True
+        log_order(cfg, logging.INFO, "A1 point exit: SPX is %.1f points through %.2f",
+                  A1_EXIT_POINTS, float(pos.get("spx") or 0.0))
+        try:
+            _persist(cfg, pos)
+        except Exception:  # noqa: BLE001
+            log_order(cfg, logging.ERROR,
+                      "the A1 point exit was not saved; selling anyway", exc_info=True)
+    hit = bool(pos.get("points_hit"))
+    if not hit and now < pos["deadline"]:
+        return False
+    return _flatten(cfg, broker, notifier, out, state, "points" if hit else "time", prices)
+
+
 def _manage_position(cfg, broker, notifier, out, state: _State) -> bool:
     """Return True when the spread is flat."""
     pos = state.position
     now = broker.now()
     _ensure_position_quotes(cfg, broker, pos)
     prices = _prices_for(broker.option_quotes(), pos)
+    if _pos_plan(pos) == "A1":
+        return _manage_a1(cfg, broker, notifier, out, state, now, prices)
     tp_id = pos.get("tp_order_id")
     tp_state = _safe_state(broker, tp_id)
     if _filled(tp_state):
@@ -538,7 +633,7 @@ def _poll_working(cfg, broker, notifier, out, state: _State) -> None:
         log_order(cfg, logging.WARNING,
                   "entry %s still working after cancel; keeping it", working["id"])
         return
-    out.append_trade(_row_from_plan(working["plan"], cfg.mode, "skip_no_fill"))
+    out.append_trade(_row_from_plan(working["order_plan"], cfg.mode, "skip_no_fill"))
     notifier.alert("Noon no fill", f"entry {working['ref']} cancelled unfilled. Not chasing.", toast=False)
     state.working = None
     resume.mark_closed(cfg.state_dir, live=cfg.ibkr_live)
@@ -553,7 +648,7 @@ def _revalidate(cfg, broker, breakout, spot: float, expiry: str):
         log.warning("revalidate quotes failed: %s", exc)
         return None
     fresh_spot = broker.spx_px().value or spot
-    plan, _reason = build_order_plan(breakout, quotes, float(fresh_spot))
+    plan, _reason = build_order_plan(breakout, quotes, float(fresh_spot), cfg.plan)
     if plan is None or _plan_quotes_stale(quotes, plan, broker.now()):
         return None
     return plan
@@ -585,6 +680,21 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
             continue
         pdh, pdl, _session = levels
         today = session_bars(bars, close_at.date(), now)
+        if cfg.plan == "A1":
+            broke = morning_break(today, pdh, pdl)
+            if broke is not None:
+                state.done_for_day = True
+                note = (f"A1 morning break {close_time(broke):%H:%M} close {broke.c:.2f} "
+                        f"PDH {pdh:.2f} PDL {pdl:.2f}")
+                out.append_trade(_skip_row(cfg, close_at, pdh, pdl, "skip_morning", note))
+                log.info("%s; no trade today", note)
+                notifier.alert(
+                    "Noon skip",
+                    f"plan A1: the 10:15–11:00 window already broke "
+                    f"({close_time(broke):%H:%M} close {broke.c:.2f}). No trade today.",
+                    toast=False,
+                )
+                return
         breakout = qualifies(bar, today, pdh, pdl)
         if breakout is None:
             state.consumed.add(close_at)
@@ -601,7 +711,7 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
         except Exception as exc:  # noqa: BLE001
             log.warning("chain unavailable: %s", exc)
             return
-        plan, reason = build_order_plan(breakout, quotes, float(spot))
+        plan, reason = build_order_plan(breakout, quotes, float(spot), cfg.plan)
         stale = plan is not None and _plan_quotes_stale(quotes, plan, broker.now())
         if plan is None or stale:
             if _still_in_grace(close_at, broker.now(), grace):
@@ -623,7 +733,7 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
             out.append_trade(_row_from_plan(plan, cfg.mode, "dry_signal", slippage_vs_mid="", slippage_per_side=""))
             notifier.alert(
                 "Noon signal (not sent)",
-                _ticket_text(plan, broker=cfg.broker),
+                _ticket_text(plan, broker=cfg.broker, plan_name=cfg.plan),
                 toast=cfg.mode == "alerts",
             )
             state.done_for_day = True
@@ -636,7 +746,8 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
             except Exception as exc:  # noqa: BLE001
                 log.warning("preview failed: %s", exc)
                 preview = {"ok": False, "rejects": [str(exc)]}
-            notifier.alert("Noon ticket " + ticket, _ticket_text(plan, account, broker=cfg.broker))
+            notifier.alert("Noon ticket " + ticket,
+                           _ticket_text(plan, account, broker=cfg.broker, plan_name=cfg.plan))
             if not preview.get("ok", False):
                 out.append_trade(_row_from_plan(plan, cfg.mode, "skip_preview"))
                 continue
@@ -665,13 +776,14 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
                     pass
             state.halt = True
             return
-        working = _pos_from_plan(plan, None, status="working", account=account, ref=ref, ticket=ticket,
-                                 entry_order_id=order_id, mode=cfg.mode)
+        working = _pos_from_plan(plan, None, status="working", plan=cfg.plan, account=account,
+                                 ref=ref, ticket=ticket, entry_order_id=order_id, mode=cfg.mode)
         working["id"] = order_id
-        working["plan"] = plan
+        working["order_plan"] = plan
         working["cancel_after"] = _next_decision(close_at, grace)
         state.working = working
-        _persist(cfg, {k: v for k, v in working.items() if k != "plan"})
+        # ``order_plan`` is the OrderPlan object; the saved file keeps the plan name.
+        _persist(cfg, {k: v for k, v in working.items() if k != "order_plan"})
         log_order(cfg, logging.INFO, "working entry %s limit %.2f", ref, plan.limit)
         return
 
@@ -706,6 +818,9 @@ def _window_finished(broker, state: _State, closes, grace: timedelta) -> bool:
 
 def _load_saved(cfg, broker, state: _State, saved: dict) -> None:
     pos = dict(saved)
+    # This spread keeps the plan it was opened under, whatever the config says
+    # now, and the session's report follows the spread.
+    state.plan = _pos_plan(pos)
     pos["entry_close"] = _restore_dt(pos.get("entry_close"))
     pos["deadline"] = _restore_dt(pos.get("deadline"))
     if pos.get("cancel_after"):
@@ -717,7 +832,8 @@ def _load_saved(cfg, broker, state: _State, saved: dict) -> None:
         status = _safe_state(broker, order_id)
         if _filled(status):
             dummy = {
-                "plan": _plan_shim(pos),
+                "order_plan": _plan_shim(pos),
+                "plan": pos.get("plan"),
                 "account": pos.get("account"),
                 "ref": pos.get("ref"),
                 "ticket": pos.get("ticket"),
@@ -727,7 +843,7 @@ def _load_saved(cfg, broker, state: _State, saved: dict) -> None:
             return
         if status and not status.get("done"):
             pos["id"] = order_id
-            pos["plan"] = _plan_shim(pos)
+            pos["order_plan"] = _plan_shim(pos)
             state.working = pos
             return
         resume.mark_closed(cfg.state_dir, live=cfg.ibkr_live)
@@ -737,6 +853,9 @@ def _load_saved(cfg, broker, state: _State, saved: dict) -> None:
     state.done_for_day = True
     state.position = pos
     _ensure_position_quotes(cfg, broker, pos)
+    if _pos_plan(pos) == "A1":
+        # Nothing to rest: A1 exits on the print or the saved deadline.
+        return
     if pos.get("tp_order_id") and _filled(_safe_state(broker, pos["tp_order_id"])):
         return
     if not pos.get("tp_order_id") and broker.now() < pos["deadline"]:
@@ -777,7 +896,8 @@ def _plan_shim(pos):
     return _PlanShim(pos)
 
 
-def _write_report(cfg, out: Outputs, day, calendar_status) -> None:
+def _write_report(cfg, out: Outputs, day, calendar_status, plan: str | None = None) -> None:
+    plan = cfg.plan if plan is None else plan
     rows = out.read_trades(day)
     lines = [
         f"# Noon breakout {day.isoformat()}",
@@ -793,7 +913,14 @@ def _write_report(cfg, out: Outputs, day, calendar_status) -> None:
             f"{row.get('exit_reason') or ''} pnl {row.get('pnl') or 'n/a'}"
         )
     lines.append("")
-    lines.append("Version B: 75-delta debit, limit at mid, +30% target, flat two hours after the entry bar.")
+    if plan == "A1":
+        lines.append(
+            f"Plan A1: 80-delta debit, limit at mid, no premium target, skip the day on a "
+            f"10:15–11:00 break of PDH/PDL, exit +{A1_EXIT_POINTS:.0f} SPX points or flat "
+            f"two hours after the entry bar."
+        )
+    else:
+        lines.append("Version B: 75-delta debit, limit at mid, +30% target, flat two hours after the entry bar.")
     out.write_report(day, "\n".join(lines) + "\n")
 
 
@@ -826,10 +953,15 @@ def run_session(cfg, broker, notifier=None) -> int:
                 log.exception("quote stream did not start")
                 return 1
         account = verified if verified is not None else _resolve_account(cfg, broker)
-        state = _State()
+        state = _State(plan=cfg.plan)
         if resume.already_filled(cfg.state_dir, day, live=cfg.ibkr_live):
             log.info("already filled today; no second entry")
             state.done_for_day = True
+            # Today's trade is done, so the report still belongs to the plan that
+            # traded, not to a key that has been edited since.
+            closed = resume.load(cfg.state_dir, live=cfg.ibkr_live)
+            if closed:
+                state.plan = _pos_plan(closed)
         saved = resume.load_open(cfg.state_dir, day, live=cfg.ibkr_live)
         if saved:
             _load_saved(cfg, broker, state, saved)
@@ -837,7 +969,7 @@ def run_session(cfg, broker, notifier=None) -> int:
                 prices = _prices_for(broker.option_quotes(), state.position)
                 status = broker.order_state(state.position["tp_order_id"])
                 _record_exit(cfg, broker, notifier, out, state, status["avg_price"], "target", prices)
-                _write_report(cfg, out, day, calendar_status)
+                _write_report(cfg, out, day, calendar_status, state.plan)
                 return 0
         start = datetime.combine(day, cfg.t("start_not_before"), ET)
         if broker.now() < start:
@@ -870,7 +1002,7 @@ def run_session(cfg, broker, notifier=None) -> int:
             if _window_finished(broker, state, closes, grace):
                 break
             _sleep_for(cfg, broker, state, closes)
-        _write_report(cfg, out, day, calendar_status)
+        _write_report(cfg, out, day, calendar_status, state.plan)
         return 0
     finally:
         try:

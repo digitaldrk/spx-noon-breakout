@@ -1,4 +1,4 @@
-"""Entry, width, delta, slippage, and exit rules from plan v2 version B."""
+"""Entry, width, delta, slippage, and exit rules from plan v2: version B and plan A1."""
 import pytest
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -13,11 +13,16 @@ from spx_noon.pricing import (
     trade_pnl,
 )
 from spx_noon.strategy import (
+    A1_EXIT_POINTS,
+    A1_TARGET_DELTA,
     Bar,
     OptQuote,
     atm_strike,
     build_order_plan,
+    morning_break,
     pdh_pdl,
+    plan_target_delta,
+    point_exit_reached,
     qualifies,
     select_long_strike,
     short_strike,
@@ -56,6 +61,16 @@ def today_call_bars():
         b(DAY, 11, 45, 7010, 7025, 7008, 7011),  # 12:00 close
         b(DAY, 12, 0, 7012, 7030, 7010, 7018),  # 12:15 close
     ]
+
+
+def a1_call_bars():
+    """The same day with nothing in A1's 10:15–11:00 window.
+
+    Only the 10:00 bar is dropped, so the 9:45 close is still the trigger: a
+    9:45 break is a valid A1 entry and does not skip the day.
+    """
+    return [bar for bar in today_call_bars()
+            if not (bar.t.hour == 10 and bar.t.minute == 0)]
 
 
 def test_prior_day_high_and_low_ignore_older_sessions():
@@ -224,3 +239,106 @@ def test_target_is_thirty_percent_and_the_flat_is_two_hours_after_the_bar():
     assert pnl == pytest.approx((12.71 * 0.30 * 100) - 2.60)
     # The published 2026-07-31 winner was about +$378 on a $1,271 debit after fees.
     assert round(pnl) == 379
+
+
+# --------------------------------------------------------------------------
+# Plan A1: the morning skip, the 80-delta long leg, and the +8 point exit
+# --------------------------------------------------------------------------
+
+def test_the_a1_morning_skip_is_the_1015_through_1100_closes():
+    _bars, pdh, pdl = levels()                       # PDH 7010, PDL 6890
+    quiet = a1_call_bars()
+    assert morning_break(quiet, pdh, pdl) is None
+    # the 9:45 close (bar start 9:30) breaks PDH in that fixture and does not skip
+    assert any(bar.t.hour == 9 and bar.c > pdh for bar in quiet)
+    # the four closes in the window skip the day, either side of the levels
+    for hour, minute in ((10, 0), (10, 15), (10, 30), (10, 45)):
+        above = b(DAY, hour, minute, 7000, 7030, 7000, 7011)
+        below = b(DAY, hour, minute, 7000, 7030, 6800, 6889)
+        assert morning_break([above], pdh, pdl) is above
+        assert morning_break([below], pdh, pdl) is below
+    # 11:15 (bar start 11:00) is past the window, and 9:30 is before it
+    assert morning_break([b(DAY, 11, 0, 7000, 7030, 7000, 7020)], pdh, pdl) is None
+    assert morning_break([b(DAY, 9, 15, 7100, 7200, 6900, 7150)], pdh, pdl) is None
+    # beyond is strict: equal to PDH or PDL is not a break
+    assert morning_break([b(DAY, 10, 0, 7000, 7030, 6880, 7010)], pdh, pdl) is None
+    assert morning_break([b(DAY, 10, 0, 7000, 7030, 6880, 6890)], pdh, pdl) is None
+    # a bar inside the window that only traded through the level is not a break
+    assert morning_break([b(DAY, 10, 0, 7000, 7050, 6800, 7005)], pdh, pdl) is None
+    # one such close is the whole day, and the first one is the one reported
+    broke = morning_break(today_call_bars(), pdh, pdl)
+    assert broke is not None and (broke.t.hour, broke.t.minute) == (10, 0)
+    assert morning_break([], pdh, pdl) is None        # a missing bar is not a break
+
+
+def test_the_a1_long_leg_is_the_in_the_money_delta_nearest_80():
+    assert A1_TARGET_DELTA == 0.80
+    assert plan_target_delta("A1") == 0.80
+    assert plan_target_delta("B") == plan_target_delta() == 0.75
+    spot = 7000
+    quotes = {
+        (6900, "C"): OptQuote(1, 1.1, delta=0.90, con_id=1),
+        (6925, "C"): OptQuote(1, 1.1, delta=0.80, con_id=2),
+        (6950, "C"): OptQuote(1, 1.1, delta=0.74, con_id=3),
+        (7050, "C"): OptQuote(1, 1.1, delta=0.80, con_id=4),   # out of the money
+        (7050, "P"): OptQuote(1, 1.1, delta=-0.74, con_id=5),
+        (7075, "P"): OptQuote(1, 1.1, delta=-0.81, con_id=6),  # sign is ignored
+        (7100, "P"): OptQuote(1, 1.1, delta=-0.79, con_id=7),
+    }
+    assert select_long_strike(quotes, "C", spot, A1_TARGET_DELTA) == (6925, 0.80)
+    assert select_long_strike(quotes, "C", spot) == (6950, 0.74)
+    # 0.81 and 0.79 are equally far from 0.80; the strike closer to spot wins
+    assert select_long_strike(quotes, "P", spot, A1_TARGET_DELTA) == (7075, -0.81)
+
+
+def test_b_and_a1_price_the_same_chain_with_their_own_long_leg():
+    bars, pdh, pdl = levels()
+    today = today_call_bars()
+    bo = qualifies(today[-2], bars + today, pdh, pdl)
+    chain = _a1_chain()
+    version_b, reason = build_order_plan(bo, chain, 7000)
+    assert reason == "" and version_b.skip is False
+    assert (version_b.long_strike, version_b.short_strike) == (6950, 6980)
+    a1, reason = build_order_plan(bo, chain, 7000, "A1")
+    assert reason == "" and a1.skip is False
+    assert (a1.long_strike, a1.short_strike) == (6925, 6955)
+    assert a1.long_delta == 0.80
+    # width, the mid limit, and the $0.20 skip are the same rule on both plans
+    assert a1.width == version_b.width == 30
+    assert a1.em == version_b.em == 30 and a1.limit <= a1.mid
+    assert a1.slippage_per_side == pytest.approx(0.10)
+    wide = _a1_chain(long_ask=58)
+    skipped, why = build_order_plan(bo, wide, 7000, "A1")
+    assert why == "slippage" and skipped.skip is True
+    # a missing strike for the active target refuses the order and names it
+    straddle_only = {
+        (7000, "C"): OptQuote(14.5, 15.5, delta=0.50, con_id=70001),
+        (7000, "P"): OptQuote(14.5, 15.5, delta=-0.50, con_id=70002),
+    }
+    assert build_order_plan(bo, straddle_only, 7000) == (None, "no 75-delta strike")
+    assert build_order_plan(bo, straddle_only, 7000, "A1") == (None, "no 80-delta strike")
+
+
+def _a1_chain(long_ask: float = 52.2):
+    """B's chain plus the 80-delta strike and the short leg 30 points above it."""
+    chain = _chain(long_ask=40.2)
+    chain[(6925, "C")] = OptQuote(52.0, long_ask, delta=0.80, con_id=69251)
+    chain[(6955, "C")] = OptQuote(34.0, 34.2, delta=0.60, con_id=69551)
+    return chain
+
+
+def test_the_a1_point_exit_is_eight_points_in_the_trade_direction():
+    assert A1_EXIT_POINTS == 8.0
+    assert point_exit_reached("C", 7000, 7008) is True       # exactly 8 counts
+    assert point_exit_reached("C", 7000, 7020.5) is True
+    assert point_exit_reached("C", 7000, 7007.99) is False
+    assert point_exit_reached("C", 7000, 6980) is False      # against the trade
+    assert point_exit_reached("P", 7000, 6992) is True
+    assert point_exit_reached("P", 7000, 6980) is True
+    assert point_exit_reached("P", 7000, 6992.01) is False
+    assert point_exit_reached("P", 7000, 7020) is False
+    # a missing or non-finite print is not a hit, on either leg
+    for bad in (None, float("nan"), float("inf"), float("-inf"), "", "n/a"):
+        assert point_exit_reached("C", 7000, bad) is False
+        assert point_exit_reached("P", 7000, bad) is False
+        assert point_exit_reached("C", bad, 7008) is False
