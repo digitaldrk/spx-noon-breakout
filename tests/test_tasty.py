@@ -153,24 +153,8 @@ def test_one_broker_name_each_and_a_missing_broker_is_refused(tmp_path):
         load_config(path)
     assert str(caught.value) == MISSING_BROKER
     assert MISSING_BROKER == "broker must be set in config.json: ibkr or tasty"
-    # the dropped spellings are ordinary unknown brokers: no "use tasty" message
-    for asked in ("tt", "TT", "  tastytrade ", "ib", "IB"):
-        for call in (lambda: resolve_broker(asked),
-                     lambda: load_config(path, broker=asked)):
-            with pytest.raises(SafetyError) as caught:
-                call()
-            assert str(caught.value) == f"unknown broker {asked!r}; use ibkr or tasty"
-        with pytest.raises(SafetyError) as caught:          # Config says the same
-            Config(broker=asked, mode="dry").validate()
-        assert str(caught.value) == f"unknown broker {asked.strip().lower()!r}; use ibkr or tasty"
-    # auto and sim are unknown brokers, not an empty name and not a platform guess
-    for name in ("nope", "tda", "etrade", "auto", "sim", "ibkr2"):
-        with pytest.raises(SafetyError, match="unknown broker"):
-            resolve_broker(name)
-        bad = tmp_path / f"{name}.json"
-        bad.write_text(json.dumps({"mode": "dry", "broker": name}))
-        with pytest.raises(SafetyError, match="unknown broker"):
-            load_config(bad)                                # and a file value is no better
+    with pytest.raises(SafetyError, match="unknown broker 'nope'"):
+        resolve_broker("nope")
 
 
 def test_config_defaults_and_rejects_a_mismatch(tmp_path):

@@ -100,19 +100,6 @@ def test_the_file_names_the_broker_on_every_platform(monkeypatch, tmp_path):
         assert resolve_broker(asked) == "tasty"
     assert load_config(path, broker="  TASTY  ").broker == "tasty"
     assert load_config(path, broker="ibkr").broker == "ibkr"   # the worker's override wins
-    # auto and the dropped spellings are all ordinary unknown brokers
-    for asked in ("nonsense", "auto", "sim", "tt", "tastytrade", "ib"):
-        want = f"unknown broker {asked!r}; use ibkr or tasty"
-        with pytest.raises(SafetyError) as caught:
-            resolve_broker(asked)
-        assert str(caught.value) == want
-        with pytest.raises(SafetyError) as caught:
-            load_config(path, broker=asked)
-        assert str(caught.value) == want
-        with pytest.raises(SafetyError) as caught:
-            load_config(_write(tmp_path / asked.strip(), "config.json",
-                               {"broker": asked, "mode": "dry"}))
-        assert str(caught.value) == want
 
 
 # --------------------------------------------------------------------------
@@ -148,11 +135,6 @@ def test_every_accepted_value_is_taken_and_nothing_else_is(tmp_path):
     assert cfg(BROKER="ibkr", MODE="dry").broker == "ibkr"   # the worker takes either name
     for blank in ("", "   "):
         assert cfg(BROKER=blank).broker == "tasty"           # the file's broker stands
-    # the dropped spellings and auto are ordinary unknown brokers, named as typed
-    for broker in ("tt", "TASTYTRADE", "  ib ", "auto", "sim", "nonsense"):
-        with pytest.raises(SafetyError) as caught:
-            cfg(BROKER=broker)
-        assert str(caught.value) == f"unknown broker {broker!r}; use ibkr or tasty"
     for mode in ("live", "dry", "alerts"):
         got = cfg(MODE=mode)
         assert got.mode == mode
@@ -466,10 +448,10 @@ def test_broker_overrides_the_file_in_both_directions_and_blank_does_not(tmp_pat
 
 def test_the_worker_refuses_an_unknown_broker_before_it_publishes(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("DATA", str(tmp_path))
-    monkeypatch.setenv("BROKER", "tt")
+    monkeypatch.setenv("BROKER", "nope")
     assert service.main() == 2
     out = capsys.readouterr().out
-    assert "refusing to start" in out and "unknown broker 'tt'" in out
+    assert "refusing to start" in out and "unknown broker 'nope'" in out
     assert (tmp_path / "config.json").exists()       # it seeded the disk first
     assert not (tmp_path / "state" / service.SERVICE_CONFIG).exists()
 

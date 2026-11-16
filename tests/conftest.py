@@ -6,10 +6,9 @@ directory of the operator's, and no route to tastytrade or TWS. A machine with
 IBKR installed, a machine with tastytrade credentials exported, and a machine
 with neither must all give the same passed, failed, and skipped counts.
 
-Nothing here changes production behaviour. ``resolve_broker`` still refuses
-``auto``, and ``sim`` is still the in-process fake the tests pass as
-``Config(broker="sim")``. A test that wants credentials or a config file sets
-them itself, after this fixture, as the tastytrade tests already do.
+Nothing here changes production behaviour. ``sim`` is the in-process fake the
+tests pass as ``Config(broker="sim")``. A test that wants credentials or a
+config file sets them itself, after this fixture, as the tastytrade tests already do.
 """
 from __future__ import annotations
 

@@ -109,13 +109,7 @@ def config_path(env=None) -> Path:
 
 
 def env_overrides(env=None) -> dict:
-    """The six worker variables as ``load_config`` overrides. These win over the file.
-
-    Plain names, no bot prefix. A missing or blank value is the default in the
-    table at the top of this module, and a blank ``BROKER`` leaves the file's
-    broker alone. A value that is not accepted is a :class:`SafetyError`, not a
-    silent fallback.
-    """
+    """The six worker variables as ``load_config`` overrides. These win over the file."""
     env = os.environ if env is None else env
     mode = (env.get("MODE") or "").strip().lower() or "live"
     if mode not in MODES:

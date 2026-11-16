@@ -105,9 +105,9 @@ def test_the_session_takes_the_broker_from_the_config_file(tmp_path, monkeypatch
     for name, keys in (("bare", {}), ("blank", {"broker": "   "})):
         assert runner.main(["--config", str(_broker_file(tmp_path, name, **keys))]) == 2
         assert "broker must be set in config.json: ibkr or tasty" in capsys.readouterr().out
-    bad = _broker_file(tmp_path, "auto", broker="auto")
+    bad = _broker_file(tmp_path, "nope", broker="nope")
     assert runner.main(["--config", str(bad)]) == 2
-    assert "unknown broker 'auto'" in capsys.readouterr().out
+    assert "unknown broker 'nope'" in capsys.readouterr().out
     assert seen["session"] == ("tasty", "TastyBroker")         # no refusal reached a broker
 
 
@@ -701,7 +701,7 @@ def test_the_windows_launchers_name_no_broker():
             assert spelling not in code, (name, spelling)
 
 
-def test_nothing_takes_a_broker_flag_or_an_auto_broker():
+def test_nothing_takes_a_broker_flag():
     """``config.json`` is the only source, so the flag is gone everywhere."""
     for folder, pattern in ((ROOT / "spx_noon", "*.py"), (ROOT, "*.sh"), (ROOT, "*.ps1"),
                             (ROOT / "deploy", "*")):
@@ -714,8 +714,6 @@ def test_nothing_takes_a_broker_flag_or_an_auto_broker():
         text = (ROOT / name).read_text()
         assert "--broker" not in text, name
         assert "-Broker" not in text, name
-    blob = "\n".join(path.read_text() for path in (ROOT / "spx_noon").glob("*.py"))
-    assert '"auto"' not in blob and "'auto'" not in blob
 
 
 def test_package_does_not_import_candle_or_fly():

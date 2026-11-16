@@ -5,7 +5,7 @@
 | Machine | Broker | How orders go out |
 | --- | --- | --- |
 | Mac | **IBKR** TWS (`"broker": "ibkr"`). **paper** is `127.0.0.1:7497` with account ids starting with `D`. **live** is real money on `127.0.0.1:7496` (TWS) or `4001` (IB Gateway) | `dry` (default) logs the ticket. `paper` sends it to the paper account. `live` sends real orders to the configured non-`D` account. |
-| Windows | **tastytrade** (`"broker": "tasty"`; `tasty` is the one spelling) | `dry` (default) and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
+| Windows | **tastytrade** (`"broker": "tasty"`) | `dry` (default) and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
 
 A missing or blank `broker` refuses to start. On a Mac the config file is also the one switch between paper and real money: `mode`, `port`, and `account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first qualifying 15-minute close from noon to 1:00 PM ET, one spread, flat two hours after that bar. `plan` in `config.json` picks the rules: `B` (the default) is 75 delta with a +30% take-profit, and `A1` is 80 delta with a +8-point exit and a morning filter — see [Trading plan](#trading-plan). Candle's 10:00–11:00 strategy is a different repo and is not used here.
 

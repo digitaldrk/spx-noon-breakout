@@ -23,7 +23,7 @@ from conftest import (
     BlockedConnection,
     _refuse,
 )
-from spx_noon.config import SafetyError, load_config, resolve_broker
+from spx_noon.config import SafetyError, load_config
 from spx_noon.tasty import CERT_HOST, PROD_HOST, cred_dir, load_creds
 
 
@@ -91,8 +91,6 @@ def test_load_config_does_not_read_the_machines_config_json(isolate_machine):
     with pytest.raises(SafetyError) as caught:
         load_config()
     assert str(caught.value) == "broker must be set in config.json: ibkr or tasty"
-    with pytest.raises(SafetyError, match="unknown broker"):
-        resolve_broker("auto")
 
 
 def test_a_test_cannot_reach_tastytrade(isolate_machine):

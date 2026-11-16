@@ -130,7 +130,7 @@ def _t(value: str) -> time:
     return time(parts[0], parts[1], parts[2])
 
 
-#: One name each. These are the only broker values ``config.json`` may hold.
+#: The only broker values ``config.json`` may hold.
 #: ``sim`` is the in-process test broker and is not a public name: it is valid on
 #: :class:`Config` only, never out of :func:`resolve_broker`.
 VALID_BROKERS = ("ibkr", "tasty")
@@ -144,7 +144,6 @@ def resolve_broker(name: str | None = None) -> str:
 
     No environment variable and no operating system take part: the config file
     names the broker, and on the hosted worker ``BROKER`` overrides that file.
-    ``auto`` and ``sim`` are unknown brokers here.
     """
     key = str(name or "").strip().lower()
     if not key:
@@ -210,8 +209,6 @@ class Config:
             path.mkdir(parents=True, exist_ok=True)
 
     def __post_init__(self) -> None:
-        # Case and whitespace only. No spelling is remapped to another broker:
-        # Config(broker="tt") refuses in validate(), it does not become tasty.
         self.broker = str(self.broker or "").strip().lower()
         if self.broker in ("ibkr", "sim"):
             if not self.mode:
