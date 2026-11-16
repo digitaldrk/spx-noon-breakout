@@ -133,7 +133,7 @@ cp config.example.json config.json
 
 The tests ignore this machine's broker setup: they read no `TASTYTRADE_*` credential, no `~/secrets`, and no `config.json` of yours, and they never connect to tastytrade or to TWS, so `.venv/bin/python -m pytest -q` gives the same result whether the machine is set up for IBKR, for tastytrade, or for neither.
 
-`python -m spx_noon check` stays a read-only paper check on 7497. It never dials 7496 or 4001, so a live `config.json` makes it refuse.
+`python -m spx_noon check` follows `config.json`: an `ibkr` file is a read-only paper check on 7497, and a `tasty` file checks tastytrade. It never dials 7496 or 4001, so a live IBKR `config.json` makes it refuse.
 
 `./deploy/install_launchd.sh` schedules weekdays at 11:45 AM local (Eastern on this Mac) and a read-only wrap at 4:20 PM. Both follow `config.json`. The wrap does not connect and does not send orders; it writes `reports/wrap-<date>.md` from `state/trades.csv`, or `reports/wrap-live-<date>.md` from `state/trades-live.csv` when the config is IBKR live.
 

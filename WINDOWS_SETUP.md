@@ -2,7 +2,7 @@
 
 This is the Windows machine. A Mac runs IBKR paper through `run.sh` and `deploy/install_launchd.sh`, using `config.example.json`. On this PC, copy `config.windows.example.json` to `config.json`.
 
-`run_session.ps1` passes `--broker tasty`. Quotes, 15-minute bars, 1-minute bars, the SPXW chain, greeks, and orders all come from tastytrade. Tastytrade is the only broker this PC runs.
+That template carries `"broker": "tasty"`, which is the only place the broker is named — the launchers pass none, and a missing or blank `broker` refuses to start. Quotes, 15-minute bars, 1-minute bars, the SPXW chain, greeks, and orders all come from tastytrade. Tastytrade is the only broker this PC runs.
 
 ## What it does
 
@@ -83,7 +83,7 @@ Open a new PowerShell window afterwards. If scripts are blocked, run `Set-Execut
 ## Smoke test (read-only)
 
 ```powershell
-venv\Scripts\python -m spx_noon check --broker tasty
+venv\Scripts\python -m spx_noon check
 ```
 
 The check connects, lists order-session accounts, and prints the SPX quote, 15-minute and 1-minute bar counts, the SPXW chain, VIX, and the safety banner. It does not place an order.

@@ -121,8 +121,8 @@ def env_overrides(env=None) -> dict:
     if mode not in MODES:
         raise SafetyError(f"MODE must be live, dry, or alerts (got {mode!r})")
     over = {"base_dir": env_data(env), "mode": mode}
-    broker = (env.get("BROKER") or "").strip()
-    if broker:                           # blank leaves the file's broker
+    broker = env.get("BROKER") or ""
+    if broker.strip():                   # blank leaves the file's broker
         over["broker"] = resolve_broker(broker)
     for name, field in (("TASTY_DATA", "tasty_data"), ("TASTY_ORDERS", "tasty_orders")):
         value = (env.get(name) or "").strip().lower()
