@@ -75,35 +75,31 @@ def _env(base, **extra):
 
 
 # --------------------------------------------------------------------------
-# The broker: the machine's, or the one the worker asks for by name
+# The broker: the config file's, or the one the worker overrides it with
 # --------------------------------------------------------------------------
 
-def test_a_missing_broker_is_refused_on_every_platform(monkeypatch, tmp_path):
+def test_the_file_names_the_broker_on_every_platform(monkeypatch, tmp_path):
     """Nothing infers IBKR or tastytrade from the operating system or the environment."""
     path = _write(tmp_path, "config.json", {"broker": "tasty", "mode": "dry"})
+    blanks = [_write(tmp_path / "none", "config.json", {"mode": "dry"})]
+    for i, value in enumerate(("", "   ")):
+        blanks.append(_write(tmp_path / f"blank{i}", "config.json",
+                             {"broker": value, "mode": "dry"}))
     for platform in ("linux", "darwin", "win32"):
         monkeypatch.setattr(sys, "platform", platform)
-        monkeypatch.setenv("BROKER", "tasty")
-        for asked in ("", None):
-            with pytest.raises(SafetyError, match="broker must be set"):
+        monkeypatch.setenv("BROKER", "ibkr")       # load_config reads no variable of its own
+        assert load_config(path).broker == "tasty"
+        for asked in ("", None, "   "):
+            with pytest.raises(SafetyError, match="broker must be set in config.json"):
                 resolve_broker(asked)
-        with pytest.raises(SafetyError, match="broker must be set"):
-            load_config(path)
+        for bare in blanks:
+            with pytest.raises(SafetyError) as caught:
+                load_config(bare)
+            assert str(caught.value) == "broker must be set in config.json: ibkr or tasty"
     for asked in ("tasty", "  TASTY  "):
         assert resolve_broker(asked) == "tasty"
     assert load_config(path, broker="  TASTY  ").broker == "tasty"
-    assert load_config(path, broker="ibkr").broker == "ibkr"   # a file key cannot override it
-    for asked in ("nonsense", "auto"):                         # auto is not a broker here
-        with pytest.raises(SafetyError, match="unknown broker"):
-            resolve_broker(asked)
-    for asked, use in (("tt", "tasty"), ("tastytrade", "tasty"), ("ib", "ibkr")):
-        want = f"broker '{asked}' is not valid; use {use}. Valid brokers: ibkr, tasty."
-        with pytest.raises(SafetyError) as caught:
-            resolve_broker(asked)
-        assert str(caught.value) == want
-        with pytest.raises(SafetyError) as caught:
-            load_config(path, broker=asked)
-        assert str(caught.value) == want
+    assert load_config(path, broker="ibkr").broker == "ibkr"   # the worker's override wins
 
 
 # --------------------------------------------------------------------------
@@ -121,36 +117,24 @@ def test_the_defaults_are_the_disk_live_mode_and_sandbox_orders(tmp_path):
     # DATA is the disk, and /data when it is unset or blank
     assert service.env_data({}) == service.DEFAULT_DATA == "/data"
     assert service.env_data({"DATA": "   "}) == "/data"
-    with pytest.raises(SafetyError, match="BROKER must be set"):
-        service.env_overrides({})
-    assert service.env_overrides({"BROKER": "tasty"})["base_dir"] == "/data"
+    assert "broker" not in service.env_overrides({})       # blank is not an override
+    assert service.env_overrides({"BROKER": "tasty"})["broker"] == "tasty"
+    assert service.env_overrides({})["base_dir"] == "/data"
     assert service.config_path({}) == Path("/data/config.json")
     assert service.config_path({"DATA": "/mnt/two"}) == Path("/mnt/two/config.json")
 
 
 def test_every_accepted_value_is_taken_and_nothing_else_is(tmp_path):
-    base = _disk(tmp_path, mode="dry", account="file-account")
+    base = _disk(tmp_path, broker="tasty", mode="dry", account="file-account")
 
     def cfg(**env):
         return service.build_config(base / "config.json", _env(base, **env))
 
     for broker in ("tasty", "Tasty", "  TASTY  "):
         assert cfg(BROKER=broker).broker == "tasty"
+    assert cfg(BROKER="ibkr", MODE="dry").broker == "ibkr"   # the worker takes either name
     for blank in ("", "   "):
-        with pytest.raises(SafetyError, match="BROKER must be set"):
-            cfg(BROKER=blank)
-    # a dropped spelling names its one spelling instead of the generic refusal
-    for broker, use in (("tt", "tasty"), ("TASTYTRADE", "tasty"), ("  ib ", "ibkr")):
-        token = broker.strip().lower()
-        with pytest.raises(SafetyError) as caught:
-            cfg(BROKER=broker)
-        assert str(caught.value) == (
-            f"broker '{token}' is not valid; use {use}. Valid brokers: ibkr, tasty.")
-    # this worker is tasty only, and the refusal no longer lists the old spellings
-    for broker in ("ibkr", "auto", "sim", "nonsense"):
-        with pytest.raises(SafetyError, match="BROKER must be tasty on this worker") as caught:
-            cfg(BROKER=broker)
-        assert "tt" not in str(caught.value) and "tastytrade" not in str(caught.value)
+        assert cfg(BROKER=blank).broker == "tasty"           # the file's broker stands
     for mode in ("live", "dry", "alerts"):
         got = cfg(MODE=mode)
         assert got.mode == mode
@@ -165,9 +149,6 @@ def test_every_accepted_value_is_taken_and_nothing_else_is(tmp_path):
     for bad in ("paper", "live-ish", "LIVE!"):
         with pytest.raises(SafetyError, match="MODE"):
             cfg(MODE=bad)
-    for bad in ("ibkr", "sim", "nope"):
-        with pytest.raises(SafetyError, match="BROKER"):
-            cfg(BROKER=bad)
     for bad in ("prod", "cert", "yes"):
         with pytest.raises(SafetyError, match="tasty_data"):
             cfg(TASTY_DATA=bad)
@@ -246,7 +227,7 @@ def test_the_trading_plan_comes_off_the_disk_and_is_not_a_worker_variable(tmp_pa
     assert cfg.plan == "A1"                                  # it survives build_config
     published = service.publish_config(cfg, cfg.state_dir / service.SERVICE_CONFIG)
     assert json.loads(published.read_text())["plan"] == "A1"  # and is published
-    assert load_config(published, broker="tasty").plan == "A1"
+    assert load_config(published).plan == "A1"
     # a PLAN variable is not an override: the disk file is the only switch
     flat = _disk(tmp_path / "b", mode="dry")
     env = _env(flat, PLAN="A1")
@@ -299,12 +280,13 @@ def test_the_mac_launchers_keep_spx_noon_home_and_spx_noon_config(monkeypatch, t
 # The seed, the config path, and the file the children load
 # --------------------------------------------------------------------------
 
-def test_the_seed_carries_no_secrets_no_base_dir_and_no_broker():
+def test_the_seed_names_tasty_and_carries_no_secrets_and_no_base_dir():
     text = (ROOT / "config.render.example.json").read_text()
     data = json.loads(text)
+    assert data["broker"] == "tasty"
     assert data["mode"] == "live"
     assert data["tasty_data"] == "production" and data["tasty_orders"] == "sandbox"
-    for key in ("base_dir", "broker", "dry_run"):
+    for key in ("base_dir", "dry_run"):
         assert key not in data
     lowered = text.lower()
     for word in ("client_secret", "refresh", "private_key", "password", "bearer"):
@@ -376,11 +358,11 @@ def test_the_published_config_is_what_the_children_load(monkeypatch, tmp_path):
     assert child["tasty_orders"] == "production" and child["tasty_data"] == "production"
     assert child["mode"] == "live" and child["account"] == "5WX12345"
     assert child["base_dir"] == str(tmp_path)         # state, logs, reports stay on the disk
-    assert "broker" not in child                      # a file cannot pick the broker
+    assert child["broker"] == "tasty"                 # the resolved broker, for the children
     for word in ("client_secret", "refresh_token", "password"):
         assert word not in published.read_text().lower()
     # the child loads that file and gets the environment the operator set
-    reloaded = load_config(published, broker="tasty")
+    reloaded = load_config(published)                 # no broker override needed
     assert reloaded.tasty_orders == "production" and reloaded.real_money is True
     assert reloaded.home == tmp_path
 
@@ -446,13 +428,48 @@ def test_the_boot_line_names_the_hosts_and_the_real_money_rule_and_no_secret(
         assert "ORDERS=api.tastyworks.com REAL MONEY=NO" in boot()
 
 
-def test_the_worker_refuses_a_broker_that_is_not_tastytrade(monkeypatch, tmp_path, capsys):
+def test_broker_overrides_the_file_in_both_directions_and_blank_does_not(tmp_path):
+    """``BROKER=tasty`` beats a file that says ibkr, and ``BROKER=ibkr`` beats tasty."""
+    tasty_file = _disk(tmp_path / "hosted", broker="tasty", mode="live") / "config.json"
+    ibkr_file = _disk(tmp_path / "mac", broker="ibkr", mode="dry") / "config.json"
+
+    def broker_of(path, **env):
+        base = Path(path).parent
+        return service.build_config(path, {"DATA": str(base), "MODE": "dry", **env}).broker
+
+    assert broker_of(tasty_file) == "tasty"                   # BROKER unset: the file stands
+    for blank in ("", "   "):
+        assert broker_of(tasty_file, BROKER=blank) == "tasty"  # and so does a blank one
+    assert broker_of(tasty_file, BROKER="ibkr") == "ibkr"      # ibkr is not refused here
+    assert broker_of(ibkr_file) == "ibkr"
+    assert broker_of(ibkr_file, BROKER="tasty") == "tasty"
+    assert broker_of(ibkr_file, BROKER="  TASTY  ") == "tasty"
+
+
+def test_the_worker_refuses_an_unknown_broker_before_it_publishes(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("DATA", str(tmp_path))
-    monkeypatch.setenv("BROKER", "ibkr")
+    monkeypatch.setenv("BROKER", "nope")
     assert service.main() == 2
     out = capsys.readouterr().out
-    assert "refusing to start" in out and "BROKER must be tasty" in out
+    assert "refusing to start" in out and "unknown broker 'nope'" in out
     assert (tmp_path / "config.json").exists()       # it seeded the disk first
+    assert not (tmp_path / "state" / service.SERVICE_CONFIG).exists()
+
+
+def test_the_worker_publishes_the_broker_it_resolved(monkeypatch, tmp_path):
+    """``BROKER=ibkr`` reaches the children through the published file, not a flag."""
+    monkeypatch.setenv("DATA", str(tmp_path))
+    monkeypatch.setenv("BROKER", "ibkr")
+    monkeypatch.setenv("MODE", "dry")
+    taken = {}
+    monkeypatch.setattr(service, "Supervisor", _recording(taken))
+    assert service.main() == 0
+    assert json.loads((tmp_path / "config.json").read_text())["broker"] == "tasty"
+    published = taken["config_file"]
+    assert json.loads(published.read_text())["broker"] == "ibkr"
+    assert load_config(published).broker == "ibkr"   # the child needs no override
+    assert service.SESSION_ARGV == ("-m", "spx_noon")
+    assert service.WRAP_ARGV == ("-m", "spx_noon", "wrap", "--now")
 
 
 def test_the_worker_refuses_production_orders_on_sandbox_data(monkeypatch, tmp_path, capsys):
@@ -775,7 +792,7 @@ def test_the_wrap_is_read_only_runs_once_and_is_not_retried_in_a_loop(tmp_path):
     cfg = _cfg(tmp_path)
     supervisor, _clock, launcher, _ = _supervisor(tmp_path, _at(MONDAY, 16, 20), codes=[0], cfg=cfg)
     supervisor.run_wrap(MONDAY)
-    assert launcher.argvs() == [["-m", "spx_noon", "wrap", "--now", "--broker", "tasty"]]
+    assert launcher.argvs() == [["-m", "spx_noon", "wrap", "--now"]]
     said = _watch(supervisor)
     supervisor.run_wrap(MONDAY)                       # the report is there now
     assert len(launcher.calls) == 1
@@ -973,7 +990,7 @@ def test_the_child_inherits_the_config_path_and_the_lock(tmp_path, monkeypatch):
 
     monkeypatch.setattr(service.subprocess, "Popen", _Popen)
     assert supervisor._spawn(list(service.SESSION_ARGV)) == 0
-    assert seen["argv"] == [sys.executable, "-m", "spx_noon", "--broker", "tasty"]
+    assert seen["argv"] == [sys.executable, "-m", "spx_noon"]
     assert seen["env"]["SPX_NOON_CONFIG"] == str(marker)   # the resolved, published config
     assert seen["pass_fds"] == (7,)          # the lock descriptor goes with it
 

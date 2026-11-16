@@ -15,7 +15,7 @@ import argparse
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-from .config import SafetyError, load_config, resolve_broker
+from .config import SafetyError, load_config
 from .logbook import Outputs
 
 ET = ZoneInfo("America/New_York")
@@ -27,11 +27,9 @@ def main(argv=None) -> int:
     parser.add_argument("--book", choices=["paper", "live"], default=None,
                         help="paper reads state/trades.csv; live reads state/trades-live.csv")
     parser.add_argument("--now", action="store_true", help="Write immediately instead of waiting for 16:20 ET")
-    parser.add_argument("--broker", default=None,
-                        help="ibkr or tasty. Required. Nothing is inferred.")
     args = parser.parse_args(argv)
     try:
-        cfg = load_config(args.config, broker=resolve_broker(args.broker))
+        cfg = load_config(args.config)
     except (SafetyError, ValueError, TypeError) as exc:
         print(f"refusing to wrap: {exc}")
         return 2

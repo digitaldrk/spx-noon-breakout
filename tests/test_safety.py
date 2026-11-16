@@ -9,6 +9,7 @@ import pytest
 from spx_noon.config import (
     LIVE_PORTS,
     ORDER_PREFIX,
+    PAPER_PORT,
     Config,
     SafetyError,
     load_config,
@@ -34,20 +35,22 @@ def test_examples_are_dry_and_carry_no_secrets():
         assert "private_key" not in text
 
 
-def test_mac_example_is_paper_port_and_ignores_a_broker_key(tmp_path):
+def test_mac_example_names_ibkr_and_is_the_paper_port(tmp_path):
     assert "dry_run" not in (ROOT / "config.example.json").read_text()
-    cfg = load_config(ROOT / "config.example.json", broker="ibkr")
+    cfg = load_config(ROOT / "config.example.json")          # no broker flag, no override
     assert cfg.broker == "ibkr" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.port == 7497 and cfg.client_id == 41 and not cfg.live and not cfg.paper
+    # the file is the broker, and only the worker's keyword override beats it
     flipped = tmp_path / "config.json"
     flipped.write_text('{"broker": "tasty", "mode": "dry", "port": 7497}')
+    assert load_config(flipped).broker == "tasty"
     assert load_config(flipped, broker="ibkr").broker == "ibkr"
 
 
 def test_windows_example_stays_tasty_and_does_not_send():
     text = (ROOT / "config.windows.example.json").read_text()
     assert "dry_run" not in text
-    cfg = load_config(ROOT / "config.windows.example.json", broker="tasty")
+    cfg = load_config(ROOT / "config.windows.example.json")
     assert cfg.broker == "tasty" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
     assert cfg.live is False and cfg.real_money is False
@@ -76,6 +79,87 @@ def _write(tmp_path, name, text):
     path = tmp_path / name
     path.write_text(text)
     return path
+
+
+def _broker_file(tmp_path, name, **keys):
+    return _write(tmp_path, f"{name}.json",
+                  json.dumps({"mode": "dry", "base_dir": str(tmp_path), **keys}))
+
+
+def test_the_session_takes_the_broker_from_the_config_file(tmp_path, monkeypatch, capsys):
+    """``python -m spx_noon`` has no ``--broker``: the file is the only source."""
+    from spx_noon import runner
+
+    seen = {}
+
+    def _run_session(cfg, broker):
+        seen["session"] = (cfg.broker, type(broker).__name__)
+        return 0
+
+    monkeypatch.setattr(runner, "run_session", _run_session)
+    monkeypatch.setattr(runner, "_setup_logging", lambda cfg: None)
+    for broker, adapter in (("ibkr", "IBBroker"), ("tasty", "TastyBroker")):
+        path = _broker_file(tmp_path, broker, broker=f"  {broker.upper()}  ")
+        assert runner.main(["--config", str(path)]) == 0       # canonicalized, no flag
+        assert seen["session"] == (broker, adapter)
+    for name, keys in (("bare", {}), ("blank", {"broker": "   "})):
+        assert runner.main(["--config", str(_broker_file(tmp_path, name, **keys))]) == 2
+        assert "broker must be set in config.json: ibkr or tasty" in capsys.readouterr().out
+    bad = _broker_file(tmp_path, "nope", broker="nope")
+    assert runner.main(["--config", str(bad)]) == 2
+    assert "unknown broker 'nope'" in capsys.readouterr().out
+    assert seen["session"] == ("tasty", "TastyBroker")         # no refusal reached a broker
+
+
+def test_wrap_takes_the_broker_from_the_config_file(tmp_path, capsys):
+    """``python -m spx_noon wrap`` reads the same key and takes no broker argument."""
+    from spx_noon.wrap_run import main as wrap_main
+
+    for broker in ("ibkr", "tasty"):
+        path = _broker_file(tmp_path, f"wrap-{broker}", broker=broker)
+        assert wrap_main(["--config", str(path), "--now"]) == 0
+    assert wrap_main(["--config", str(_broker_file(tmp_path, "wrap-bare")), "--now"]) == 2
+    assert "broker must be set in config.json" in capsys.readouterr().out
+
+
+def test_check_dispatches_on_the_config_file_broker(tmp_path, monkeypatch):
+    """The file picks the branch, and the config path goes to the tasty check with it."""
+    from spx_noon import check, check_tasty
+
+    taken = {}
+
+    def _ib(cfg, client_id=None):
+        taken["ibkr"] = (cfg.broker, int(cfg.port), client_id)
+        return 0
+
+    def _tasty(argv=None):
+        taken["tasty"] = list(argv or [])
+        return 0
+
+    monkeypatch.setattr(check, "ib_main", _ib)
+    monkeypatch.setattr(check_tasty, "main", _tasty)
+    ibkr = _broker_file(tmp_path, "check-ibkr", broker="  IBKR  ")
+    assert check.main(["--config", str(ibkr), "--client-id", "151"]) == 0
+    assert taken["ibkr"] == ("ibkr", PAPER_PORT, 151)
+    tasty = _broker_file(tmp_path, "check-tasty", broker="Tasty")
+    assert check.main(["--config", str(tasty)]) == 0
+    assert taken["tasty"] == ["--config", str(tasty)]      # the same file, not a broker flag
+
+
+def test_check_fails_closed_without_a_broker_or_on_a_live_port(tmp_path, capsys):
+    from spx_noon.check import main as check_main
+
+    # an IBKR live file reaches the IBKR branch and fails closed before any socket
+    live = _broker_file(tmp_path, "check-live", broker="ibkr", mode="live",
+                        port=LIVE_PORTS[0], account=LIVE_ACCOUNT)
+    assert check_main(["--config", str(live)]) == 2
+    assert "not the paper port" in capsys.readouterr().out
+    # a tasty file reaches the tastytrade branch, which has no credentials here
+    tasty = _broker_file(tmp_path, "check-tasty", broker="tasty")
+    assert check_main(["--config", str(tasty)]) == 2
+    assert "missing tastytrade" in capsys.readouterr().out
+    assert check_main(["--config", str(_broker_file(tmp_path, "check-bare"))]) == 2
+    assert "broker must be set in config.json" in capsys.readouterr().out
 
 
 EXAMPLES = ("config.example.json", "config.windows.example.json", "config.render.example.json")
@@ -124,13 +208,13 @@ def test_mac_refuses_live_and_a_non_paper_port():
 
 
 def test_windows_live_is_off_unless_asked():
-    with pytest.raises(SafetyError, match="broker must be set"):
+    with pytest.raises(SafetyError, match="broker must be set in config.json"):
         Config().validate()
     live = Config(broker="tasty", mode="live")
     assert live.broker == "tasty" and live.live and live.sends_orders()
     assert live.real_money is False
     # an unknown broker is not a broker, whatever the mode says
-    with pytest.raises(SafetyError, match="Noon Breakout runs on Mac"):
+    with pytest.raises(SafetyError, match="unknown broker 'nope'"):
         Config(broker="nope", mode="live", account="").validate()
     with pytest.raises(SafetyError):
         Config(broker="tasty", mode="paper").validate()
@@ -562,11 +646,11 @@ def test_the_wrap_launcher_forwards_a_book_only_when_one_is_asked_for(tmp_path):
     """The 16:20 job runs this bare, so it must not force --book paper."""
     done, _base = _launcher(tmp_path / "bare", "run_wrap.sh")
     assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() == "ARGS: -m spx_noon wrap --broker ibkr"
+    assert done.stdout.strip() == "ARGS: -m spx_noon wrap"
     for book in ("paper", "live"):
         done, _base = _launcher(tmp_path / book, "run_wrap.sh", book, "--now")
         assert done.returncode == 0, done.stderr
-        assert done.stdout.strip() == f"ARGS: -m spx_noon wrap --broker ibkr --book {book} --now"
+        assert done.stdout.strip() == f"ARGS: -m spx_noon wrap --book {book} --now"
 
 
 @pytest.mark.skipif(not Path("/usr/bin/caffeinate").exists(), reason="macOS launcher")
@@ -582,11 +666,11 @@ def test_the_session_launcher_forwards_a_mode_only_when_one_is_asked_for(tmp_pat
         return [line for line in log.splitlines() if line.startswith("ARGS: ")]
 
     done, base = _launcher(tmp_path / "bare", "run.sh")
-    assert logged(done, base) == [f"ARGS: -m spx_noon --config {base}/config.json --broker ibkr"]
+    assert logged(done, base) == [f"ARGS: -m spx_noon --config {base}/config.json"]
     for mode in ("paper", "dry", "alerts", "live"):
         done, base = _launcher(tmp_path / mode, "run.sh", mode)
         assert logged(done, base) == [
-            f"ARGS: -m spx_noon --config {base}/config.json --broker ibkr --mode {mode}"]
+            f"ARGS: -m spx_noon --config {base}/config.json --mode {mode}"]
 
 
 def test_run_scripts_override_the_mode_and_the_book_for_one_launch():
@@ -599,21 +683,37 @@ def test_run_scripts_override_the_mode_and_the_book_for_one_launch():
         assert "--mode live" not in code and "--book paper" not in code
 
 
-def test_the_windows_launcher_refuses_a_former_spelling_before_python_starts():
-    """``pwsh`` is not on this Mac, so the script itself is the assertion."""
-    text = (ROOT / "run_session.ps1").read_text()
-    assert '[string]$Broker = "tasty"' in text            # plain string, still the default
-    for dropped in ('"tt"', '"tastytrade"'):
-        assert f"ValidateSet({dropped}" not in text and f", {dropped}" not in text
-    launch = text.index("& $py")
-    for message in ("broker 'tt' is not valid; use tasty. Valid brokers: ibkr, tasty.",
-                    "broker 'tastytrade' is not valid; use tasty. Valid brokers: ibkr, tasty.",
-                    "broker 'ib' is not valid; use ibkr. Valid brokers: ibkr, tasty."):
-        assert message in text
-        assert text.index(message) < launch                # refused before the Python process
-    # anything else, ibkr and auto included, is refused before Python as well
-    assert text.index('if ($wanted -ne "tasty")') < launch
-    assert "exit 2" in text and "--broker" in text
+def test_the_windows_launchers_name_no_broker():
+    """``pwsh`` is not on this Mac, so the scripts themselves are the assertion.
+
+    ``config.json`` names the broker, so neither script takes one or passes one.
+    ``-Mode`` is still theirs.
+    """
+    for name in ("run_session.ps1", "run_wrap.ps1"):
+        text = (ROOT / name).read_text()
+        assert "--broker" not in text and "Broker" not in text
+    session = (ROOT / "run_session.ps1").read_text()
+    assert '[ValidateSet("live", "alerts", "dry")][string]$Mode = "dry"' in session
+    assert '"--mode", $Mode' in session
+    for name in ("run_session.ps1", "run_wrap.ps1", "run.sh", "run_wrap.sh"):
+        code = _code_lines((ROOT / name).read_text()).lower()
+        for spelling in ("ibkr", "tasty", "broker"):
+            assert spelling not in code, (name, spelling)
+
+
+def test_nothing_takes_a_broker_flag():
+    """``config.json`` is the only source, so the flag is gone everywhere."""
+    for folder, pattern in ((ROOT / "spx_noon", "*.py"), (ROOT, "*.sh"), (ROOT, "*.ps1"),
+                            (ROOT / "deploy", "*")):
+        for path in folder.glob(pattern):
+            text = path.read_text()
+            assert "--broker" not in text, path.name
+            assert "-Broker" not in text, path.name
+    for name in ("README.md", "WINDOWS_SETUP.md", "RENDER.md", "config.example.json",
+                 "config.windows.example.json", "config.render.example.json"):
+        text = (ROOT / name).read_text()
+        assert "--broker" not in text, name
+        assert "-Broker" not in text, name
 
 
 def test_package_does_not_import_candle_or_fly():

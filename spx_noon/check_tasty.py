@@ -9,21 +9,20 @@ import argparse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from .config import SafetyError, load_config, resolve_broker
+from .config import SafetyError, load_config
 from .tasty import TastyBroker
 
 ET = ZoneInfo("America/New_York")
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="spx_noon check --broker tasty")
-    parser.add_argument("--broker", default=None)
+    parser = argparse.ArgumentParser(prog="spx_noon check")
+    parser.add_argument("--config", default=None)
     args = parser.parse_args(argv)
     try:
-        broker_name = resolve_broker(args.broker)
-        if broker_name != "tasty":
-            raise SafetyError(f"check_tasty got broker {broker_name}")
-        cfg = load_config(broker="tasty")
+        cfg = load_config(args.config)
+        if cfg.broker != "tasty":
+            raise SafetyError(f"check_tasty got broker {cfg.broker}")
         broker = TastyBroker(cfg)
         broker.connect()
     except (SafetyError, ValueError, TypeError) as exc:

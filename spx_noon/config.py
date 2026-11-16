@@ -1,7 +1,9 @@
-"""Configuration. The launcher names the broker. A config file cannot.
+"""Configuration. ``config.json`` names the broker, and nothing else does.
 
-The Mac job passes ``ibkr``. The Windows job passes ``tasty``. The Render worker
-requires ``BROKER``.
+``broker`` is ``ibkr`` or ``tasty``, and a missing or blank one refuses to load.
+The Mac template says ``ibkr``, the Windows and Render templates say ``tasty``.
+On the hosted worker a non-blank ``BROKER`` overrides the file, through the
+keyword overrides :mod:`spx_noon.service` hands this module.
 Mac runs IBKR TWS. There is one job and one config: ``mode``, ``port``,
 and ``account`` are the switch, together with the TWS session the operator is
 logged into. mode "paper" is 127.0.0.1:7497 with account ids starting with D.
@@ -128,41 +130,24 @@ def _t(value: str) -> time:
     return time(parts[0], parts[1], parts[2])
 
 
-#: One name each. These are the only broker values a launcher may pass.
+#: The only broker values ``config.json`` may hold.
 #: ``sim`` is the in-process test broker and is not a public name: it is valid on
 #: :class:`Config` only, never out of :func:`resolve_broker`.
 VALID_BROKERS = ("ibkr", "tasty")
 
-#: Spellings that used to resolve to a broker and no longer do. The value is the
-#: one spelling the error tells the operator to use. Nothing looks a broker up
-#: here: the only thing read out of it is the message.
-_FORMER_SPELLINGS = {"tt": "tasty", "tastytrade": "tasty", "ib": "ibkr"}
-
-
-def refuse_former_broker_spelling(key: str) -> None:
-    """Raise for a dropped spelling of a broker that still exists.
-
-    ``key`` is already stripped and lowercased. Used by every gate an operator
-    can reach: the CLIs, :func:`load_config`, :class:`Config`, and the worker's
-    ``BROKER`` variable, so one spelling is wrong in the same way everywhere.
-    """
-    use = _FORMER_SPELLINGS.get(key)
-    if use is not None:
-        raise SafetyError(
-            f"broker {key!r} is not valid; use {use}. Valid brokers: ibkr, tasty.")
+#: What a missing or blank broker says, wherever it is caught.
+MISSING_BROKER = "broker must be set in config.json: ibkr or tasty"
 
 
 def resolve_broker(name: str | None = None) -> str:
     """``ibkr`` and ``tasty`` are the only broker names. A missing name is refused.
 
-    No environment variable and no operating system take part. The Mac launcher,
-    the Windows launcher, and the Render worker each pass the broker they run.
-    ``auto`` and ``sim`` are unknown brokers here.
+    No environment variable and no operating system take part: the config file
+    names the broker, and on the hosted worker ``BROKER`` overrides that file.
     """
     key = str(name or "").strip().lower()
     if not key:
-        raise SafetyError("broker must be set: ibkr or tasty")
-    refuse_former_broker_spelling(key)
+        raise SafetyError(MISSING_BROKER)
     if key not in VALID_BROKERS:
         raise SafetyError(f"unknown broker {name!r}; use ibkr or tasty")
     return key
@@ -224,10 +209,7 @@ class Config:
             path.mkdir(parents=True, exist_ok=True)
 
     def __post_init__(self) -> None:
-        # Case and whitespace only. No spelling is remapped to another broker:
-        # Config(broker="tt") refuses here, it does not become tasty.
         self.broker = str(self.broker or "").strip().lower()
-        refuse_former_broker_spelling(self.broker)
         if self.broker in ("ibkr", "sim"):
             if not self.mode:
                 self.mode = "dry" if self.dry_run else "paper"
@@ -324,9 +306,9 @@ class Config:
             if self.mode not in ("dry", "alerts", "paper"):
                 raise SafetyError(f"sim mode must be dry, alerts, or paper (got {self.mode!r})")
         elif not self.broker:
-            raise SafetyError("broker must be set: ibkr or tasty")
+            raise SafetyError(MISSING_BROKER)
         else:
-            raise SafetyError("Noon Breakout runs on Mac (IBKR) or Windows (tastytrade)")
+            raise SafetyError(f"unknown broker {self.broker!r}; use ibkr or tasty")
         if self.decision_grace_s <= 0:
             raise ValueError("decision_grace_s must be positive")
         if self.chain_band_pts <= 0:
@@ -362,11 +344,13 @@ def log_order(cfg, level, msg, *args, **kwargs) -> None:
 def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
     """Load config.json over the defaults, then apply keyword overrides.
 
-    A ``broker`` key inside the file is ignored. Tests may pass ``broker=``.
+    The file's ``broker`` key is the broker, and a keyword ``broker=`` wins over
+    it: that is how the worker's ``BROKER`` arrives. Neither one set is a
+    :class:`SafetyError`.
     A ``dry_run`` key inside the file is ignored. ``mode`` sets that flag.
-    No config field is read from the environment. ``plan``, ``mode``,
-    ``tasty_data``, ``tasty_orders``, and ``account`` come from the file or from
-    a keyword — there is no ``PLAN`` variable on any platform — and
+    No config field is read from the environment, ``BROKER`` included. ``plan``,
+    ``mode``, ``tasty_data``, ``tasty_orders``, and ``account`` come from the
+    file or from a keyword — there is no ``PLAN`` variable on any platform — and
     the hosted worker resolves its own plain variables in
     :mod:`spx_noon.service` before its children ever call this.
     """
@@ -383,13 +367,12 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
     kwargs = {
         k: (tuple(v) if isinstance(v, list) else v)
         for k, v in data.items()
-        if k in known and k not in ("broker", "dry_run") and not str(k).startswith("_")
+        if k in known and k != "dry_run" and not str(k).startswith("_")
     }
-    if "broker" in overrides:
-        overrides["broker"] = resolve_broker(overrides["broker"])
     if os.environ.get("SPX_NOON_HOME") and "base_dir" not in data:
         kwargs["base_dir"] = os.environ["SPX_NOON_HOME"]
     kwargs.update(overrides)
+    kwargs["broker"] = resolve_broker(kwargs.get("broker"))
     cfg = Config(**kwargs)
     cfg.validate()
     return cfg

@@ -45,15 +45,20 @@ and need no typing:
 | --- | --- | --- | --- |
 | `DATA` | `/data` | any path | the disk: `config.json`, `state/`, `logs/`, `reports/` |
 | `PYTHONUNBUFFERED` | — | `1` | log lines appear as they happen |
-| `BROKER` | refuses to start | `tasty` | required. The blueprint sets `tasty`. Anything else, `ibkr` included, refuses to start |
+| `BROKER` | the file's `broker` | `tasty`, `ibkr` | overrides `broker` in `/data/config.json`. The blueprint sets `tasty`. Any other value refuses to start |
 | `MODE` | `live` | `live`, `dry`, `alerts` | `live` transmits; `dry` and `alerts` send nothing |
 | `TASTY_DATA` | `production` | `production`, `sandbox` | the quotes, bars, chain, and greeks host |
 | `TASTY_ORDERS` | `sandbox` | `sandbox`, `production` | the order host. `production` is real money |
 | `TASTY_ACCOUNT` | the file's account | any account id, or blank | blank is the first account on the order session |
 
-`BROKER` is required, and `tasty` is the one spelling it accepts. The blueprint
-sets `BROKER=tasty`. A missing value refuses to start, and so does any other
-value, `ibkr` included.
+`broker` in `/data/config.json` names the broker, and the seed ships
+`"broker": "tasty"`. `BROKER` is this worker's override of that one key: the
+blueprint sets `BROKER=tasty`, a blank or unset value leaves the file alone, and
+an unknown value refuses to start. A disk seeded before `broker` was a file key
+has no such key, and is never rewritten, so it runs on `BROKER=tasty` from the
+blueprint; clearing `BROKER` there refuses with
+`broker must be set in config.json: ibkr or tasty` until you add the key to
+`/data/config.json`.
 
 There is no `PLAN` variable, and the list above is closed. The trading plan is a
 key in `/data/config.json` — `"plan": "B"` (the default, and what a missing key

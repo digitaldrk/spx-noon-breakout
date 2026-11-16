@@ -12,7 +12,7 @@ Mac and Windows launchers keep ``SPX_NOON_HOME`` and ``SPX_NOON_CONFIG``; this
 process reads neither. ``DATA`` is the mounted disk, not the Unix ``HOME``.
 
   ``DATA``          disk mount, default ``/data``  -> ``base_dir`` for the children
-  ``BROKER``        required: tasty, the one spelling; anything else is refused
+  ``BROKER``        ibkr or tasty; blank or unset leaves the file's broker
   ``MODE``          live (default) | dry | alerts
   ``TASTY_DATA``    production (default) | sandbox
   ``TASTY_ORDERS``  sandbox (default) | production  <- real money, with production data
@@ -22,8 +22,8 @@ Those six win over ``$DATA/config.json``, and the resolved, secret-free result i
 published to ``$DATA/state/service-config.json``, which is the file both children
 load. The seed is never overwritten and the environment is never logged.
 
-``BROKER`` has to be set, and it has to be ``tasty``. The children are
-launched with that broker on the command line. Nothing is inferred from Linux.
+``config.json`` names the broker. ``BROKER`` is this worker's override of that
+one key, and the children read the published file. Nothing is inferred from Linux.
 
 Log lines are plain and start with one of ``boot``, ``waiting``, ``running``,
 ``done``, ``skip``, ``restart``, or ``error``.
@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover - Windows keeps the pid-file gate
 
 from . import resume
 from .calendar import fallback_status
-from .config import Config, SafetyError, load_config, refuse_former_broker_spelling
+from .config import Config, SafetyError, load_config, resolve_broker
 
 ET = ZoneInfo("America/New_York")
 log = logging.getLogger("spx_noon.service")
@@ -64,8 +64,6 @@ SERVICE_CONFIG = "service-config.json"
 
 #: The mounted disk when ``DATA`` is unset or blank.
 DEFAULT_DATA = "/data"
-#: The one broker this worker runs, and the one accepted ``BROKER`` value.
-BROKER = "tasty"
 #: Modes a tastytrade session accepts. ``live`` is the only one that transmits.
 MODES = ("live", "dry", "alerts")
 
@@ -85,9 +83,9 @@ CHILD_GRACE_S = 10.0
 #: A child that starts after the wrap hour still gets this long to finish.
 LATE_CHILD_GRACE = timedelta(minutes=40)
 
-#: The children are told the broker on the command line. A file cannot name one.
-SESSION_ARGV = ("-m", "spx_noon", "--broker", BROKER)
-WRAP_ARGV = ("-m", "spx_noon", "wrap", "--now", "--broker", BROKER)
+#: The children read the published config, broker included, through ``SPX_NOON_CONFIG``.
+SESSION_ARGV = ("-m", "spx_noon")
+WRAP_ARGV = ("-m", "spx_noon", "wrap", "--now")
 
 
 def seed_source() -> Path | None:
@@ -111,25 +109,15 @@ def config_path(env=None) -> Path:
 
 
 def env_overrides(env=None) -> dict:
-    """The six worker variables as ``load_config`` overrides. These win over the file.
-
-    Plain names, no bot prefix. ``BROKER`` is required. For the others, a missing
-    or blank value is the default in the table at the top of this module. A
-    value that is not accepted is a :class:`SafetyError`, not a silent fallback.
-    """
+    """The six worker variables as ``load_config`` overrides. These win over the file."""
     env = os.environ if env is None else env
     mode = (env.get("MODE") or "").strip().lower() or "live"
     if mode not in MODES:
         raise SafetyError(f"MODE must be live, dry, or alerts (got {mode!r})")
-    broker = (env.get("BROKER") or "").strip().lower()
-    if not broker:
-        raise SafetyError("BROKER must be set to tasty")
-    # A former spelling names its one spelling, before the tasty-only check, so
-    # BROKER=tt says "use tasty" instead of a generic refusal.
-    refuse_former_broker_spelling(broker)
-    if broker != BROKER:
-        raise SafetyError(f"BROKER must be tasty on this worker (got {broker!r})")
-    over = {"broker": BROKER, "base_dir": env_data(env), "mode": mode}
+    over = {"base_dir": env_data(env), "mode": mode}
+    broker = env.get("BROKER") or ""
+    if broker.strip():                   # blank leaves the file's broker
+        over["broker"] = resolve_broker(broker)
     for name, field in (("TASTY_DATA", "tasty_data"), ("TASTY_ORDERS", "tasty_orders")):
         value = (env.get(name) or "").strip().lower()
         if value:                        # blank leaves the file's value, then the default
@@ -146,10 +134,7 @@ def build_config(path: str | os.PathLike | None = None, env=None) -> Config:
     this far.
     """
     env = os.environ if env is None else env
-    cfg = load_config(path, **env_overrides(env))
-    if cfg.broker != BROKER:             # belt and braces; env_overrides pins it
-        raise SafetyError(f"this worker is tastytrade only (got {cfg.broker!r})")
-    return cfg
+    return load_config(path, **env_overrides(env))
 
 
 def real_money(cfg: Config) -> bool:
@@ -159,7 +144,7 @@ def real_money(cfg: Config) -> bool:
     itself cares about. This is the worker's boot line: a dry run whose orders are
     production transmits nothing, so it is not real money.
     """
-    return (cfg.broker == BROKER
+    return (cfg.broker == "tasty"
             and str(cfg.tasty_data).strip().lower() == "production"
             and str(cfg.tasty_orders).strip().lower() == "production"
             and cfg.mode == "live" and not cfg.dry_run)
@@ -169,11 +154,11 @@ def publish_config(cfg: Config, path: str | os.PathLike) -> Path:
     """Write the resolved, secret-free config the children load.
 
     Not the seed: ``$DATA/config.json`` stays the operator's file. ``broker`` is
-    left out because a file cannot pick the broker — the children get
-    ``--broker tasty`` on the command line. No credential is a config field.
+    in it, resolved: that is how a ``BROKER`` override reaches the children. No
+    credential is a config field.
     """
     data = {key: (list(value) if isinstance(value, tuple) else value)
-            for key, value in cfg.to_dict().items() if key != "broker"}
+            for key, value in cfg.to_dict().items()}
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")

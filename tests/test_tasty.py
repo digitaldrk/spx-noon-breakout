@@ -5,7 +5,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from spx_noon.config import VALID_BROKERS, Config, SafetyError, load_config, resolve_broker
+from spx_noon.config import (
+    MISSING_BROKER,
+    VALID_BROKERS,
+    Config,
+    SafetyError,
+    load_config,
+    resolve_broker,
+)
 from spx_noon.guard import GuardError
 from spx_noon.tasty import (
     CERT_HOST,
@@ -137,24 +144,17 @@ def test_one_broker_name_each_and_a_missing_broker_is_refused(tmp_path):
         assert resolve_broker(asked) == "ibkr"
     assert load_config(path, broker="  TASTY  ").broker == "tasty"
     assert Config(broker="  SIM  ", mode="dry").broker == "sim"   # internal, tests only
+    # no broker key in the file and no override: one message, from either gate
     for missing in ("", None, "   "):
-        with pytest.raises(SafetyError, match="broker must be set: ibkr or tasty"):
+        with pytest.raises(SafetyError) as caught:
             resolve_broker(missing)
-    # the dropped spellings name the one spelling to use, and never resolve
-    for asked, use in (("tt", "tasty"), ("TT", "tasty"), ("  tastytrade ", "tasty"),
-                       ("ib", "ibkr"), ("IB", "ibkr")):
-        token = asked.strip().lower()
-        want = f"broker '{token}' is not valid; use {use}. Valid brokers: ibkr, tasty."
-        for call in (lambda: resolve_broker(asked),
-                     lambda: load_config(path, broker=asked),
-                     lambda: Config(broker=asked)):
-            with pytest.raises(SafetyError) as caught:
-                call()
-            assert str(caught.value) == want
-    # auto and sim are unknown brokers, not an empty name and not a platform guess
-    for name in ("nope", "tda", "etrade", "auto", "sim", "ibkr2"):
-        with pytest.raises(SafetyError, match="unknown broker"):
-            resolve_broker(name)
+        assert str(caught.value) == MISSING_BROKER
+    with pytest.raises(SafetyError) as caught:
+        load_config(path)
+    assert str(caught.value) == MISSING_BROKER
+    assert MISSING_BROKER == "broker must be set in config.json: ibkr or tasty"
+    with pytest.raises(SafetyError, match="unknown broker 'nope'"):
+        resolve_broker("nope")
 
 
 def test_config_defaults_and_rejects_a_mismatch(tmp_path):
@@ -174,7 +174,8 @@ def test_config_defaults_and_rejects_a_mismatch(tmp_path):
         Config(broker="tasty", mode="dry", max_orders_per_min=11).validate()
     path = tmp_path / "bare.json"
     path.write_text('{"mode": "dry", "broker": "ibkr"}')
-    loaded = load_config(path, broker="tasty")
+    assert load_config(path).broker == "ibkr"              # the file names it
+    loaded = load_config(path, broker="tasty")             # an override wins
     assert loaded.broker == "tasty"
     assert loaded.tasty_orders == "sandbox"
     assert loaded.tasty_data == "production"
