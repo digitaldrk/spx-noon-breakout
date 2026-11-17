@@ -1,6 +1,6 @@
 # Readings
 
-Add an entry when a ticket or the trading plan leaves a mechanical choice undecided. The entry tells Derek and his partner what was unclear and which reading the bot is using until they decide.
+Add an entry when a ticket or the trading plan leaves a mechanical choice undecided. The entry tells Derek and his Tod what was unclear and which reading the bot is using until they decide.
 
 A decided rule belongs in the trading plan. An acceptance criterion may require a new entry here only when the work order names a choice the ticket and the plan leave open.
 
