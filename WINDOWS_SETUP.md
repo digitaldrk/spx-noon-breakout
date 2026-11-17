@@ -11,9 +11,9 @@ Noon Breakout, plan v2: one 0DTE SPX debit vertical on the first qualifying 15-m
 `plan` in `config.json` picks the rules, and the template is `"plan": "B"`:
 
 - **B** (the default, and what a missing key means): long strike nearest 75 delta, take-profit at +30% of the debit.
-- **A1**: skip the day when any 15-minute close from 10:15 through 11:00 ET was already beyond the prior day's high or low, long strike nearest 80 delta, and exit at +8 SPX points in the trade direction or the two-hour flat, whichever comes first. No premium target.
+- **A1**: take the day's first noon-window close beyond the prior day's high or low, with no earlier trigger close; skip the day when any 15-minute close from 10:15 through 11:00 ET was already beyond those levels; long strike nearest 80 delta; and exit at +8 SPX points in the trade direction or the two-hour flat, whichever comes first. No premium target.
 
-Neither plan has a stop, and `plan` is a file key only — there is no `PLAN` environment variable. Everything else (the window, the trigger, the width, the mid limit, the $0.20 skip, one fill per day) is the same on both.
+Neither plan has a stop, and `plan` is a file key only — there is no `PLAN` environment variable. Everything else (the window, the width, the mid limit, the $0.20 skip, one fill per day) is the same on both.
 
 | Command | Orders |
 | --- | --- |

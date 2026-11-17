@@ -5,7 +5,7 @@ The first bar that qualifies is the candidate. At most one fill per day.
 
 Calls are checked before puts. There is no moving-average gate.
 
-A call bar qualifies when all three are true:
+On version B, a call bar qualifies when all three are true:
   * some earlier 15m close today, from the 9:45 close on, was above PDH
     (the first such bar is the trigger)
   * this close is still above PDH
@@ -13,9 +13,16 @@ A call bar qualifies when all three are true:
 
 Puts mirror that with PDL and the trigger bar's high.
 
-Both plans share that window, the trigger, the width, the mid limit, the $0.20
-skip, and the two-hour flat. Plan ``A1`` changes exactly three things:
+On plan ``A1`` the signal is the day's first window close beyond PDH (calls) or
+PDL (puts). There is no trigger: no earlier close is read, and a fresh break on
+the window bar itself qualifies. Beyond is strict on both plans, and both check
+calls before puts.
 
+Both plans share the window, the width, the mid limit, the $0.20 skip, and the
+two-hour flat. Plan ``A1`` changes four things:
+
+  * the signal is the first window close beyond PDH/PDL, with no trigger bar
+    (:func:`qualifies`)
   * the day is skipped when a 15m close from 10:15 through 11:00 ET was already
     beyond PDH or PDL (:func:`morning_break`)
   * the long leg is the strike nearest 0.80 delta, not 0.75
@@ -91,6 +98,8 @@ class Breakout:
     direction: str  # CALL or PUT
     right: str      # C or P
     entry: Bar
+    #: Version B's trigger bar. On A1, which has no trigger rule, this is the
+    #: break bar itself, so the stored note still names a real bar.
     trigger: Bar
     pdh: float
     pdl: float
@@ -188,13 +197,28 @@ def _prior_closes(today_bars: list[Bar], entry: Bar) -> list[Bar]:
     return sorted(prior, key=lambda b: b.t)
 
 
-def qualifies(entry: Bar, today_bars: list[Bar], pdh: float, pdl: float) -> Breakout | None:
-    """Return the breakout on this bar, or None.
+def qualifies(entry: Bar, today_bars: list[Bar], pdh: float, pdl: float,
+              plan: str = "B") -> Breakout | None:
+    """Return the breakout on this bar, or None. ``plan`` picks the signal.
 
-    Calls first. The trigger is the first earlier close from 9:45 on beyond the level,
-    not this bar and not a later retest.
+    Version B, the default and what a missing plan means: the trigger is the
+    first earlier close from 9:45 on beyond the level, not this bar and not a
+    later retest, and this close must also be beyond that bar's low (calls) or
+    high (puts).
+
+    Plan A1: this close beyond the level is the whole signal. No earlier close
+    is read. The break bar is its own :attr:`Breakout.trigger`, which is only
+    what the position note names; A1 has no trigger rule.
+
+    Calls first on both plans. Beyond is strict on both.
     """
     if not is_window_bar(entry):
+        return None
+    if _is_a1(plan):
+        if entry.c > pdh:
+            return Breakout("CALL", "C", entry, entry, pdh, pdl)
+        if entry.c < pdl:
+            return Breakout("PUT", "P", entry, entry, pdh, pdl)
         return None
     prior = _prior_closes(today_bars, entry)
     call_triggers = [b for b in prior if b.c > pdh]
@@ -207,22 +231,31 @@ def qualifies(entry: Bar, today_bars: list[Bar], pdh: float, pdl: float) -> Brea
 
 
 def first_breakout(today_bars: list[Bar], pdh: float, pdl: float,
-                   up_to: datetime | None = None) -> Breakout | None:
-    """First qualifying window bar whose close is at or before ``up_to``."""
+                   up_to: datetime | None = None, plan: str = "B") -> Breakout | None:
+    """First qualifying window bar whose close is at or before ``up_to``.
+
+    ``plan`` is forwarded to :func:`qualifies`, so this cannot disagree with the
+    signal the session takes.
+    """
     windows = [b for b in today_bars if is_window_bar(b)]
     windows.sort(key=lambda b: b.t)
     for bar in windows:
         if up_to is not None and close_time(bar) > up_to:
             break
-        found = qualifies(bar, today_bars, pdh, pdl)
+        found = qualifies(bar, today_bars, pdh, pdl, plan)
         if found is not None:
             return found
     return None
 
 
+def _is_a1(plan: str) -> bool:
+    """Is this the A1 plan? Whitespace and case are forgiven; anything else is B."""
+    return str(plan).strip().upper() == "A1"
+
+
 def plan_target_delta(plan: str = "B") -> float:
     """The long leg's delta for this plan: 0.80 on A1, 0.75 on B."""
-    return A1_TARGET_DELTA if str(plan).strip().upper() == "A1" else TARGET_DELTA
+    return A1_TARGET_DELTA if _is_a1(plan) else TARGET_DELTA
 
 
 def morning_break(today_bars: list[Bar], pdh: float, pdl: float) -> Bar | None:

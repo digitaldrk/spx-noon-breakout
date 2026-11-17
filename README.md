@@ -143,12 +143,13 @@ Windows: [WINDOWS_SETUP.md](WINDOWS_SETUP.md).
 
 The bot implements version B in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md), and plan A1 behind one key. Readings that the plan leaves open are in [docs/AMBIGUITIES.md](docs/AMBIGUITIES.md).
 
-`"plan": "B"` (the default, and what a missing key means) or `"plan": "A1"`. One code base, one job; each machine picks its plan in its own `config.json`. Everything both plans share stays the same: the 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls before puts, the trigger from the 9:45 close on, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20-per-side skip, and the flat two hours after the entry bar.
+`"plan": "B"` (the default, and what a missing key means) or `"plan": "A1"`. One code base, one job; each machine picks its plan in its own `config.json`. Everything both plans share stays the same: the 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20-per-side skip, and the flat two hours after the entry bar.
 
-A1 changes exactly three things:
+A1 changes exactly four things:
 
 | | B | A1 |
 | --- | --- | --- |
+| Signal | a 15-minute close from 9:45 on beyond the level is the trigger; the window close must still be beyond the level and beyond that trigger bar's low (calls) or high (puts) | the day's **first** noon-window close beyond the prior day's high (calls) or low (puts). No trigger bar: a fresh break on the window close itself is the signal. |
 | Morning | no filter | skip the whole day when any 15-minute close from 10:15 through 11:00 ET was already beyond the prior day's high or low. Equal to the level does not skip, and a 9:45 break does not either. |
 | Long leg | nearest **0.75** delta, in the money | nearest **0.80** delta, in the money |
 | Exit | GTC at debit × 1.30, else flat at two hours | **+8 SPX points** in the trade direction, else flat at two hours. No premium target and no stop. |

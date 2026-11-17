@@ -2,9 +2,12 @@
 
 Waits for the 12:00–1:00 PM ET closes, takes the first qualifying bar, and
 sends at most one spread. Config ``plan`` picks the rules: ``B`` (the default)
-rests a debit × 1.30 GTC, and ``A1`` skips a day whose 10:15–11:00 closes
-already broke PDH/PDL, buys the 80 delta, and sells at +8 SPX points. Both flatten
-two hours after the entry bar. One job runs it either way: paper on a Mac goes to
+needs an earlier trigger close from 9:45 on and rests a debit × 1.30 GTC, and
+``A1`` takes the first window close beyond PDH/PDL with no trigger, skips a day
+whose 10:15–11:00 closes already broke PDH/PDL, buys the 80 delta, and sells at
++8 SPX points. Both flatten two hours after the entry bar.
+
+One job runs it either way: paper on a Mac goes to
 TWS 7497, and IBKR live — config ``mode`` ``live`` with a non-``D`` account —
 goes to TWS 7496 or IB Gateway 4001 and keeps its own book and position file.
 Tastytrade live previews, then approves its own ticket. Nothing waits on a human.
@@ -694,7 +697,7 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
                     toast=False,
                 )
                 return
-        breakout = qualifies(bar, today, pdh, pdl)
+        breakout = qualifies(bar, today, pdh, pdl, cfg.plan)
         if breakout is None:
             state.consumed.add(close_at)
             log.info("no breakout on the %s close", close_at.strftime("%H:%M"))

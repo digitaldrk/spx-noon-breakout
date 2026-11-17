@@ -19,6 +19,7 @@ from spx_noon.strategy import (
     OptQuote,
     atm_strike,
     build_order_plan,
+    first_breakout,
     morning_break,
     pdh_pdl,
     plan_target_delta,
@@ -71,6 +72,23 @@ def a1_call_bars():
     """
     return [bar for bar in today_call_bars()
             if not (bar.t.hour == 10 and bar.t.minute == 0)]
+
+
+def a1_fresh_call_bars():
+    """A quiet morning whose 12:00 close is itself the day's first break of PDH.
+
+    No close from 9:45 on, and no later window close, is beyond PDH 7010 or
+    PDL 6890, so version B never has a trigger and never enters on this day.
+    A1 takes the 12:00 close at 7011.
+    """
+    return [
+        b(DAY, 9, 15, 7100, 7200, 6900, 7150),   # before 9:30, ignored on both plans
+        b(DAY, 9, 30, 7000, 7008, 6995, 7002),   # 9:45 close, inside the levels
+        b(DAY, 10, 0, 7002, 7009, 6998, 7005),   # 10:15 close, no A1 morning break
+        b(DAY, 11, 30, 7005, 7010, 7000, 7008),  # 11:45 close, still inside
+        b(DAY, 11, 45, 7008, 7025, 7006, 7011),  # 12:00 close, the first break of PDH
+        b(DAY, 12, 0, 7012, 7020, 7002, 7005),   # 12:15 close, back inside PDH
+    ]
 
 
 def test_prior_day_high_and_low_ignore_older_sessions():
@@ -242,8 +260,87 @@ def test_target_is_thirty_percent_and_the_flat_is_two_hours_after_the_bar():
 
 
 # --------------------------------------------------------------------------
-# Plan A1: the morning skip, the 80-delta long leg, and the +8 point exit
+# Plan A1: the fresh break, the morning skip, the 80-delta long leg, and the
+# +8 point exit
 # --------------------------------------------------------------------------
+
+def test_a1_takes_a_fresh_window_break_that_version_b_passes_on():
+    bars, pdh, pdl = levels()                        # PDH 7010, PDL 6890
+    today = a1_fresh_call_bars()
+    noon = today[-2]                                 # the 12:00 close, 7011
+    # version B has no trigger on this day, with or without the plan argument
+    assert qualifies(noon, bars + today, pdh, pdl) is None
+    assert qualifies(noon, bars + today, pdh, pdl, "B") is None
+    found = qualifies(noon, bars + today, pdh, pdl, "A1")
+    assert found is not None and found.direction == "CALL"
+    assert found.entry is noon
+    assert found.trigger is noon                     # the break bar, not a trigger rule
+    # the scanner agrees with the qualifier on both plans
+    first = first_breakout(bars + today, pdh, pdl, plan="A1")
+    assert first is not None and first.entry is noon
+    assert first_breakout(bars + today, pdh, pdl) is None
+    # A1's morning skip is untouched: nothing from 10:15 to 11:00 is beyond the levels
+    assert morning_break(today, pdh, pdl) is None
+
+
+def test_a1_still_takes_only_the_first_qualifying_window_close():
+    bars, pdh, pdl = levels()
+    today = [
+        b(DAY, 9, 30, 7000, 7008, 6995, 7002),       # 9:45 close, inside the levels
+        b(DAY, 11, 45, 7008, 7025, 7006, 7011),      # 12:00 close, the first break
+        b(DAY, 12, 0, 7012, 7030, 7010, 7018),       # 12:15 close, also beyond PDH
+    ]
+    first = first_breakout(bars + today, pdh, pdl, plan="A1")
+    assert first is not None and first.entry is today[1]
+    # the later bar on its own would still qualify; it is simply not the first
+    assert qualifies(today[2], bars + today, pdh, pdl, "A1") is not None
+
+
+def test_an_a1_break_after_noon_waits_for_its_own_close():
+    bars, pdh, pdl = levels()
+    today = [
+        b(DAY, 11, 45, 7000, 7008, 6995, 7002),      # 12:00 close, inside the levels
+        b(DAY, 12, 0, 7002, 7009, 6998, 7005),       # 12:15 close, still inside
+        b(DAY, 12, 15, 7006, 7025, 7004, 7011),      # 12:30 close, the first break
+    ]
+    noon_fifteen = datetime(DAY.year, DAY.month, DAY.day, 12, 15, tzinfo=ET)
+    half_past = datetime(DAY.year, DAY.month, DAY.day, 12, 30, tzinfo=ET)
+    assert first_breakout(bars + today, pdh, pdl, noon_fifteen, "A1") is None
+    found = first_breakout(bars + today, pdh, pdl, half_past, "A1")
+    assert found is not None and found.entry is today[2]
+
+
+def test_a1_takes_a_fresh_put_break_with_no_earlier_close_below_pdl():
+    bars, pdh, pdl = levels()
+    today = [
+        b(DAY, 9, 30, 7000, 7008, 6995, 7002),       # 9:45 close, inside the levels
+        b(DAY, 11, 45, 6900, 6905, 6880, 6889),      # 12:00 close, the first break of PDL
+    ]
+    assert qualifies(today[-1], bars + today, pdh, pdl) is None
+    found = qualifies(today[-1], bars + today, pdh, pdl, "A1")
+    assert found is not None and found.direction == "PUT"
+    assert found.entry is today[-1] and found.trigger is today[-1]
+
+
+def test_the_a1_signal_is_strict_at_the_level_and_still_checks_calls_first():
+    _bars, pdh, pdl = levels()
+    # equal to PDH or PDL is not beyond it
+    equal_high = b(DAY, 11, 45, 7000, 7020, 6990, 7010)
+    equal_low = b(DAY, 11, 45, 6900, 6910, 6880, 6890)
+    assert qualifies(equal_high, [equal_high], pdh, pdl, "A1") is None
+    assert qualifies(equal_low, [equal_low], pdh, pdl, "A1") is None
+    # the window is the same five closes: an 11:45 close is outside it on A1 too
+    eleven = b(DAY, 11, 30, 7005, 7030, 7000, 7011)
+    assert qualifies(eleven, [eleven], pdh, pdl, "A1") is None
+    # pathological levels so one close is both above PDH and below PDL: calls win
+    both = b(DAY, 11, 45, 150, 160, 140, 150)
+    found = qualifies(both, [both], pdh=100, pdl=200, plan="A1")
+    assert found is not None and found.direction == "CALL"
+    # whitespace and case on the plan name are forgiven; anything else is version B
+    noon = b(DAY, 11, 45, 7008, 7025, 7006, 7011)
+    assert qualifies(noon, [noon], pdh, pdl, " a1 ") is not None
+    assert qualifies(noon, [noon], pdh, pdl, "B") is None
+    assert qualifies(noon, [noon], pdh, pdl, "") is None
 
 def test_the_a1_morning_skip_is_the_1015_through_1100_closes():
     _bars, pdh, pdl = levels()                       # PDH 7010, PDL 6890

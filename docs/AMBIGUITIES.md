@@ -1,6 +1,8 @@
 # Readings
 
-The bot follows the trading plan. These are the spots where the checklist does not spell out a mechanical detail.
+Add an entry when a ticket or the trading plan leaves a mechanical choice undecided. The entry tells Derek and his Tod what was unclear and which reading the bot is using until they decide.
+
+A decided rule belongs in the trading plan. An acceptance criterion may require a new entry here only when the work order names a choice the ticket and the plan leave open.
 
 1. **Per side.** Slippage per side is `(marketable debit − spread mid) / 2`. The trade is skipped when that is greater than $0.20. $0.20 exactly is still taken. The order itself is the mid, rounded down to the nearest $0.05, so a sent order does not bid through the mid.
 2. **A skip is not a fill.** If the first qualifying bar is too wide, a later bar in the noon window can still be the one trade. An unfilled entry is cancelled at the next 15-minute close and is not chased. A cancel that the broker has not confirmed stays on the books; the bot does not forget it and does not send a second entry. One fill ends the day, including after a restart: a closed fill in `state/own_position.json` blocks another entry that day.
