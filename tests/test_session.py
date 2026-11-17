@@ -24,7 +24,7 @@ from spx_noon.runner import (
 from spx_noon.strategy import Bar, OptQuote
 from spx_noon.wrap_run import main as wrap_main
 
-from test_rules import DAY, a1_call_bars, levels, today_call_bars
+from test_rules import DAY, a1_call_bars, a1_fresh_call_bars, levels, today_call_bars
 
 ET = ZoneInfo("America/New_York")
 LIVE_ACCOUNT = "U7654321"
@@ -65,8 +65,8 @@ def _quotes(kind: str):
     return book
 
 
-def _run(tmp, kind, start_hour=11, start_min=50, **cfg_extra):
-    bars = levels()[0] + today_call_bars()
+def _run(tmp, kind, start_hour=11, start_min=50, bars=None, **cfg_extra):
+    bars = levels()[0] + (today_call_bars() if bars is None else bars)
     start = datetime(2026, 10, 28, start_hour, start_min, tzinfo=ET)
     broker = SimBroker(start, bars, _quotes(kind), spot=7000)
     code = run_session(_cfg(tmp, **cfg_extra), broker)
@@ -560,6 +560,28 @@ def _a1_run(tmp, bars=None, *, kind="flat", moves_at=None, moves_to=None, **cfg_
     buys = [order for order in broker.placed if order["action"] == "BUY"]
     sells = [order for order in broker.placed if order["action"] == "SELL"]
     return code, _rows(tmp), buys, sells, broker
+
+
+def test_a1_trades_a_fresh_noon_break_that_version_b_passes_on(tmp_path):
+    """The 12:00 close is the day's first break of PDH. A1 takes it; B has no trigger."""
+    code, rows, buys, sells, _broker = _a1_run(
+        tmp_path / "a1", bars=a1_fresh_call_bars(), moves_at=ONE, moves_to=7008)
+    assert code == 0
+    assert len(buys) == 1 and len(sells) == 1
+    entry = [row for row in rows if row["exit_reason"] == "points"]
+    assert len(entry) == 1
+    row = entry[0]
+    assert row["direction"] == "CALL"
+    assert row["timestamp"].startswith("2026-10-28T12:00")   # the first window close
+    assert float(row["long_strike"]) == 6925 and float(row["long_delta"]) == 0.8
+    assert "skip_morning" not in [r["exit_reason"] for r in rows]
+    # the same bars on version B: no earlier close beyond the levels, so no trade
+    b_code, b_rows, b_buys, b_sells, b_broker = _run(
+        tmp_path / "b", "target", bars=a1_fresh_call_bars())
+    assert b_code == 0
+    assert b_buys == [] and b_sells == [] and b_broker.placed == []
+    assert b_rows == []
+    assert not (tmp_path / "b" / "state" / "own_position.json").exists()
 
 
 def test_a1_skips_the_whole_day_when_the_morning_already_broke(tmp_path):

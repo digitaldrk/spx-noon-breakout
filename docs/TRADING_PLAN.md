@@ -179,7 +179,7 @@ logged into paper. No environment variable takes part in either. Tastytrade is u
 
 ## 10. Plan A1 (`"plan": "A1"`)
 
-A1 is the same strategy with three rules changed. It is one config key, not a fork:
+A1 is the same strategy with four rules changed. It is one config key, not a fork:
 `plan` in `config.json` is `B` (the default, and what a missing key means) or `A1`,
 whitespace and case are forgiven, and any other value refuses to start. No
 environment variable takes part, on any machine or on the hosted worker, and the
@@ -187,17 +187,28 @@ committed templates stay on `B`.
 
 | Rule | B | A1 |
 |---|---|---|
+| Signal | the trigger from the 9:45 close on, then this close beyond the level and beyond the trigger bar's extreme (section 8, step 3) | the day's **first** window close beyond PDH (calls) or PDL (puts), with **no trigger bar** |
 | Morning | no filter | **skip the day** when any 15-minute close from 10:15 through 11:00 ET was already beyond PDH or PDL |
 | Long leg | nearest **0.75** delta | nearest **0.80** delta |
 | Exit | GTC at debit × 1.30, else the two-hour flat | **+8 SPX points** in the trade direction, else the two-hour flat |
 
+**Signal.** A1's candidate is the day's first 15-minute close, among the five
+window closes at 12:00, 12:15, 12:30, 12:45, and 1:00, that is beyond PDH for
+calls or PDL for puts. That is the whole test. No earlier close is read: there is
+no trigger bar, and no check that this close is beyond a trigger bar's low or
+high. A fresh break on the window bar itself qualifies even when nothing from
+9:45 on was beyond that level. Beyond is strict — a close equal to PDH or PDL
+does not qualify — calls are checked before puts, and only the first qualifying
+window bar is taken. Version B's rule in section 8, step 3 is unchanged.
+
 **Morning skip.** The window is the four closes at 10:15, 10:30, 10:45, and 11:00.
-Beyond is strict, the same as the trigger rule: a close equal to PDH or PDL does
-not skip. One such close skips the whole day, either side of the levels, and that
-day sends no order, does not try a later noon bar, and writes one trade-log row
-with `exit_reason` `skip_morning`. A 9:45 close beyond the level is still a valid
-trigger for both plans and does not, by itself, skip the day. A bar the broker did
-not return is not a break.
+Beyond is strict here too: a close equal to PDH or PDL does not skip. One such
+close skips the whole day, either side of the levels, and that day sends no order,
+does not try a later noon bar, and writes one trade-log row with `exit_reason`
+`skip_morning`. A 9:45 close beyond the level does not, by itself, skip the day:
+it is still a valid trigger on B, and on A1 it neither skips the day nor stops a
+later window close from being the signal. A bar the broker did not return is not
+a break.
 
 **Long leg.** Absolute delta nearest 0.80, in the money only, with the same
 tie-break as 0.75: the strike closer to spot, then the lower strike. The width, the
@@ -212,8 +223,8 @@ debit × 1.30. There is no stop. The point exit reads `points` in `exit_reason`,
 the two-hour flat still reads `time`. Both sell at the spread bid.
 
 Everything else is identical to version B: the 12:00–1:00 PM ET closes, the first
-qualifying bar, one fill per day, calls before puts, the trigger from the 9:45
-close on, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20 skip, one
+qualifying bar, one fill per day, calls before puts,
+`W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20 skip, one
 spread, the fees, the two-hour clock measured from the entry bar's close, the
 calendar and live gates, the books, and the order prefix. The 0.75, the 0.80, and
 the 8 points are code, not config keys.
