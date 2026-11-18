@@ -23,8 +23,23 @@ $py = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
 $cfg = Join-Path $PSScriptRoot "config.json"
 $args2 = @("-m", "spx_noon", "--mode", $Mode)
 if (Test-Path $cfg) { $args2 += @("--config", $cfg) }
+$code = 0
 try {
     & $py @args2
+    if ($null -ne $LASTEXITCODE) { $code = $LASTEXITCODE }
+} catch {
+    if ($LASTEXITCODE) { $code = $LASTEXITCODE } else { $code = 1 }
+    Write-Host "Noon session failed: $($_.Exception.Message)"
 } finally {
     [void][Win32.Power]::SetThreadExecutionState([uint32]"0x80000000")
+}
+if ($code -ne 0) {
+    $day = Get-Date -Format "yyyy-MM-dd"
+    $log = Join-Path $env:SPX_NOON_HOME "state\bot_$day.log"
+    $alerts = Join-Path $env:SPX_NOON_HOME "logs\alerts.log"
+    Write-Host ""
+    Write-Host "Noon session exited $code."
+    Write-Host "Bot log: $log"
+    Write-Host "Alerts:  $alerts"
+    exit $code
 }

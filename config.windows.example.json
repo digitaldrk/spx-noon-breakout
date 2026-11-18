@@ -4,6 +4,8 @@
   "mode": "dry",
   "plan": "B",
   "account": "",
+  "data_watchdog_s": 180,
+  "_watchdog": "data_watchdog_s is seconds without a fresh SPX quote. A flat session alerts and exits nonzero. An open spread or a working entry alerts and stays up, because this process is what flattens it; the watchdog sends no orders. account blank is accepted only when the order session has exactly one account. More than one account with a blank account refuses to start, and that refusal is logged and alerted.",
   "tasty_data": "production",
   "tasty_orders": "sandbox",
   "base_dir": "C:/spx-noon-breakout",

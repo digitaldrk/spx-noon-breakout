@@ -161,3 +161,20 @@ def isolate_machine(monkeypatch, tmp_path):
         home=home, cred_dir=cred_dir, spx_home=spx_home, config_path=config_path,
         original_home=Path(ORIGINAL_HOME) if ORIGINAL_HOME else None,
     )
+
+
+@pytest.fixture(autouse=True)
+def isolate_logging():
+    """Drop log handlers a test attached so the next test arms its own bot log."""
+    import logging
+
+    yield
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        try:
+            handler.flush()
+            handler.close()
+        except Exception:  # noqa: BLE001
+            pass
+    root.setLevel(logging.WARNING)

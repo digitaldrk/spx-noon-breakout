@@ -188,6 +188,12 @@ class Config:
     chain_band_pts: float = 150.0
     max_option_lines: int = 120
 
+    #: Seconds without a fresh SPX quote before the session watchdog acts.
+    #: A flat session stops. An open spread or a working entry is kept and
+    #: alerted; the watchdog does not place or cancel orders. See
+    #: ``runner._data_watchdog``.
+    data_watchdog_s: float = 180.0
+
     def t(self, name: str) -> time:
         value = getattr(self, name)
         return value if isinstance(value, time) else _t(value)
@@ -313,6 +319,8 @@ class Config:
             raise ValueError("decision_grace_s must be positive")
         if self.chain_band_pts <= 0:
             raise ValueError("chain_band_pts must be positive")
+        if float(self.data_watchdog_s) <= 0:
+            raise ValueError("data_watchdog_s must be positive")
 
     def to_dict(self) -> dict:
         return asdict(self)

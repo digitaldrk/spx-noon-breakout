@@ -43,8 +43,9 @@ copy config.windows.example.json config.json
 | `mode` | `dry` | `dry` and `alerts` never send. `live` auto-approves and sends. |
 | `tasty_data` | `production` | Quote, bar, chain, and greek host. |
 | `tasty_orders` | `sandbox` | Order host. `production` is real money. |
-| `account` | `""` | Blank uses the only account on the order session. Set it when there is more than one. |
+| `account` | `""` | Blank uses the only account on the order session. More than one account with a blank value refuses to start. The refusal is logged and alerted; the quote stream does not start. |
 | `base_dir` | `C:/spx-noon-breakout` | State, logs, and reports. Order ids are `state\tt_orders-<date>.json`. |
+| `data_watchdog_s` | `180` | Seconds without a fresh SPX quote. See [If the session stops](#if-the-session-stops). |
 
 ## One-time install
 
@@ -98,6 +99,16 @@ Start **11:45 AM ET** on weekdays, only when you are logged on:
 4. Conditions: "Wake the computer to run this task".
 
 The script keeps Windows awake while the bot runs. Leave `tasty_orders` at `sandbox` until a live sandbox session looks right.
+
+A nonzero exit from the bot is printed in that window, with the path of `state\bot_YYYY-MM-DD.log` and `logs\alerts.log`, and the script exits with the bot's code. Task Scheduler's last result is that code.
+
+## If the session stops
+
+A safety stop is written to `state\bot_YYYY-MM-DD.log` at ERROR, and a crash at CRITICAL. The same text goes to `logs\alerts.log`, and when toasts are on it raises one. The quote stream is not started for a failure that can be known first, including a blank `account` when the order session returned more than one account.
+
+`data_watchdog_s` (default 180) is how long the session will go without a fresh SPX quote after it reaches `start_not_before`, through the noon decisions. A flat session alerts and exits nonzero rather than sitting through 12:00 with a dead quote.
+
+An open spread or a working entry is different: the session alerts and stays up. This process is what flattens the spread (plan A1 has no resting order, and plan B's two-hour flat is not the broker's). The watchdog does not place or cancel an order when quotes go stale. A later fresh quote clears the alert so a second outage alerts again.
 
 ## End-of-day note (4:20 PM ET)
 

@@ -6,6 +6,8 @@
   "tasty_data": "production",
   "tasty_orders": "sandbox",
   "account": "",
+  "data_watchdog_s": 180,
+  "_watchdog": "Seconds without a fresh SPX quote. A flat session alerts and exits. An open spread or a working entry alerts and stays up; the watchdog sends no orders. A blank account is accepted only when the order session has exactly one account.",
   "toast": false,
   "start_not_before": "11:45:00",
   "decision_grace_s": 90,
