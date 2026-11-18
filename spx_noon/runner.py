@@ -15,9 +15,14 @@ Tastytrade live previews, then approves its own ticket. Nothing waits on a human
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
+import re
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .calendar import trading_day_status
@@ -51,6 +56,112 @@ from .pricing import spread_prices
 ET = ZoneInfo("America/New_York")
 log = logging.getLogger("spx_noon.runner")
 
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+_SECRET_BEARER = re.compile(r"Bearer\s+\S+", re.IGNORECASE)
+_SECRET_FIELD = re.compile(
+    r"((?:refresh_token|client_secret|access_token)\"?\s*[:=]\s*\"?)[^\s\",}]+",
+    re.IGNORECASE,
+)
+
+
+def _redact_message(text: str, account: str = "") -> str:
+    """Strip tokens and a full account id before a line is logged or alerted."""
+    text = _SECRET_BEARER.sub("Bearer [redacted]", str(text))
+    text = _SECRET_FIELD.sub(r"\1[redacted]", text)
+    account = str(account or "")
+    if len(account) >= 4 and account in text:
+        text = text.replace(account, "..." + account[-4:])
+    return text
+
+
+def _arm_log(home: Path) -> None:
+    """Attach today's bot log. A handler that is already there is left alone."""
+    home = Path(home)
+    state = home / "state"
+    logs = home / "logs"
+    state.mkdir(parents=True, exist_ok=True)
+    logs.mkdir(parents=True, exist_ok=True)
+    path = (state / f"bot_{datetime.now(ET):%Y-%m-%d}.log").resolve()
+    root = logging.getLogger()
+    for handler in root.handlers:
+        base = getattr(handler, "baseFilename", None)
+        if base and Path(base).resolve() == path:
+            break
+    else:
+        handler = logging.FileHandler(path, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+        root.addHandler(handler)
+    if not any(type(handler) is logging.StreamHandler for handler in root.handlers):
+        stream = logging.StreamHandler()
+        stream.setFormatter(logging.Formatter(_LOG_FORMAT))
+        root.addHandler(stream)
+    if root.level == logging.NOTSET or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
+
+
+def _failure_home(config_path) -> Path:
+    """Where a refusal goes when config never finished loading.
+
+    The file's ``base_dir`` is the bot log the operator already tails. Otherwise
+    the launcher's ``SPX_NOON_HOME``, then the working directory.
+    """
+    if config_path:
+        try:
+            with open(config_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            base = data.get("base_dir") if isinstance(data, dict) else None
+            if base:
+                return Path(os.path.expanduser(str(base)))
+        except Exception:  # noqa: BLE001
+            pass
+    env = os.environ.get("SPX_NOON_HOME")
+    if env:
+        return Path(os.path.expanduser(env))
+    return Path.cwd()
+
+
+def _emit_stop(message: str, *, level: int, home: Path | None, account: str = "",
+               exc: BaseException | None = None, toast: bool = True) -> None:
+    """Log a stop at ``level`` and raise it through the notifier. Always prints."""
+    shown = _redact_message(message, account)
+    if home is not None:
+        try:
+            _arm_log(Path(home))
+            if account:
+                redact_account(account)
+            text = shown
+            if exc is not None and level >= logging.CRITICAL:
+                detail = _redact_message(
+                    "".join(traceback.format_exception(exc)), account).rstrip()
+                if detail:
+                    text = shown + "\n" + detail
+            log.log(level, "%s", text)
+            for handler in logging.getLogger().handlers:
+                try:
+                    handler.flush()
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            title = "Noon crashed" if level >= logging.CRITICAL else "Noon stopped"
+            Notifier(Path(home) / "logs", toast=toast).alert(title, shown, toast=True)
+        except Exception:  # noqa: BLE001
+            log.warning("could not raise the stop alert")
+    print(shown, flush=True)
+
+
+def _stop(cfg, message: str, *, level: int, code: int, exc: BaseException | None = None) -> int:
+    _emit_stop(
+        message, level=level, home=cfg.home, account=str(cfg.account or ""),
+        exc=exc, toast=bool(cfg.toast))
+    return code
+
+
+def _refuse_config(config_path, exc: BaseException) -> int:
+    _emit_stop(f"refusing to start: {exc}", level=logging.ERROR, home=_failure_home(config_path))
+    return 2
+
 
 @dataclass
 class _State:
@@ -67,17 +178,9 @@ class _State:
 
 def _setup_logging(cfg) -> None:
     cfg.ensure_dirs()
-    path = cfg.state_dir / f"bot_{datetime.now(ET):%Y-%m-%d}.log"
-    root = logging.getLogger()
-    if not root.handlers:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(message)s",
-            handlers=[logging.FileHandler(path), logging.StreamHandler()],
-        )
+    _arm_log(cfg.home)
     # ib_async logs the whole order, account included, at INFO. Redact before it can.
-    if cfg.broker == "ibkr":
-        redact_account(cfg.account)
+    redact_account(cfg.account)
 
 
 def _resolve_account(cfg, broker) -> str:
@@ -807,7 +910,13 @@ def _sleep_for(cfg, broker, state: _State, closes) -> None:
         else:
             wake = now + step
     delay = (wake - now).total_seconds()
-    broker.sleep(cfg.loop_interval_s if delay <= 0 else delay)
+    if delay <= 0:
+        delay = float(cfg.loop_interval_s)
+    # While nothing is open, wake at least every watchdog interval so a dead
+    # SPX quote cannot sit unnoticed until the next decision close.
+    if state.position is None and state.working is None:
+        delay = min(delay, float(cfg.data_watchdog_s))
+    broker.sleep(delay)
 
 
 def _window_finished(broker, state: _State, closes, grace: timedelta) -> bool:
@@ -926,6 +1035,108 @@ def _write_report(cfg, out: Outputs, day, calendar_status, plan: str | None = No
     out.write_report(day, "\n".join(lines) + "\n")
 
 
+@dataclass
+class _Feed:
+    """SPX heartbeat for one decision loop. ``started`` is when that loop began."""
+
+    started: datetime
+    last_quote_at: datetime | None = None
+    alerted: bool = False
+
+
+def _as_et(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=ET)
+    return ts.astimezone(ET)
+
+
+def _sample_spx(broker, now: datetime) -> datetime | None:
+    """Timestamp of a usable SPX print, or None when this poll was not a heartbeat.
+
+    A print with a value and no timestamp counts as observed at ``now``: the
+    broker answered. A miss, an error, or a print with no value does not.
+    """
+    try:
+        px = broker.spx_px()
+    except Exception:  # noqa: BLE001
+        return None
+    if px is None or getattr(px, "value", None) is None:
+        return None
+    ts = getattr(px, "time", None)
+    if not isinstance(ts, datetime):
+        return now
+    return _as_et(ts)
+
+
+def _flat_and_undecided(broker, state: _State, closes, grace: timedelta) -> bool:
+    """True while a noon decision is still ahead and nothing is open or working."""
+    if state.position is not None or state.working is not None:
+        return False
+    return not _window_finished(broker, state, closes, grace)
+
+
+def _data_watchdog(cfg, broker, notifier, state: _State, feed: _Feed, closes,
+                   grace: timedelta) -> int | None:
+    """Stop a flat session whose SPX quote has gone quiet. Keep a live spread.
+
+    The clock starts when the decision loop starts (after ``start_not_before``),
+    and it keeps running through the noon closes. A fresh print is one whose
+    own timestamp — or the time we observed a print that had none — is inside
+    ``data_watchdog_s`` (default 180s). No such print for that long, while a
+    decision is still ahead and the session is flat, is a dead feed: alert and
+    return 1. Sitting through 12:00 with no quote would miss the trade and
+    write nothing.
+
+    An open spread or a working entry does not stop the process. Plan A1 has
+    no resting order, and plan B's two-hour flat is this process, so exiting
+    would leave a managed position with nobody to flatten it. A working entry
+    can still fill. The watchdog alerts once and keeps managing. A later fresh
+    print clears that latch so the next outage alerts again. It never places,
+    cancels, or replaces an order, and it does not change the price cap, the
+    10-per-minute limit, or the account checks.
+
+    Returns 1 when the flat session should exit, otherwise None.
+    """
+    now = _as_et(broker.now())
+    seen = _sample_spx(broker, now)
+    if seen is not None and (feed.last_quote_at is None or seen > feed.last_quote_at):
+        feed.last_quote_at = seen
+    anchor = feed.last_quote_at if feed.last_quote_at is not None else _as_et(feed.started)
+    age = (now - _as_et(anchor)).total_seconds()
+    limit = float(cfg.data_watchdog_s)
+    if age < limit:
+        if seen is not None:
+            feed.alerted = False
+        return None
+    if state.position is not None or state.working is not None:
+        if not feed.alerted:
+            feed.alerted = True
+            text = (
+                f"No fresh SPX quote for {int(age)}s (limit {int(limit)}s). "
+                "Staying up: a spread or working entry is still open, and this "
+                "process is what flattens it. No order was sent or cancelled."
+            )
+            log.error("%s", text)
+            _alert_stale(notifier, text)
+        return None
+    if not _flat_and_undecided(broker, state, closes, grace):
+        return None
+    text = (
+        f"No fresh SPX quote for {int(age)}s (limit {int(limit)}s). "
+        "Stopping before the noon decision; nothing is open."
+    )
+    log.error("%s", text)
+    _alert_stale(notifier, text)
+    return 1
+
+
+def _alert_stale(notifier, text: str) -> None:
+    try:
+        notifier.alert("Noon data stale", text, toast=True)
+    except Exception:  # noqa: BLE001
+        log.warning("could not raise the data alert")
+
+
 def run_session(cfg, broker, notifier=None) -> int:
     cfg.validate()
     cfg.ensure_dirs()
@@ -933,7 +1144,13 @@ def run_session(cfg, broker, notifier=None) -> int:
     out = Outputs(cfg.state_dir, book="live" if cfg.ibkr_live else "paper")
     _connect(cfg, broker)
     try:
-        verified = _verify_ibkr(cfg, broker) if cfg.broker == "ibkr" else None
+        # Account and the calendar are cheap and do not need the quote stream.
+        # A blank tastytrade account with two matches dies here, before DXLink
+        # starts, and main() logs and alerts that SafetyError.
+        if cfg.broker == "ibkr":
+            account = _verify_ibkr(cfg, broker)
+        else:
+            account = _resolve_account(cfg, broker)
         now = broker.now()
         day = now.date()
         try:
@@ -953,8 +1170,11 @@ def run_session(cfg, broker, notifier=None) -> int:
                 starter()
             except Exception:  # noqa: BLE001
                 log.exception("quote stream did not start")
+                try:
+                    notifier.alert("Noon stopped", "quote stream did not start", toast=True)
+                except Exception:  # noqa: BLE001
+                    log.warning("could not raise the stream alert")
                 return 1
-        account = verified if verified is not None else _resolve_account(cfg, broker)
         state = _State(plan=cfg.plan)
         if resume.already_filled(cfg.state_dir, day, live=cfg.ibkr_live):
             log.info("already filled today; no second entry")
@@ -978,7 +1198,11 @@ def run_session(cfg, broker, notifier=None) -> int:
             broker.sleep((start - broker.now()).total_seconds())
         closes = decision_closes(day, ET)
         grace = timedelta(seconds=cfg.decision_grace_s)
+        feed = _Feed(started=broker.now())
         while True:
+            stop = _data_watchdog(cfg, broker, notifier, state, feed, closes, grace)
+            if stop:
+                return stop
             if state.position is not None:
                 if _manage_position(cfg, broker, notifier, out, state):
                     break
@@ -1024,20 +1248,23 @@ def main(argv=None) -> int:
     try:
         cfg = load_config(args.config, **overrides)
     except (SafetyError, ValueError, TypeError) as exc:
-        print(f"refusing to start: {exc}")
-        return 2
-    _setup_logging(cfg)
-    if cfg.broker == "ibkr":
-        from .ib import IBBroker
-        broker = IBBroker(cfg)
-    elif cfg.broker == "tasty":
-        from .tasty import TastyBroker
-        broker = TastyBroker(cfg)
-    else:
-        print(f"refusing to start: no live broker for {cfg.broker}")
-        return 2
+        return _refuse_config(args.config, exc)
     try:
+        _setup_logging(cfg)
+        if cfg.broker == "ibkr":
+            from .ib import IBBroker
+            broker = IBBroker(cfg)
+        elif cfg.broker == "tasty":
+            from .tasty import TastyBroker
+            broker = TastyBroker(cfg)
+        else:
+            return _stop(
+                cfg, f"refusing to start: no live broker for {cfg.broker}",
+                level=logging.ERROR, code=2)
         return run_session(cfg, broker)
     except SafetyError as exc:
-        print(f"stopped: {exc}")
-        return 2
+        return _stop(cfg, f"stopped: {exc}", level=logging.ERROR, code=2)
+    except Exception as exc:  # noqa: BLE001
+        return _stop(
+            cfg, f"crashed: {exc.__class__.__name__}: {exc}",
+            level=logging.CRITICAL, code=1, exc=exc)
