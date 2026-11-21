@@ -33,6 +33,7 @@ from .notify import Notifier
 from .pricing import floor_tick, take_profit_limit, target_reached, time_exit_deadline, trade_pnl
 from . import resume
 from .strategy import (
+    atm_strike,
     build_order_plan,
     close_time,
     decision_closes,
@@ -63,6 +64,11 @@ class _State:
     #: The plan this session actually ran: today's config, or the plan stored on
     #: a position it reloaded. The report names this one, not the config key.
     plan: str = "B"
+    #: Expiry whose option band has already been warmed, or None.
+    warmed: str | None = None
+    #: Warmup tries spent on it, and when the last one went out.
+    warm_tries: int = 0
+    warm_last: datetime | None = None
 
 
 def _setup_logging(cfg) -> None:
@@ -162,12 +168,80 @@ def _next_decision(close_at: datetime, grace: timedelta) -> datetime:
     return close_at + grace
 
 
-def _subscribe(cfg, broker, spot: float, expiry: str) -> None:
+def _subscribe(cfg, broker, spot: float, expiry: str) -> list:
+    """Subscribe the band around ``spot``, and return the strikes it asked for."""
     strikes = broker.chain_strikes(expiry) or []
     band = [strike for strike in strikes if abs(float(strike) - spot) <= cfg.chain_band_pts]
     band = sorted(band, key=lambda strike: abs(float(strike) - spot))[: cfg.max_option_lines]
     if band:
         broker.ensure_options(expiry, band)
+    return band
+
+
+#: Warmup pacing: one try a minute, twenty of them. A minute apart is what makes
+#: the budget a stretch of time rather than a burst — twenty tries on the default
+#: five second loop would otherwise all be spent inside the first two minutes,
+#: and a print or a chain that turned up at 11:46 would wait for the close. The
+#: count is the bound: a chain that never answers is asked twenty times, not on
+#: every pass until 1:00.
+WARM_TRIES = 20
+WARM_RETRY_S = 60.0
+
+
+def _warm_wake(state: _State, now: datetime) -> datetime | None:
+    """When the next warmup try is due, or ``None`` when there is none."""
+    if state.warmed is not None or state.warm_tries >= WARM_TRIES:
+        return None
+    if state.warm_last is None:
+        return now
+    return state.warm_last + timedelta(seconds=WARM_RETRY_S)
+
+
+def _warm_options(cfg, broker, state: _State, day) -> None:
+    """Subscribe today's option band before a close needs it.
+
+    Option lines were only subscribed once a close already qualified, so the
+    first seconds of a session, or of a restart, had no straddle to price. This
+    is the same :func:`_subscribe` call the decision path makes: the same band
+    inside ``chain_band_pts`` and the same ``max_option_lines`` budget, just
+    earlier.
+
+    One band per expiry, and only that. The band reaches ``chain_band_pts``
+    either side of the print unless ``max_option_lines`` truncates it first, and
+    tastytrade's feed only ever adds stream symbols: a second warm band would
+    leave the session streaming more lines than one band's worth. The decision
+    path still subscribes around the print at the close, exactly as it does
+    today, so a print that has walked out of the warm band is handled there and
+    not here.
+
+    Nothing here halts the session: a chain that is not ready yet, a print that
+    has not arrived, or a broker that cannot answer, is a warning or a return,
+    and no band is remembered, so there is another try to come.
+
+    Those tries are paced and counted: one a minute, :data:`WARM_TRIES` of them,
+    and :func:`_sleep_for` wakes the loop for each one instead of sleeping into
+    the close. So a cold start whose print or chain is a minute or two late still
+    warms before the first close, and a chain that is simply not there is not
+    asked all session: once the budget is spent the decision path subscribes at
+    the close, exactly as it did before any of this.
+    """
+    try:
+        expiry = day.strftime("%Y%m%d")
+        if state.warmed == expiry:
+            return
+        now = broker.now()
+        due = _warm_wake(state, now)
+        if due is None or now < due:
+            return
+        state.warm_tries += 1
+        state.warm_last = now
+        spot = broker.spx_px().value
+        if spot is None:
+            return
+        if _subscribe(cfg, broker, float(spot), expiry):
+            state.warmed = expiry
+    except Exception as exc:  # noqa: BLE001
+        log.warning("option warmup failed: %s", exc)
 
 
 def _prices_for(quotes, pos) -> dict | None:
@@ -189,17 +263,68 @@ def _quote_stale(quote, now: datetime, max_age: float = QUOTE_MAX_AGE_S) -> bool
 
 
 def _plan_quotes_stale(quotes, plan, now: datetime) -> bool:
-    needed = (
+    for strike, right in _plan_legs(plan):
+        quote = lookup_quote(quotes, strike, right)
+        if quote is not None and _quote_stale(quote, now):
+            return True
+    return False
+
+
+def _plan_legs(plan) -> tuple[tuple[float, str], ...]:
+    """The four quotes a plan needs: the ATM straddle and its own two legs."""
+    return (
         (plan.long_strike, plan.right),
         (plan.short_strike, plan.right),
         (plan.atm, "C"),
         (plan.atm, "P"),
     )
-    for strike, right in needed:
-        quote = lookup_quote(quotes, strike, right)
-        if quote is not None and _quote_stale(quote, now):
-            return True
-    return False
+
+
+def _age_text(then: datetime | None, now: datetime) -> str:
+    return "none" if then is None else f"{(now - then).total_seconds():.0f}s"
+
+
+def _quote_age(quote, now: datetime) -> str:
+    """One leg's freshness, as the logs say it.
+
+    ``age`` is how old the local stamp is and ``src`` names the clock that set
+    it. The exchange stamp, when the feed sent one, is reported after those and
+    is never what the staleness check reads.
+    """
+    if quote is None:
+        return "no quote"
+    text = f"age {_age_text(getattr(quote, 'time', None), now)} " \
+           f"src {getattr(quote, 'stamp_source', None) or 'none'}"
+    exchange = getattr(quote, "exchange_time", None)
+    if exchange is not None:
+        field = getattr(quote, "exchange_source", None) or "exchange"
+        text += f" {field} age {_age_text(exchange, now)}"
+    return text
+
+
+def _quote_detail(quotes, now: datetime, atm: float | None, plan=None) -> str:
+    """Why a close has not been priced: age and stamp source, leg by leg.
+
+    The ATM straddle is always named, because a missing straddle is the reason
+    there is no plan at all. A plan adds its long and its short. An empty book
+    says so, rather than leaving the caller's ``stale`` to stand alone.
+    """
+    if not quotes:
+        return "no option quotes"
+    legs: list[tuple[float, str]] = []
+    if plan is not None:
+        legs.extend(_plan_legs(plan))
+    elif atm is not None:
+        legs.extend([(atm, "C"), (atm, "P")])
+    seen = set()
+    parts = []
+    for strike, right in legs:
+        key = (round(float(strike), 2), right)
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(f"{float(strike):.0f}{right} {_quote_age(lookup_quote(quotes, strike, right), now)}")
+    return "; ".join(parts) or "no option quotes"
 
 
 def _still_in_grace(close_at: datetime, now: datetime, grace: timedelta) -> bool:
@@ -714,13 +839,19 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
             log.warning("chain unavailable: %s", exc)
             return
         plan, reason = build_order_plan(breakout, quotes, float(spot), cfg.plan)
-        stale = plan is not None and _plan_quotes_stale(quotes, plan, broker.now())
+        priced_at = broker.now()
+        stale = plan is not None and _plan_quotes_stale(quotes, plan, priced_at)
         if plan is None or stale:
-            if _still_in_grace(close_at, broker.now(), grace):
-                log.info("waiting on quotes for %s (%s)", close_at.strftime("%H:%M"), reason or "stale")
+            # Ages and stamp sources go on both lines, so a miss is explainable
+            # from the log alone: which leg was missing, or how old its stamp was.
+            detail = _quote_detail(quotes, priced_at, atm_strike(float(spot)), plan)
+            if _still_in_grace(close_at, priced_at, grace):
+                log.info("waiting on quotes for %s (%s) %s",
+                         close_at.strftime("%H:%M"), reason or "stale", detail)
                 return
             state.consumed.add(close_at)
-            log.info("giving up on %s: %s", close_at.strftime("%H:%M"), reason or "stale")
+            log.info("giving up on %s: %s %s",
+                     close_at.strftime("%H:%M"), reason or "stale", detail)
             continue
         state.consumed.add(close_at)
         if plan.skip:
@@ -804,6 +935,12 @@ def _sleep_for(cfg, broker, state: _State, closes) -> None:
             wake = now + timedelta(seconds=min(cfg.loop_interval_s, 5))
         elif upcoming:
             wake = upcoming[0]
+            due = _warm_wake(state, now)
+            if due is not None:
+                # Nothing is streaming yet, because the print or the chain was
+                # not there on the first try. Wake for the next warmup try
+                # instead of sleeping into the close with a cold book.
+                wake = min(wake, due)
         else:
             wake = now + step
     delay = (wake - now).total_seconds()
@@ -978,6 +1115,13 @@ def run_session(cfg, broker, notifier=None) -> int:
             broker.sleep((start - broker.now()).total_seconds())
         closes = decision_closes(day, ET)
         grace = timedelta(seconds=cfg.decision_grace_s)
+        # Warm the band before the first close, and again on a restart: the
+        # straddle has to be streaming before 12:00, not from 12:00 on. A
+        # restart that is only managing a spread is not warmed: its legs are
+        # already subscribed, and on IBKR a band around today's print would
+        # cancel the market data this session still needs to price them.
+        if state.position is None and state.working is None and not state.done_for_day:
+            _warm_options(cfg, broker, state, day)
         while True:
             if state.position is not None:
                 if _manage_position(cfg, broker, notifier, out, state):
@@ -994,6 +1138,7 @@ def run_session(cfg, broker, notifier=None) -> int:
                 break
             if broker.now().time() >= datetime.strptime("15:10", "%H:%M").time() and state.position is None:
                 break
+            _warm_options(cfg, broker, state, day)
             _maybe_enter(cfg, broker, notifier, out, state, account, closes)
             if state.working is not None:
                 _poll_working(cfg, broker, notifier, out, state)

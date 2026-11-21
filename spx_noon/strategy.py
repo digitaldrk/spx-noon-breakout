@@ -81,8 +81,18 @@ class OptQuote:
     con_id: object | None = None
     iv: float | None = None
     volume: float | None = None
+    #: Freshness clock, local to the broker that stamped it. ``None`` means the
+    #: broker had no stamp, which is not stale.
     time: datetime | None = None
     mdtype: int | None = None
+    #: Where :attr:`time` came from: ``receive`` is the local clock when a priced
+    #: Quote event arrived (tastytrade), ``ticker`` is the ticker's own
+    #: last-update time (IBKR). Diagnostic; the fields below are too.
+    stamp_source: str | None = None
+    #: The exchange's own stamp on the last priced quote, and which field it came
+    #: from. Freshness never reads these; the session only logs them.
+    exchange_time: datetime | None = None
+    exchange_source: str | None = None
 
 
 @dataclass
