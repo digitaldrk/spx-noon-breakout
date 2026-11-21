@@ -327,11 +327,6 @@ class IBBroker(Broker):
             self._opt_tickers[key] = self.ib.reqMktData(contract, "", False, False)
 
     def option_quotes(self):
-        """The subscribed option book.
-
-        ``ticker.time`` is the ticker's own last-update time, which is already a
-        local stamp, so freshness is unchanged: only the stamp's name is new.
-        """
         out = {}
         for key, ticker in self._opt_tickers.items():
             greeks = ticker.modelGreeks
@@ -342,7 +337,6 @@ class IBBroker(Broker):
                 volume=_f(ticker.volume),
                 time=to_et(ticker.time, self.cfg.tws_naive_tz),
                 mdtype=ticker.marketDataType,
-                stamp_source="ticker",
                 con_id=ticker.contract.conId)
         return out
 

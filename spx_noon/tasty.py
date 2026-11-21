@@ -187,53 +187,6 @@ def _ms_to_et(ms) -> datetime | None:
         return None
 
 
-#: Above this a dxFeed stamp is milliseconds; at or below it, seconds. 1e12 ms is
-#: 2001, so no real quote stamp is ambiguous.
-_MS_FLOOR = 1e12
-
-#: Exchange stamp fields on a Quote event, best first. Diagnostic only: the
-#: freshness clock is the local receive time, not any of these.
-_STAMP_FIELDS = ("bid_time", "ask_time", "event_time")
-
-
-def _exchange_et(value) -> datetime | None:
-    """One exchange stamp as ET, or ``None``.
-
-    Missing, unparseable, and ``<= 0`` are all no stamp. A value above
-    :data:`_MS_FLOOR` is milliseconds; anything else is seconds, so a
-    seconds-valued field is not mapped into 1970. :func:`_ms_to_et` keeps its
-    always-milliseconds rule for candles.
-    """
-    if value is None or value == "":
-        return None
-    try:
-        raw = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(raw) or raw <= 0:
-        return None
-    seconds = raw / 1000.0 if raw > _MS_FLOOR else raw
-    try:
-        return datetime.fromtimestamp(seconds, timezone.utc).astimezone(ET)
-    except (OverflowError, OSError, ValueError):
-        return None
-
-
-def exchange_stamp(quote) -> tuple[datetime | None, str | None]:
-    """The exchange time on this Quote event and the field it came from.
-
-    ``bid_time``, then ``ask_time``, then ``event_time``. A field the SDK object
-    does not have is skipped. Returns ``(None, None)`` when none of them carry a
-    stamp. This value is logged, never compared against
-    :data:`spx_noon.runner.QUOTE_MAX_AGE_S`.
-    """
-    for field in _STAMP_FIELDS:
-        stamp = _exchange_et(getattr(quote, field, None))
-        if stamp is not None:
-            return stamp, field
-    return None, None
-
-
 def candles_to_bars(events) -> list[Bar]:
     """DXFeed candle time is the bar start, which is what the session expects."""
     out = []
@@ -684,15 +637,7 @@ class TastyBroker(Broker):
         return found
 
     def chain_strikes(self, expiry: str):
-        """Today's strikes, asked once and then cached.
-
-        Only an answer with strikes in it is cached. ``_chain`` returns ``None``
-        for an expiry it saw no strikes on, and the session now asks before the
-        first decision close rather than only once a close qualifies: caching
-        that empty answer would leave a connected session with no option lines
-        for the rest of the day.
-        """
-        if self._strikes.get(expiry):
+        if expiry in self._strikes:
             return self._strikes[expiry]
         if self.transport is not None:
             strikes = self.transport.chain_strikes(expiry)
@@ -741,10 +686,7 @@ class TastyBroker(Broker):
             if callable(ensure):
                 ensure(expiry, strikes)
             return
-        if not self._strikes.get(expiry):
-            # The streamer symbols live in _book, which only the chain fills in.
-            # An expiry that answered empty earlier is asked again, for the same
-            # reason chain_strikes does not cache one.
+        if expiry not in self._strikes:
             self.chain_strikes(expiry)
         spot = None
         cached = self._index.get(INDEX)
@@ -803,24 +745,12 @@ class TastyBroker(Broker):
             self._streamer = None
 
     def _drain(self, streamer, quote_cls, greeks_cls):
-        """Merge the queued Quote and Greeks events into the option book.
+        """Merge queued Quote and Greeks events into the option book.
 
-        A Quote event that carried a finite bid or a finite ask is a live dxLink
-        delivery, so ``OptQuote.time`` becomes the local receive time on the same
-        clock as :meth:`now`. The exchange's own stamp can already be minutes old
-        on arrival, and a later event need not carry a newer one, so it is kept
-        for the logs only. A price-less Quote and a Greeks-only update refresh
-        neither the clock nor the stored bid and ask.
-
-        One finite side is enough on purpose. The other side is carried over, as
-        it already was, and the line counts as fresh: the SDK has been seen
-        handing over a Quote with one side ``None``, and treating that as no
-        quote is what left a warm book stale through a whole decision window.
-        There is one clock per line, not one per side.
-
-        Several events for one symbol can be queued between two drains. They are
-        merged in arrival order, so a price-less event that followed a priced one
-        does not throw away the prices that came with it.
+        ``OptQuote.time`` is when a Quote with a finite bid or ask arrived.
+        The exchange ``bid_time`` can already be minutes old on that packet, so
+        it is not the freshness clock. A price-less Quote and a Greeks-only
+        update leave the stored prices and the clock alone.
         """
         quotes: dict[str, dict] = {}
         greeks = {}
@@ -828,17 +758,15 @@ class TastyBroker(Broker):
             event = streamer.get_event_nowait(quote_cls)
             if event is None:
                 break
-            merged = quotes.setdefault(event.event_symbol, {})
             bid = _finite(getattr(event, "bid_price", None))
             ask = _finite(getattr(event, "ask_price", None))
             if bid is None and ask is None:
                 continue
+            merged = quotes.setdefault(event.event_symbol, {})
             if bid is not None:
                 merged["bid"] = bid
             if ask is not None:
                 merged["ask"] = ask
-            merged["exchange_time"], merged["exchange_source"] = exchange_stamp(event)
-            merged["priced"] = True
         while True:
             event = streamer.get_event_nowait(greeks_cls)
             if event is None:
@@ -854,11 +782,11 @@ class TastyBroker(Broker):
                     continue
                 if symbol not in quotes and symbol not in greeks and key in self._quotes:
                     continue
-                quote = quotes.get(symbol) or {}
+                quote = quotes.get(symbol)
                 greek = greeks.get(symbol)
                 prev = self._quotes.get(key)
-                bid = quote.get("bid")
-                ask = quote.get("ask")
+                bid = quote.get("bid") if quote is not None else None
+                ask = quote.get("ask") if quote is not None else None
                 if bid is None and prev is not None:
                     bid = prev.bid
                 if ask is None and prev is not None:
@@ -869,19 +797,10 @@ class TastyBroker(Broker):
                     delta = prev.delta
                 if iv is None and prev is not None:
                     iv = prev.iv
-                when = prev.time if prev is not None else None
-                stamp_source = prev.stamp_source if prev is not None else None
-                exchange_time = prev.exchange_time if prev is not None else None
-                exchange_source = prev.exchange_source if prev is not None else None
-                if quote.get("priced"):
-                    when = received
-                    stamp_source = "receive"
-                    exchange_time = quote.get("exchange_time")
-                    exchange_source = quote.get("exchange_source")
+                when = received if quote is not None else (prev.time if prev is not None else None)
                 self._quotes[key] = OptQuote(
                     bid=bid, ask=ask, delta=delta, iv=iv, time=when, mdtype=1,
-                    con_id=meta.get("occ"), volume=None, stamp_source=stamp_source,
-                    exchange_time=exchange_time, exchange_source=exchange_source,
+                    con_id=meta.get("occ"), volume=None,
                 )
 
     def option_quotes(self):

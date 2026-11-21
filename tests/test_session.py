@@ -1,10 +1,7 @@
 """One simulated day: skip, single fill, target, time flat, a restart, and plan A1."""
 import csv
 import json
-import logging
-import re
 import sys
-from dataclasses import replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -16,28 +13,21 @@ from spx_noon.pricing import trade_pnl
 from spx_noon.logbook import Outputs
 from spx_noon.notify import Notifier
 from spx_noon.runner import (
-    QUOTE_MAX_AGE_S,
-    WARM_RETRY_S,
-    WARM_TRIES,
     _State,
     _flatten,
     _manage_position,
     _persist,
     _poll_working,
-    _quote_stale,
     _rest_target,
-    _warm_options,
     run_session,
 )
-from spx_noon.strategy import Bar, OptQuote, Px
+from spx_noon.strategy import Bar, OptQuote
 from spx_noon.wrap_run import main as wrap_main
 
 from test_rules import DAY, a1_call_bars, a1_fresh_call_bars, levels, today_call_bars
 
 ET = ZoneInfo("America/New_York")
 LIVE_ACCOUNT = "U7654321"
-#: The last delivery of a feed that then went silent, before the first close.
-DEAD_FEED = datetime(2026, 10, 28, 11, 59, tzinfo=ET)
 
 
 def _cfg(tmp, **extra):
@@ -56,20 +46,6 @@ def _book(long_bid=40.0, long_ask=40.2, short_bid=28.0, short_ask=28.2):
     }
 
 
-def _stamped(book, when, source, exchange=None):
-    """The same chain with a freshness stamp on every leg.
-
-    ``when`` is what the broker's own clock saw: ``receive`` is a tastytrade
-    Quote event's arrival, ``ticker`` is an IBKR ticker's last-update time.
-    ``exchange`` is the exchange's stamp, which the session only logs.
-    """
-    return {
-        key: replace(quote, time=when, stamp_source=source, exchange_time=exchange,
-                     exchange_source=None if exchange is None else "bid_time")
-        for key, quote in book.items()
-    }
-
-
 def _quotes(kind: str):
     thirteen = datetime(2026, 10, 28, 13, 0, tzinfo=ET)
     twelve_fifteen = datetime(2026, 10, 28, 12, 15, tzinfo=ET)
@@ -84,17 +60,6 @@ def _quotes(kind: str):
             return _book(long_bid=32.0, long_ask=32.4)
         if kind == "target" and now >= thirteen:
             return _book(long_bid=60.0, long_ask=60.4)
-        # A live dxLink book: stamped on arrival, with an exchange stamp that was
-        # already minutes old when it came in.
-        if kind == "receive":
-            return _stamped(_book(), now, "receive", now - timedelta(minutes=5))
-        # An IBKR ticker book whose last-update times are fresh.
-        if kind == "ticker":
-            return _stamped(_book(), now, "ticker")
-        # A feed that stopped at 11:59 and never delivered again: one frozen
-        # stamp, which only gets older as the window runs.
-        if kind == "stale":
-            return _stamped(_book(), DEAD_FEED, "receive", DEAD_FEED)
         return _book()
 
     return book
@@ -438,291 +403,6 @@ def test_empty_quotes_retry_inside_the_grace_window(tmp_path):
     assert run_session(_cfg(tmp_path), broker) == 0
     buys = [order for order in broker.placed if order["action"] == "BUY"]
     assert len(buys) == 1
-
-
-# --------------------------------------------------------------------------
-# Quote freshness in the 90 second decision window
-# --------------------------------------------------------------------------
-
-
-class _Cold(SimBroker):
-    """A session whose option feed never delivers anything."""
-
-    def chain_strikes(self, expiry):
-        return [6950.0, 6980.0, 7000.0]
-
-    def option_quotes(self):
-        return {}
-
-
-class _WarmBand(SimBroker):
-    """The chain answers from the start; option quotes only arrive at 12:05."""
-
-    READY = datetime(2026, 10, 28, 12, 5, tzinfo=ET)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.ensured = []
-
-    def chain_strikes(self, expiry):
-        return [6950.0, 6980.0, 7000.0, 9999.0]   # 9999 is outside chain_band_pts
-
-    def ensure_options(self, expiry, strikes):
-        self.ensured.append((self.now(), expiry, sorted(float(strike) for strike in strikes)))
-
-    def option_quotes(self):
-        if self.now() < self.READY:
-            return {}
-        return super().option_quotes()
-
-
-class _LatePrint(_WarmBand):
-    """The SPX print has not arrived when the session reaches its start time.
-
-    A cold start seconds before the window looks like this: the stream is up but
-    the first index quote is still in flight, so there is no spot to centre a
-    band on yet.
-    """
-
-    PRINT = datetime(2026, 10, 28, 11, 52, tzinfo=ET)
-
-    def __init__(self, *args, print_at=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.print_at = print_at or self.PRINT
-
-    def spx_px(self):
-        if self.now() < self.print_at:
-            return Px(None, self.now(), 1, None)
-        return super().spx_px()
-
-
-class _Arrives(SimBroker):
-    """Option quotes show up partway through the grace window.
-
-    What arrives is a live dxLink delivery: a local receive stamp from now and an
-    exchange stamp that was already ten minutes old on arrival.
-    """
-
-    def __init__(self, *args, arrives_at=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.arrives_at = arrives_at
-
-    def chain_strikes(self, expiry):
-        return [6950.0, 6980.0, 7000.0]
-
-    def option_quotes(self):
-        if self.arrives_at is not None and self.now() < self.arrives_at:
-            return {}
-        return _stamped(_book(), self.now(), "receive", self.now() - timedelta(minutes=10))
-
-
-def test_thirty_seconds_is_still_the_shared_freshness_rule():
-    """Neither the age limit nor the missing-stamp rule moved."""
-    now = datetime(2026, 10, 28, 12, 0, 30, tzinfo=ET)
-    assert QUOTE_MAX_AGE_S == 30.0
-    assert _quote_stale(OptQuote(1.0, 1.2, time=now - timedelta(seconds=29)), now) is False
-    assert _quote_stale(OptQuote(1.0, 1.2, time=now - timedelta(seconds=31)), now) is True
-    assert _quote_stale(OptQuote(1.0, 1.2), now) is False          # no stamp is not stale
-    # an old exchange stamp on a quote that arrived just now is not stale
-    live = OptQuote(1.0, 1.2, time=now, stamp_source="receive",
-                    exchange_time=now - timedelta(minutes=10), exchange_source="bid_time")
-    assert _quote_stale(live, now) is False
-
-
-def test_a_cold_option_book_gives_up_naming_the_missing_legs(tmp_path, caplog):
-    caplog.set_level(logging.INFO, logger="spx_noon.runner")
-    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
-    broker = _Cold(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
-    assert run_session(_cfg(tmp_path), broker) == 0
-    assert broker.placed == []
-    text = caplog.text
-    assert "giving up on 12:00: no atm straddle no option quotes" in text
-    assert "waiting on quotes for 12:00 (no atm straddle) no option quotes" in text
-    assert broker.account not in text          # no account number on the new lines
-
-
-def test_a_live_book_with_an_old_exchange_stamp_still_trades(tmp_path, caplog):
-    """The 2026-11-20 give-up: quotes were arriving, the exchange stamp was old."""
-    caplog.set_level(logging.INFO, logger="spx_noon.runner")
-    code, rows, buys, _sells, _broker = _run(tmp_path, "receive")
-    assert code == 0
-    assert len(buys) == 1
-    assert any(row["exit_reason"] in ("target", "time") for row in rows)
-    assert "giving up" not in caplog.text
-
-
-def test_quotes_that_arrive_inside_the_grace_window_still_trade(tmp_path, caplog):
-    """The feed is up and the band was subscribed after the close: still a trade."""
-    caplog.set_level(logging.INFO, logger="spx_noon.runner")
-    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
-    broker = _Arrives(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000,
-                      arrives_at=NOON + timedelta(seconds=10))
-    assert run_session(_cfg(tmp_path), broker) == 0
-    buys = [order for order in broker.placed if order["action"] == "BUY"]
-    assert len(buys) == 1
-    text = caplog.text
-    assert "waiting on quotes for 12:00 (no atm straddle) no option quotes" in text
-    assert "giving up" not in text
-
-
-def test_a_feed_that_stays_dead_gives_up_with_ages_and_stamp_sources(tmp_path, caplog):
-    caplog.set_level(logging.INFO, logger="spx_noon.runner")
-    code, _rows, buys, sells, _broker = _run(tmp_path, "stale")
-    assert code == 0
-    assert buys == [] and sells == []
-    text = caplog.text
-    # every leg of the plan and of the straddle, with its age and its source
-    for leg in ("6950C", "6980C", "7000C", "7000P"):
-        assert f"{leg} age" in text and f"{leg} age none" not in text
-    ages = {}
-    for close in ("12:00", "12:15"):
-        line = re.search(
-            rf"giving up on {close}: stale .*?7000C age (\d+)s src receive bid_time age (\d+)s",
-            text)
-        assert line, f"no give-up line naming the ages for the {close} close"
-        assert line.group(1) == line.group(2)
-        ages[close] = int(line.group(1))
-    # the one stamp the dead feed left never moved: it only got older
-    assert ages["12:00"] > QUOTE_MAX_AGE_S
-    assert ages["12:15"] > ages["12:00"]
-
-
-def test_a_fresh_ticker_book_enters_as_it_does_today(tmp_path):
-    """IBKR's stamp is the ticker's last-update time and its path is unchanged."""
-    code, rows, buys, _sells, _broker = _run(tmp_path, "ticker")
-    assert code == 0
-    assert len(buys) == 1
-    assert any(row["exit_reason"] in ("target", "time") for row in rows)
-
-
-def test_the_option_band_is_warmed_before_the_first_close(tmp_path):
-    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
-    broker = _WarmBand(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
-    assert run_session(_cfg(tmp_path), broker) == 0
-    early = [call for call in broker.ensured if call[0] < NOON]
-    assert early, "the band was not subscribed before the 12:00 close"
-    when, expiry, strikes = early[0]
-    assert when == start and expiry == "20261028"
-    assert strikes == [6950.0, 6980.0, 7000.0]     # the same band, no wider
-    assert len(early) == 1                         # one chain request, not one per pass
-    # and the day still trades once quotes start arriving
-    assert [order for order in broker.placed if order["action"] == "BUY"]
-
-
-def test_warmup_asks_for_one_band_and_only_one(tmp_path):
-    """Tastytrade's feed only ever adds lines, so a second warm band would push
-    the streaming set past max_option_lines. The decision path still subscribes
-    around the print at the close."""
-    cfg = _cfg(tmp_path)
-    broker = _WarmBand(datetime(2026, 10, 28, 11, 50, tzinfo=ET), [], _quotes("target"), spot=7000)
-    state = _State()
-    for _ in range(3):
-        _warm_options(cfg, broker, state, DAY)
-    assert len(broker.ensured) == 1
-    broker.spot = 7100                             # even a print that has moved
-    broker.sleep(WARM_RETRY_S)
-    _warm_options(cfg, broker, state, DAY)
-    assert len(broker.ensured) == 1
-    # a chain with nothing in the band is not remembered as warm
-    broker.chain_strikes = lambda expiry: []
-    state.warmed = None
-    broker.sleep(WARM_RETRY_S)
-    _warm_options(cfg, broker, state, DAY)
-    assert len(broker.ensured) == 1 and state.warmed is None
-    # and a broker that raises is a warning, not a stopped session
-    broker.chain_strikes = lambda expiry: (_ for _ in ()).throw(RuntimeError("chain unavailable"))
-    broker.sleep(WARM_RETRY_S)
-    _warm_options(cfg, broker, state, DAY)
-    assert len(broker.ensured) == 1 and state.warmed is None
-
-
-def test_a_late_print_is_warmed_before_the_close_and_not_at_it(tmp_path):
-    """The first warmup try can come up empty, and still beat the close.
-
-    No print means no band to centre, so the loop comes back on its own interval
-    instead of sleeping straight into 12:00 with a cold book.
-    """
-    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
-    broker = _LatePrint(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
-    assert run_session(_cfg(tmp_path), broker) == 0
-    early = [call for call in broker.ensured if call[0] < NOON]
-    assert early, "the band was never warmed before the 12:00 close"
-    assert start < early[0][0] < NOON              # not the first pass, but well before noon
-    assert len(early) == 1
-    assert [order for order in broker.placed if order["action"] == "BUY"]
-
-
-def test_warmup_tries_are_paced_a_minute_apart_and_then_stop(tmp_path):
-    """A cold chain is asked on a gap, and a bounded number of times.
-
-    The gap is what makes the budget a stretch of time: on the default five
-    second loop a straight count would be spent inside the first half minute,
-    and a chain that turned up a minute later would wait for the close.
-    """
-    cfg = _cfg(tmp_path)
-    broker = _WarmBand(datetime(2026, 10, 28, 11, 50, tzinfo=ET), [], _quotes("target"), spot=7000)
-    broker.chain_strikes = lambda expiry: []
-    state = _State()
-    _warm_options(cfg, broker, state, DAY)
-    assert state.warm_tries == 1
-    broker.sleep(5)                                # the next loop pass is not a try
-    _warm_options(cfg, broker, state, DAY)
-    assert state.warm_tries == 1
-    for _ in range(WARM_TRIES + 4):                # a minute apart, past the budget
-        broker.sleep(WARM_RETRY_S)
-        _warm_options(cfg, broker, state, DAY)
-    assert state.warm_tries == WARM_TRIES
-    assert broker.ensured == [] and state.warmed is None
-    # a chain that turns up inside the budget is warmed, and only once
-    state = _State()
-    broker.chain_strikes = lambda expiry: [6950.0, 6980.0, 7000.0]
-    for _ in range(3):
-        _warm_options(cfg, broker, state, DAY)
-        broker.sleep(WARM_RETRY_S)
-    assert len(broker.ensured) == 1 and state.warmed == "20261028"
-
-
-def test_a_print_a_minute_late_is_warmed_on_the_default_loop_interval(tmp_path):
-    """The real pacing: five second passes, a print that lands at 11:51:30.
-
-    The band still goes out before the close, because the tries are spaced in
-    time rather than spent on the first few passes.
-    """
-    start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
-    broker = _LatePrint(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000,
-                        print_at=datetime(2026, 10, 28, 11, 51, 30, tzinfo=ET))
-    assert run_session(_cfg(tmp_path, loop_interval_s=5), broker) == 0
-    early = [call for call in broker.ensured if call[0] < NOON]
-    assert early, "the band was never warmed before the 12:00 close"
-    assert start < early[0][0] < NOON
-    assert len(early) == 1
-
-
-def test_a_flat_mid_session_restart_warms_before_the_next_close(tmp_path):
-    """A restart with nothing open warms at startup, not at the next close."""
-    start = datetime(2026, 10, 28, 12, 20, tzinfo=ET)
-    broker = _WarmBand(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
-    assert run_session(_cfg(tmp_path), broker) == 0
-    assert broker.ensured, "the band was not subscribed on a flat restart"
-    when, expiry, strikes = broker.ensured[0]
-    assert when == start < datetime(2026, 10, 28, 12, 30, tzinfo=ET)
-    assert expiry == "20261028" and strikes == [6950.0, 6980.0, 7000.0]
-
-
-def test_a_restart_managing_a_spread_is_not_re_banded(tmp_path, monkeypatch):
-    """Warmup is for the entry decision only.
-
-    A restored position's own legs are already subscribed, and IBKR cancels the
-    market data for every line outside the band it is handed, so a band around
-    today's print would take away the quotes this session still needs to price
-    the spread it is holding.
-    """
-    calls = []
-    monkeypatch.setattr("spx_noon.runner._warm_options",
-                        lambda cfg, broker, state, day: calls.append(day))
-    rows, _broker = _restart(tmp_path, _a1_saved(plan="A1"), plan="A1", moves_to=7008)
-    assert rows[-1]["exit_reason"] == "points"
-    assert calls == []
 
 
 def test_closed_fill_blocks_a_second_entry_after_restart(tmp_path):

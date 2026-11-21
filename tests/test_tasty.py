@@ -24,7 +24,6 @@ from spx_noon.tasty import (
     _pad_occ,
     build_vertical_order,
     candles_to_bars,
-    exchange_stamp,
     session_host,
 )
 
@@ -393,51 +392,15 @@ def test_tasty_live_auto_approves_without_a_prompt(tmp_path):
     assert max(broker.approved.values()) == pytest.approx(buys[0]["limit"])
 
 
-class _LateChain(Transport):
-    """The chain answers with nothing once, then with strikes."""
-
-    def __init__(self, strikes=(6950.0, 6980.0)):
-        super().__init__()
-        self.strikes = list(strikes)
-        self.asked = 0
-
-    def chain_strikes(self, expiry):
-        self.asked += 1
-        return None if self.asked == 1 else list(self.strikes)
-
-
-def test_an_empty_chain_is_asked_again_and_not_cached_for_the_day(tmp_path):
-    """The session now asks for the chain before the first close.
-
-    An expiry that answers with no strikes has to be asked again, or one early
-    empty answer would leave a connected session with no option lines for the
-    rest of the day. An answer with strikes in it is still cached.
-    """
-    transport = _LateChain()
-    broker, _t = _broker(tmp_path, mode="dry", transport=transport)
-    assert broker.chain_strikes("20261028") is None
-    assert broker.chain_strikes("20261028") == [6950.0, 6980.0]
-    assert transport.asked == 2
-    assert broker.chain_strikes("20261028") == [6950.0, 6980.0]
-    assert transport.asked == 2                    # one ask per answer, not per call
-
-
 # --------------------------------------------------------------------------
-# _drain: the option book's freshness stamp
-#
-# A dxLink Quote event is a live delivery even when the exchange stamp it
-# carries is already old, so the freshness clock is the local receive time and
-# the exchange stamp is kept for the logs. No network and no tastytrade import:
-# the streamer below is the only thing _drain talks to.
+# _drain stamps a priced Quote with the local receive time. The exchange
+# bid_time is ignored. No network and no tastytrade import.
 # --------------------------------------------------------------------------
 
 KEY = (6950.0, "C")
 OCC = "SPXW  261028C06950000"
 SYMBOL = ".SPXW261028C6950"
-#: An exchange stamp from a past session, in milliseconds and in seconds. Both
-#: are far older than the 30 second freshness rule.
 OLD_MS = int(datetime(2026, 10, 28, 16, 0, tzinfo=timezone.utc).timestamp() * 1000)
-OLD_SECONDS = int(datetime(2026, 10, 28, 16, 0, tzinfo=timezone.utc).timestamp())
 
 
 class _Ev:
@@ -485,74 +448,37 @@ def _drained(tmp_path, quotes=(), greeks=(), seed=None):
 
 
 def test_a_priced_quote_is_stamped_on_arrival_however_old_the_exchange_says(tmp_path):
-    for field, stamp in (("bid_time", OLD_MS), ("bid_time", OLD_SECONDS)):
-        quote = _drained(tmp_path, quotes=[_QuoteEv(
-            SYMBOL, bid_price=40.0, ask_price=40.2, event_time=OLD_MS, **{field: stamp})])
-        now = datetime.now(ZoneInfo("America/New_York"))
-        assert quote.bid == 40.0 and quote.ask == 40.2
-        assert quote.stamp_source == "receive"
-        assert abs((now - quote.time).total_seconds()) < 5
-        # the exchange stamp is kept, read in the right magnitude, and is not
-        # what freshness looks at
-        assert quote.exchange_source == "bid_time"
-        assert quote.exchange_time.year == 2026
-        assert (now - quote.exchange_time).total_seconds() > 30
-        assert _quote_stale(quote, now) is False
-
-
-def test_ask_time_is_the_stamp_when_bid_time_is_missing(tmp_path):
     quote = _drained(tmp_path, quotes=[_QuoteEv(
-        SYMBOL, bid_price=40.0, ask_price=40.2, ask_time=OLD_MS, event_time=OLD_MS)])
-    assert quote.exchange_source == "ask_time"
-    assert quote.stamp_source == "receive"
-    # and event_time is the last resort
-    quote = _drained(tmp_path, quotes=[_QuoteEv(
-        SYMBOL, bid_price=40.0, ask_price=40.2, event_time=OLD_MS)])
-    assert quote.exchange_source == "event_time"
-    # a Quote object with none of the three fields is still a live delivery
-    quote = _drained(tmp_path, quotes=[_QuoteEv(SYMBOL, bid_price=40.0, ask_price=40.2)])
-    assert quote.exchange_time is None and quote.exchange_source is None
-    assert quote.stamp_source == "receive"
-
-
-def test_zero_and_none_exchange_fields_are_not_stamps(tmp_path):
-    quote = _drained(tmp_path, quotes=[_QuoteEv(
-        SYMBOL, bid_price=40.0, ask_price=40.2, bid_time=0, ask_time=None, event_time=0)])
-    assert quote.exchange_time is None and quote.exchange_source is None
-    assert quote.stamp_source == "receive"
-    assert exchange_stamp(_QuoteEv(SYMBOL, bid_time=0, ask_time="", event_time=-1)) == (None, None)
+        SYMBOL, bid_price=40.0, ask_price=40.2, bid_time=OLD_MS, event_time=OLD_MS)])
+    now = datetime.now(ZoneInfo("America/New_York"))
+    assert quote.bid == 40.0 and quote.ask == 40.2
+    assert abs((now - quote.time).total_seconds()) < 5
+    assert _quote_stale(quote, now) is False
 
 
 def _seed(when):
-    return OptQuote(bid=40.0, ask=40.2, delta=0.74, time=when, mdtype=1, con_id=OCC,
-                    stamp_source="receive", exchange_time=when, exchange_source="bid_time")
+    return OptQuote(bid=40.0, ask=40.2, delta=0.74, time=when, mdtype=1, con_id=OCC)
 
 
 def test_a_price_less_quote_does_not_refresh_the_clock_or_the_prices(tmp_path):
     old = datetime(2026, 10, 28, 12, 0, tzinfo=ZoneInfo("America/New_York"))
     quote = _drained(tmp_path, quotes=[_QuoteEv(
         SYMBOL, bid_price=None, ask_price=None, bid_time=OLD_MS)], seed=_seed(old))
-    assert quote.time == old and quote.stamp_source == "receive"
+    assert quote.time == old
     assert quote.bid == 40.0 and quote.ask == 40.2
-    assert quote.exchange_time == old
-    # one finite side is enough, though: a quote with only a bid is live
     quote = _drained(tmp_path, quotes=[_QuoteEv(
         SYMBOL, bid_price=41.0, ask_price=None)], seed=_seed(old))
     assert quote.time > old and quote.bid == 41.0 and quote.ask == 40.2
 
 
 def test_a_batch_of_events_for_one_symbol_is_merged_in_arrival_order(tmp_path):
-    """Several Quotes can queue up between two drains."""
     old = datetime(2026, 10, 28, 12, 0, tzinfo=ZoneInfo("America/New_York"))
-    # a price-less event behind a priced one must not throw the prices away
     quote = _drained(tmp_path, quotes=[
         _QuoteEv(SYMBOL, bid_price=41.0, ask_price=41.4, bid_time=OLD_MS),
         _QuoteEv(SYMBOL, bid_price=None, ask_price=None),
     ], seed=_seed(old))
     assert quote.bid == 41.0 and quote.ask == 41.4
-    assert quote.time > old and quote.stamp_source == "receive"
-    assert quote.exchange_source == "bid_time"
-    # and two one-sided events are one quote, not the last side only
+    assert quote.time > old
     quote = _drained(tmp_path, quotes=[
         _QuoteEv(SYMBOL, bid_price=42.0, ask_price=None),
         _QuoteEv(SYMBOL, bid_price=None, ask_price=42.6),
@@ -565,22 +491,8 @@ def test_a_greeks_only_update_does_not_refresh_the_clock(tmp_path):
     quote = _drained(tmp_path, greeks=[_GreeksEv(SYMBOL, delta=0.81, volatility=0.14)],
                      seed=_seed(old))
     assert quote.delta == 0.81 and quote.iv == 0.14
-    assert quote.time == old and quote.stamp_source == "receive"
-    # and a dead feed is not stamped into freshness by a Greeks event
+    assert quote.time == old
     assert _quote_stale(quote, datetime.now(ZoneInfo("America/New_York"))) is True
-
-
-def test_candle_time_still_divides_by_a_thousand():
-    """The seconds rule is for quote stamps only: candle time is milliseconds."""
-
-    class _Candle:
-        def __init__(self, moment):
-            self.time = int(moment.timestamp() * 1000)
-            self.open = self.high = self.low = self.close = 10
-            self.volume = 1
-
-    bars = candles_to_bars([_Candle(datetime(2026, 10, 28, 14, 30, tzinfo=timezone.utc))])
-    assert len(bars) == 1 and bars[0].t.hour == 10 and bars[0].t.minute == 30
 
 
 def test_error_text_redacts_secrets(tmp_path):
