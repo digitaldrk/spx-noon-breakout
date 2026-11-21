@@ -2,6 +2,7 @@
 import json
 import sys
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -14,6 +15,8 @@ from spx_noon.config import (
     resolve_broker,
 )
 from spx_noon.guard import GuardError
+from spx_noon.runner import _quote_stale
+from spx_noon.strategy import OptQuote
 from spx_noon.tasty import (
     CERT_HOST,
     PROD_HOST,
@@ -387,6 +390,109 @@ def test_tasty_live_auto_approves_without_a_prompt(tmp_path):
     assert len(buys) == 1
     assert broker.approved
     assert max(broker.approved.values()) == pytest.approx(buys[0]["limit"])
+
+
+# --------------------------------------------------------------------------
+# _drain stamps a priced Quote with the local receive time. The exchange
+# bid_time is ignored. No network and no tastytrade import.
+# --------------------------------------------------------------------------
+
+KEY = (6950.0, "C")
+OCC = "SPXW  261028C06950000"
+SYMBOL = ".SPXW261028C6950"
+OLD_MS = int(datetime(2026, 10, 28, 16, 0, tzinfo=timezone.utc).timestamp() * 1000)
+
+
+class _Ev:
+    """A dxFeed event. A field the SDK leaves off is simply absent here too."""
+
+    def __init__(self, symbol, **fields):
+        self.event_symbol = symbol
+        for name, value in fields.items():
+            setattr(self, name, value)
+
+
+class _QuoteEv(_Ev):
+    pass
+
+
+class _GreeksEv(_Ev):
+    pass
+
+
+class _Streamer:
+    """``get_event_nowait`` over one queue per event class, then None."""
+
+    def __init__(self, quotes=(), greeks=()):
+        self.queued = {_QuoteEv: list(quotes), _GreeksEv: list(greeks)}
+
+    def get_event_nowait(self, cls):
+        queue = self.queued.get(cls) or []
+        return queue.pop(0) if queue else None
+
+
+def _data_broker(tmp_path):
+    """Two sessions, no transport: ``_drain`` merges into this broker's own book."""
+    cfg = Config(broker="tasty", mode="dry", base_dir=str(tmp_path))
+    data_s, order_s = _pair()
+    return TastyBroker(cfg, data_session=data_s, order_session=order_s, clock=Clock())
+
+
+def _drained(tmp_path, quotes=(), greeks=(), seed=None):
+    broker = _data_broker(tmp_path)
+    broker._book = {KEY: {"occ": OCC, "streamer": SYMBOL}}
+    if seed is not None:
+        broker._quotes[KEY] = seed
+    broker._drain(_Streamer(quotes, greeks), _QuoteEv, _GreeksEv)
+    return broker._quotes.get(KEY)
+
+
+def test_a_priced_quote_is_stamped_on_arrival_however_old_the_exchange_says(tmp_path):
+    quote = _drained(tmp_path, quotes=[_QuoteEv(
+        SYMBOL, bid_price=40.0, ask_price=40.2, bid_time=OLD_MS, event_time=OLD_MS)])
+    now = datetime.now(ZoneInfo("America/New_York"))
+    assert quote.bid == 40.0 and quote.ask == 40.2
+    assert abs((now - quote.time).total_seconds()) < 5
+    assert _quote_stale(quote, now) is False
+
+
+def _seed(when):
+    return OptQuote(bid=40.0, ask=40.2, delta=0.74, time=when, mdtype=1, con_id=OCC)
+
+
+def test_a_price_less_quote_does_not_refresh_the_clock_or_the_prices(tmp_path):
+    old = datetime(2026, 10, 28, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+    quote = _drained(tmp_path, quotes=[_QuoteEv(
+        SYMBOL, bid_price=None, ask_price=None, bid_time=OLD_MS)], seed=_seed(old))
+    assert quote.time == old
+    assert quote.bid == 40.0 and quote.ask == 40.2
+    quote = _drained(tmp_path, quotes=[_QuoteEv(
+        SYMBOL, bid_price=41.0, ask_price=None)], seed=_seed(old))
+    assert quote.time > old and quote.bid == 41.0 and quote.ask == 40.2
+
+
+def test_a_batch_of_events_for_one_symbol_is_merged_in_arrival_order(tmp_path):
+    old = datetime(2026, 10, 28, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+    quote = _drained(tmp_path, quotes=[
+        _QuoteEv(SYMBOL, bid_price=41.0, ask_price=41.4, bid_time=OLD_MS),
+        _QuoteEv(SYMBOL, bid_price=None, ask_price=None),
+    ], seed=_seed(old))
+    assert quote.bid == 41.0 and quote.ask == 41.4
+    assert quote.time > old
+    quote = _drained(tmp_path, quotes=[
+        _QuoteEv(SYMBOL, bid_price=42.0, ask_price=None),
+        _QuoteEv(SYMBOL, bid_price=None, ask_price=42.6),
+    ])
+    assert quote.bid == 42.0 and quote.ask == 42.6
+
+
+def test_a_greeks_only_update_does_not_refresh_the_clock(tmp_path):
+    old = datetime(2026, 10, 28, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+    quote = _drained(tmp_path, greeks=[_GreeksEv(SYMBOL, delta=0.81, volatility=0.14)],
+                     seed=_seed(old))
+    assert quote.delta == 0.81 and quote.iv == 0.14
+    assert quote.time == old
+    assert _quote_stale(quote, datetime.now(ZoneInfo("America/New_York"))) is True
 
 
 def test_error_text_redacts_secrets(tmp_path):

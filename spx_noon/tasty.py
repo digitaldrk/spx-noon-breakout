@@ -745,13 +745,28 @@ class TastyBroker(Broker):
             self._streamer = None
 
     def _drain(self, streamer, quote_cls, greeks_cls):
-        quotes = {}
+        """Merge queued Quote and Greeks events into the option book.
+
+        ``OptQuote.time`` is when a Quote with a finite bid or ask arrived.
+        The exchange ``bid_time`` can already be minutes old on that packet, so
+        it is not the freshness clock. A price-less Quote and a Greeks-only
+        update leave the stored prices and the clock alone.
+        """
+        quotes: dict[str, dict] = {}
         greeks = {}
         while True:
             event = streamer.get_event_nowait(quote_cls)
             if event is None:
                 break
-            quotes[event.event_symbol] = event
+            bid = _finite(getattr(event, "bid_price", None))
+            ask = _finite(getattr(event, "ask_price", None))
+            if bid is None and ask is None:
+                continue
+            merged = quotes.setdefault(event.event_symbol, {})
+            if bid is not None:
+                merged["bid"] = bid
+            if ask is not None:
+                merged["ask"] = ask
         while True:
             event = streamer.get_event_nowait(greeks_cls)
             if event is None:
@@ -759,6 +774,7 @@ class TastyBroker(Broker):
             greeks[event.event_symbol] = event
         if not quotes and not greeks:
             return
+        received = self.now()
         with self._quote_lock:
             for key, meta in self._book.items():
                 symbol = meta.get("streamer")
@@ -769,8 +785,8 @@ class TastyBroker(Broker):
                 quote = quotes.get(symbol)
                 greek = greeks.get(symbol)
                 prev = self._quotes.get(key)
-                bid = _finite(getattr(quote, "bid_price", None)) if quote is not None else None
-                ask = _finite(getattr(quote, "ask_price", None)) if quote is not None else None
+                bid = quote.get("bid") if quote is not None else None
+                ask = quote.get("ask") if quote is not None else None
                 if bid is None and prev is not None:
                     bid = prev.bid
                 if ask is None and prev is not None:
@@ -781,11 +797,7 @@ class TastyBroker(Broker):
                     delta = prev.delta
                 if iv is None and prev is not None:
                     iv = prev.iv
-                when = None
-                if quote is not None:
-                    when = _ms_to_et(getattr(quote, "bid_time", None) or getattr(quote, "event_time", None))
-                if when is None and prev is not None:
-                    when = prev.time
+                when = received if quote is not None else (prev.time if prev is not None else None)
                 self._quotes[key] = OptQuote(
                     bid=bid, ask=ask, delta=delta, iv=iv, time=when, mdtype=1,
                     con_id=meta.get("occ"), volume=None,
