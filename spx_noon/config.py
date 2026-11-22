@@ -25,8 +25,9 @@ Tastytrade orders auto-approve: no console prompt takes part. mode "dry" (the
 default) and "alerts" never transmit.
 
 The trading rules (0.80 delta, the morning skip, +8 points, $0.20/side, the flat
-two hours after the entry bar's close, one spread) live in strategy.py and are
-not config keys. A ``plan`` key left in an old file is ignored.
+two hours after the entry bar's close, the 3:50 PM ET hard flat, one spread)
+live in strategy.py and pricing.py and are not config keys. A ``plan`` key left
+in an old file is ignored.
 
 ``sheets_spreadsheet_id`` and ``sheets_credentials`` belong to the 16:20 wrap's
 row on the shared Google Sheet (:mod:`spx_noon.sheetsink`). Neither is a secret:

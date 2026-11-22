@@ -1,10 +1,12 @@
 """Entry, width, delta, slippage, and exit rules."""
 import pytest
-from datetime import date, datetime
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 from spx_noon.pricing import (
+    HARD_FLAT,
     entry_skipped,
+    hard_flat_deadline,
     limit_at_mid,
     slippage_per_side,
     time_exit_deadline,
@@ -25,6 +27,7 @@ from spx_noon.strategy import (
     select_long_strike,
     short_strike,
     vertical_width,
+    WINDOW_CLOSES,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -206,6 +209,21 @@ def test_the_flat_is_two_hours_after_the_bar_and_fees_come_off_pnl():
     assert pnl == pytest.approx((12.71 * 0.30 * 100) - 2.60)
     # The published 2026-07-31 winner was about +$378 on a $1,271 debit after fees.
     assert round(pnl) == 379
+
+
+def test_the_hard_flat_is_1550_et_and_always_later_than_the_two_hour_clock():
+    """The third exit is a backstop, so it never pulls the two-hour flat in."""
+    assert HARD_FLAT == time(15, 50)
+    for stamp in WINDOW_CLOSES:
+        bar = datetime.combine(date(2026, 10, 28), stamp, ET)
+        hard = hard_flat_deadline(bar)
+        assert hard == datetime(2026, 10, 28, 15, 50, tzinfo=ET)
+        assert hard > time_exit_deadline(bar)        # 13:00 is the latest: 15:00
+    # the date alone works too, and the clock stays Eastern either way
+    assert hard_flat_deadline(date(2026, 10, 28)) == datetime(2026, 10, 28, 15, 50, tzinfo=ET)
+    # a UTC-stamped entry close is still the Eastern trading day's 15:50
+    utc_noon = datetime(2026, 10, 28, 16, 0, tzinfo=ZoneInfo("UTC"))   # 12:00 ET
+    assert hard_flat_deadline(utc_noon) == datetime(2026, 10, 28, 15, 50, tzinfo=ET)
 
 
 def test_a_fresh_window_break_is_the_signal():

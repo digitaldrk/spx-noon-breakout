@@ -89,7 +89,9 @@ A deploy still restarts the single worker, which interrupts the process, so time
 the merge: no deploy between 11:45 and 15:10 ET, when a trade can be open. Time
 the merge, not the deploy — the checks and then the image build run first, so a
 merge at 11:40 can land the restart inside the window. Leave room, or wait until
-after 15:10. That is advice to whoever merges, not a gate: neither Actions nor
+after 15:10. A spread the earlier exits could not sell can still be open until
+the 15:50 hard flat, so a deploy between 15:10 and 15:50 interrupts that too:
+check the logs for an open position before deploying in that half hour. That is advice to whoever merges, not a gate: neither Actions nor
 Render refuses a deploy by the clock.
 
 ## What it does each day
@@ -101,6 +103,7 @@ Render refuses a deploy by the clock.
 | 12:00–13:00 | the five 15-minute closes. At most one spread, long option nearest 80 delta, limit at the mid. The day is skipped when a 10:15–11:00 close already broke the prior day's high or low. |
 | up to 15:00 | an open spread is managed to +8 SPX points, or flat two hours after the entry bar's close. Nothing is closed at 14:00. |
 | 15:10 | with nothing open, the session stops looking and exits. |
+| 15:50 | the hard flat: a spread still open then is sold at the spread bid and the row reads `hard_flat`. It is the backstop for a sell the +8 and two-hour exits could not get done, and it gets three attempts of its own before the bot alerts and stops. |
 | 16:20 | `python -m spx_noon wrap --now` once. Read-only: it places no order, and writes `reports/wrap-<date>.md`, then upserts one `High Noon` row on the shared sheet (below). |
 
 If the session child crashes, the supervisor restarts it up to three times (5s,
@@ -111,9 +114,11 @@ deploy or a restart Render sends SIGTERM: the worker stops the child, releases
 its lock, and exits; the new instance picks the position up off the same disk.
 
 Nothing stops the session child inside trading hours. The one backstop is at
-16:20, long after the last possible flat: a session still running then — the
-runner stops trying after three failed sells and says so — is stopped and logged
-as `error`, so tomorrow still happens. If you see that line, close the spread by
+16:20, half an hour after the 15:50 hard flat, which is the last trading flat: a
+session still running then — the runner stops trying after three failed sells,
+including the hard flat's own three, and says so — is stopped and logged as
+`error`, so tomorrow still happens. That stop is not a trading exit and sells
+nothing. If you see that line, close the spread by
 hand and check the alert.
 
 ## The 16:20 sheet row
@@ -181,7 +186,7 @@ with sandbox data raises a `SafetyError` and the process will not start.
 2. `TASTY_ORDERS` → `production`.
 3. `TASTY_DATA` is already `production`. Confirm it, do not remove it.
 4. `MODE` is already `live`. Confirm it: `dry` and `alerts` send nothing.
-5. Save, then **Manual Deploy**. Outside 11:45–15:10 ET.
+5. Save, then **Manual Deploy**. Outside 11:45–15:10 ET, and check for an open spread up to the 15:50 hard flat.
 6. Check the next `boot` line: `ORDERS=api.tastyworks.com` and `REAL MONEY=YES`.
    The orders now go to the production account in `BROKER_ACCOUNT` with the
    production credentials. Going back is the same trip with `sandbox`.

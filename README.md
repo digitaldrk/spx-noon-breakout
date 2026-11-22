@@ -7,7 +7,7 @@
 | Mac | **IBKR** TWS (`"broker": "ibkr"`). **paper** is `127.0.0.1:7497` with account ids starting with `D`. **live** is real money on `127.0.0.1:7496` (TWS) or `4001` (IB Gateway) | `dry` (default) logs the ticket. `paper` sends it to the paper account. `live` sends real orders to the configured non-`D` account. |
 | Render Linux (hosted worker) | **tastytrade** (`"broker": "tasty"`) | `dry` and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
 
-A missing or blank `broker` refuses to start. On a Mac the config file is also the one switch between paper and real money: `mode`, `ibkr_port`, and `broker_account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first noon-window close beyond the prior day's high or low, one 80-delta spread, and exits at +8 SPX points or two hours after that bar's close. A 10:15–11:00 break skips the day. See [Trading plan](#trading-plan).
+A missing or blank `broker` refuses to start. On a Mac the config file is also the one switch between paper and real money: `mode`, `ibkr_port`, and `broker_account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first noon-window close beyond the prior day's high or low, one 80-delta spread, and exits at +8 SPX points or two hours after that bar's close, with a 3:50 PM ET hard flat for a spread still open then. A 10:15–11:00 break skips the day. See [Trading plan](#trading-plan).
 
 **Mac:** copy `config.example.json` to `config.json`, keep TWS logged into paper on port 7497 with Read-Only API off, and use `run.sh`. `./run.sh paper` is the launch that transmits. State goes in `~/Documents/spx-noon-breakout/state`. For real money see [IBKR live mode](#ibkr-live-mode-real-money).
 
@@ -29,7 +29,7 @@ Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` 
 
 `python -m spx_noon` with no `--config` uses `SPX_NOON_CONFIG` when that variable is set, otherwise `config.json` in the repo root.
 
-The delta, the width, the $0.20 skip, the 8 points, and the two-hour flat are code, not config keys. They are in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). A `plan` key left in an old `config.json` is ignored.
+The delta, the width, the $0.20 skip, the 8 points, the two-hour flat, and the 3:50 PM ET hard flat are code, not config keys. They are in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). A `plan` key left in an old `config.json` is ignored.
 
 | Key | In the examples | Role |
 | --- | --- | --- |
@@ -197,23 +197,23 @@ Hosted tastytrade: [RENDER.md](RENDER.md).
 
 The bot trades one strategy, written up in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). Readings that the rules leave open are in [docs/AMBIGUITIES.md](docs/AMBIGUITIES.md).
 
-The 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20-per-side skip, and the flat two hours after the entry bar's close.
+The 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20-per-side skip, the flat two hours after the entry bar's close, and the 3:50 PM ET hard flat.
 
 | Rule | What the bot does |
 | --- | --- |
 | Signal | the day's **first** noon-window close beyond the prior day's high (calls) or low (puts). A fresh break on the window close itself is the signal. |
 | Morning | skip the whole day when any 15-minute close from 10:15 through 11:00 ET was already beyond the prior day's high or low. Equal to the level does not skip, and a 9:45 break does not either. |
 | Long leg | nearest **0.80** delta, in the money |
-| Exit | **+8 SPX points** in the trade direction, else flat two hours after the entry bar's close — a 12:00 bar is flat at 2:00 PM, a 12:15 bar at 2:15 PM, and never two hours after the fill timestamp. No premium target and no stop. |
+| Exit | **+8 SPX points** in the trade direction, else flat two hours after the entry bar's close — a 12:00 bar is flat at 2:00 PM, a 12:15 bar at 2:15 PM, and never two hours after the fill timestamp. A spread still open at **3:50 PM ET** is flattened there, the backstop for sells the first two exits could not get done. No premium target and no stop. |
 
-A skipped morning sends no order and writes one `skip_morning` row in the trade log. An exit on the points reads `points` there. The 0.80 and the 8 points are code, not config keys.
+A skipped morning sends no order and writes one `skip_morning` row in the trade log. An exit on the points reads `points` there, the two-hour flat reads `time`, and the 3:50 PM ET hard flat reads `hard_flat`. The 0.80, the 8 points, and the 3:50 clock are code, not config keys.
 
 ## Files
 
 | Path | What it does |
 | --- | --- |
-| `spx_noon/strategy.py`, `pricing.py` | Breakout, the 80-delta vertical, slippage skip, the morning filter, +8 points, two-hour clock |
-| `spx_noon/runner.py` | The session: one fill, the +8 point exit, hard flat, trade log |
+| `spx_noon/strategy.py`, `pricing.py` | Breakout, the 80-delta vertical, slippage skip, the morning filter, +8 points, two-hour clock, 3:50 PM ET hard-flat clock |
+| `spx_noon/runner.py` | The session: one fill, the +8 point exit, the two-hour flat, the 3:50 PM ET hard flat, trade log |
 | `spx_noon/ib.py` | Mac broker. `ib_async` against TWS paper (7497) or live (7496/4001) |
 | `spx_noon/tasty.py`, `check_tasty.py` | tastytrade broker, used by the hosted Render Linux worker and by a local `tasty` config. Production data session, sandbox orders unless configured. Auto-approves. |
 | `spx_noon/guard.py` | In-process ticket guard. Refuses a live order with no approved ticket, a price over the cap, or more than 10 requests a minute |

@@ -1,6 +1,6 @@
 # Noon Breakout Plan v2 — 2026-10-28
 
-The bot trades one strategy: the first noon-window close beyond the prior day's high or low, an 80-delta debit, a skip when 10:15–11:00 already broke those levels, and an exit at +8 SPX points or two hours after the entry bar's close, whichever comes first. Section 9 is that strategy. Sections 1 through 6 are the October 2026 research note on a 75-delta debit with a 30% premium target. That study is not a second strategy and the bot does not trade it.
+The bot trades one strategy: the first noon-window close beyond the prior day's high or low, an 80-delta debit, a skip when 10:15–11:00 already broke those levels, and an exit at +8 SPX points or two hours after the entry bar's close, whichever comes first, with a 3:50 PM ET hard flat for a spread neither of those sold. Section 9 is that strategy. Sections 1 through 6 are the October 2026 research note on a 75-delta debit with a 30% premium target. That study is not a second strategy and the bot does not trade it.
 
 
 *Sources: `filter-backtests-2026-10-28.md`, `filter-bt/stress/stress_out.md`, `filter-bt/noon_B_trades_k0.6.csv` and `filter-bt/noon_B_trades_k0.42.csv`. Sample: 181 SPX sessions, 2026-02-09 to 2026-10-27, 118 trades. Two pricing levels: **fair** = 0.42× VIX (**the default scenario used throughout**) and **rich** = 0.6× VIX (secondary reference). Read-only research. No bot code was changed.*
@@ -116,7 +116,7 @@ On a $10,000 account that is **about +75% at fair pricing** (headline), versus a
 8. **Order:** a limit order for the debit spread at **mid**. If the fill would be **more than $0.20 per side worse than mid**, skip the trade. Do not chase. (The backtest breaks at $0.30 a side.)
 9. **Point exit:** sell when the live SPX print is **8 points** through the entry print in the trade direction. There is no premium target and no resting close.
 10. **Hard time exit:** close at market or near bid **two hours after the entry bar's close**, not two hours after the fill timestamp. The backtest exits on the close of the 15m bar that ends at the entry bar's close + 2h (12:00 entry bar → 2:00 PM; a 12:15 entry bar → 2:15 PM). There is **no stop loss**.
-11. **Paper mode first.** For every trade, log: date, timestamp, direction, SPX at entry, PDH/PDL, expected move, W, both strikes, both deltas, spread mid, fill price, **slippage versus mid**, exit time, exit reason (`points` or `time`), exit fill, slippage on the exit, and P&L after $0.65 per contract per leg.
+11. **Hard flat at 3:50 PM ET.** A spread still open at **3:50 PM ET** is sold at the spread bid, whatever the two-hour clock did. It is a backstop, not a replacement: it only has anything to do when +8 and the two-hour flat both failed to sell (a rejected order, no bid, a crash). It is always later than the two-hour flat, whose latest deadline in the window is 3:00 PM from a 1:00 PM bar. The 3:50 sell gets three attempts of its own, and after those the bot alerts and sends nothing more.
 12. **Slippage benchmark:** typical 0DTE fills come in $0.05–$0.15 off mid. Track the average per side. Anything at $0.20 or more erodes the edge, and $0.30 breaks it.
 13. **Review after 30–60 paper sessions** before going live: win rate, profit factor, and average slippage against the backtest (PF 1.41 at fair pricing; 1.48 rich).
 14. **Live orders require Tod's explicit approval.** The code must not send live orders unless Tod has approved going live.
@@ -184,7 +184,7 @@ This is what High Noon runs. It is not a config key. A `plan` key left in an old
 | Signal | the day's **first** window close beyond PDH (calls) or PDL (puts) |
 | Morning | **skip the day** when any 15-minute close from 10:15 through 11:00 ET was already beyond PDH or PDL |
 | Long leg | nearest **0.80** delta |
-| Exit | **+8 SPX points** in the trade direction, else the flat two hours after the entry bar's close |
+| Exit | **+8 SPX points** in the trade direction, else the flat two hours after the entry bar's close, and a **hard flat at 3:50 PM ET** for a spread still open then |
 
 **Signal.** The candidate is the day's first 15-minute close, among the five
 window closes at 12:00, 12:15, 12:30, 12:45, and 1:00, that is beyond PDH for
@@ -227,8 +227,21 @@ log. Nothing rests, and the spread bid reaching a premium multiple is not an
 exit. There is no stop. The point exit reads `points` in `exit_reason`, and
 the two-hour flat reads `time`. Both sell at the spread bid.
 
+**Hard flat.** A spread still open at **3:50 PM ET** is sold on the same path, at
+the spread bid, and that row reads `hard_flat`. It is the third exit and a
+backstop for the first two: +8 and the two-hour flat are unchanged, and a spread
+they sold is long gone before 3:50. The hard flat only matters when those sells
+were rejected, found no bid, or never ran — the latest two-hour deadline in the
+window is 3:00 PM, from a 1:00 PM bar, so 3:50 is always later. At 3:50 the
+three-attempt counter is cleared once, which gives the hard flat three sells of
+its own; a fourth is not sent, the bot alerts, and the spread has to be closed by
+hand. An exit order already working at 3:50 is left working, and if it fills
+then, that row reads `hard_flat` too. A restart reloads the cleared counter, so
+the reset is taken once per spread, not once per process.
+
 The 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls
 before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20 skip,
 one spread, the fees, the two-hour clock measured from the entry bar's close, the
-calendar and live gates, the books, and the order prefix are the same on every
-trade. The 0.80 and the 8 points are code, not config keys.
+3:50 PM hard flat, the calendar and live gates, the books, and the order prefix
+are the same on every trade. The 0.80, the 8 points, and the 3:50 clock are code,
+not config keys.

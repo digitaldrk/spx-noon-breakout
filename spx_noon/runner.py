@@ -3,8 +3,9 @@
 Waits for the 12:00–1:00 PM ET closes, takes the first qualifying bar, and
 sends at most one spread. The signal is the first window close beyond PDH/PDL.
 A day whose 10:15–11:00 closes already broke PDH/PDL is skipped. The long leg
-is the 80 delta, and the exit is +8 SPX points or flat two hours after the
-entry bar, whichever comes first.
+is the 80 delta, and the exit is three clocks: +8 SPX points, else flat two
+hours after the entry bar, and a 3:50 PM ET hard flat for a spread neither of
+those managed to sell.
 
 Paper on a Mac goes to TWS 7497, and IBKR live — config ``mode`` ``live`` with
 a non-``D`` account — goes to TWS 7496 or IB Gateway 4001 and keeps its own
@@ -16,7 +17,7 @@ from __future__ import annotations
 import argparse
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .calendar import trading_day_status
@@ -29,7 +30,7 @@ from .config import (
 )
 from .logbook import Outputs
 from .notify import Notifier
-from .pricing import floor_tick, time_exit_deadline, trade_pnl
+from .pricing import HARD_FLAT, floor_tick, hard_flat_deadline, time_exit_deadline, trade_pnl
 from . import resume
 from .strategy import (
     build_order_plan,
@@ -281,7 +282,8 @@ def _ticket_text(plan, account: str = "", *, broker: str = "") -> str:
         f"long {plan.long_strike:.0f}{plan.right} Δ {plan.long_delta:.3f}",
         f"short {plan.short_strike:.0f}{plan.right} Δ {plan.short_delta if plan.short_delta is not None else float('nan'):.3f}",
         f"mid {plan.mid:.2f}   natural {plan.natural:.2f}   slippage {plan.slippage_per_side:.3f}/side",
-        f"limit {plan.limit:.2f}   exit +{EXIT_POINTS:.0f} SPX points or flat at {flat} ET",
+        f"limit {plan.limit:.2f}   exit +{EXIT_POINTS:.0f} SPX points, flat at {flat} ET, "
+        f"or hard flat at {HARD_FLAT:%H:%M} ET",
         tail,
     ]
     if account:
@@ -418,14 +420,41 @@ def _open_position(cfg, broker, notifier, state: _State, working: dict, fill: fl
         "Noon filled",
         f"{pos['direction']} filled {fill:.2f} (mid was {plan.mid:.2f}). "
         f"selling at +{EXIT_POINTS:.0f} SPX points. "
-        f"Flat at {pos['deadline']:%H:%M} ET. No stop.",
+        f"Flat at {pos['deadline']:%H:%M} ET, hard flat at {HARD_FLAT:%H:%M} ET. No stop.",
     )
+
+
+def _hard_flat_at(pos: dict) -> datetime | None:
+    """3:50 PM ET on this position's own day, or None when the file has no day."""
+    entry = pos.get("entry_close")
+    if isinstance(entry, datetime):
+        return hard_flat_deadline(entry)
+    try:
+        return hard_flat_deadline(date.fromisoformat(str(pos.get("date") or "")))
+    except ValueError:
+        return None
+
+
+def _flat_reason_at(pos: dict, now: datetime, reason: str) -> str:
+    """The reason to write: the clock when the fill is recorded decides.
+
+    A +8 or two-hour sell can go out at 3:49 and fill during the wait, on the
+    far side of 3:50. That fill is the hard flat, and there is no second reason
+    field. Anything before 3:50 keeps today's reason.
+    """
+    if reason not in ("points", "time"):
+        return reason
+    hard_flat_at = _hard_flat_at(pos)
+    if hard_flat_at is not None and now >= hard_flat_at:
+        return "hard_flat"
+    return reason
 
 
 def _record_exit(cfg, broker, notifier, out: Outputs, state: _State, exit_fill: float,
                  reason: str, prices: dict | None) -> None:
     pos = state.position
     now = broker.now()
+    reason = _flat_reason_at(pos, now, reason)
     pnl, fees = trade_pnl(pos["fill_price"], exit_fill)
     entry_slip = pos["fill_price"] - pos["mid"]
     exit_mid = None if prices is None else prices.get("mid")
@@ -559,13 +588,42 @@ def _clear_leftover_close(cfg, broker, notifier, out, state: _State, prices) -> 
     return False
 
 
+def _hard_flat_reset(cfg, pos: dict) -> None:
+    """Give the 3:50 backstop its own three sells, once per position.
+
+    The two-hour sells may already have run the counter out and given up. The
+    latch is saved before any new sell goes out, so a later loop — and a
+    restart that reloads this file — does not clear the counter a second time.
+    An exit order that is still working is left alone: ``_flatten`` refuses a
+    second sell while it is open.
+    """
+    pos["hard_flat_reset"] = True
+    pos["exit_attempts"] = 0
+    pos["flat_gave_up"] = False
+    pos["flat_alerted"] = False
+    log_order(cfg, logging.INFO, "%s ET hard flat: three more sells on the open spread",
+              f"{HARD_FLAT:%H:%M}")
+    try:
+        _persist(cfg, pos)
+    except Exception:  # noqa: BLE001
+        log_order(cfg, logging.ERROR,
+                  "the hard-flat reset was not saved; selling anyway", exc_info=True)
+
+
 def _manage_position(cfg, broker, notifier, out, state: _State) -> bool:
     """Return True when the spread is flat.
 
-    +8 points from the entry print, else the two-hour deadline. The hit
-    latches. A sell that was rejected, had no bid, or is still working keeps
-    being worked even if the print comes back under +8, including across a
-    restart. There is no premium target and no stop.
+    +8 points from the entry print, else the two-hour deadline, else the
+    3:50 PM ET hard flat. The hit latches. A sell that was rejected, had no
+    bid, or is still working keeps being worked even if the print comes back
+    under +8, including across a restart. There is no premium target and no
+    stop.
+
+    At 3:50 a spread is still open that the first two clocks did not sell. The
+    counter is cleared once there, the reason becomes ``hard_flat`` — including
+    for a sell that went out before 3:50 and fills after it, which
+    :func:`_flat_reason_at` settles at record time — and after those three
+    sells the existing give-up alert is the end of it.
     """
     pos = state.position
     now = broker.now()
@@ -586,10 +644,15 @@ def _manage_position(cfg, broker, notifier, out, state: _State) -> bool:
         except Exception:  # noqa: BLE001
             log_order(cfg, logging.ERROR,
                       "the point exit was not saved; selling anyway", exc_info=True)
+    hard_flat_at = _hard_flat_at(pos)
+    hard = hard_flat_at is not None and now >= hard_flat_at
+    if hard and not pos.get("hard_flat_reset"):
+        _hard_flat_reset(cfg, pos)
     hit = bool(pos.get("points_hit"))
-    if not hit and now < pos["deadline"]:
+    if not hard and not hit and now < pos["deadline"]:
         return False
-    return _flatten(cfg, broker, notifier, out, state, "points" if hit else "time", prices)
+    reason = "hard_flat" if hard else ("points" if hit else "time")
+    return _flatten(cfg, broker, notifier, out, state, reason, prices)
 
 
 def _poll_working(cfg, broker, notifier, out, state: _State) -> None:
@@ -885,8 +948,8 @@ def _write_report(cfg, out: Outputs, day, calendar_status) -> None:
     lines.append("")
     lines.append(
         f"80-delta debit, limit at mid, no premium target, skip the day on a "
-        f"10:15–11:00 break of PDH/PDL, exit +{EXIT_POINTS:.0f} SPX points or flat "
-        f"two hours after the entry bar."
+        f"10:15–11:00 break of PDH/PDL, exit +{EXIT_POINTS:.0f} SPX points, flat "
+        f"two hours after the entry bar, hard flat at {HARD_FLAT:%H:%M} ET."
     )
     out.write_report(day, "\n".join(lines) + "\n")
 

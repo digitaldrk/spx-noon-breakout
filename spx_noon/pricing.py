@@ -3,20 +3,27 @@
 One spread. Entry limit is the mid, rounded down to the nickel, so the order
 never bids through the mid. The trade is skipped when the marketable debit is
 more than $0.20 per side worse than that mid. The flat is two hours after the
-entry bar (:func:`time_exit_deadline`). There is no premium target: the exit
-is +8 SPX points (``strategy.point_exit_reached``) or that same flat.
+entry bar (:func:`time_exit_deadline`). There is no premium target: the exit is
++8 SPX points (``strategy.point_exit_reached``), that same flat, or the
+3:50 PM ET hard flat (:func:`hard_flat_deadline`) for a spread neither of those
+managed to sell.
 """
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
+ET = ZoneInfo("America/New_York")
 TICK = 0.05
 MAX_SLIPPAGE_PER_SIDE = 0.20
 FEE_PER_CONTRACT = 0.65
 N_LEGS = 2
 HOLD_HOURS = 2
 N_SIDES = 2
+#: The hard flat. A spread still open at this ET time is sold, whatever the
+#: two-hour clock did. Code, not a config key, same as the 8 points.
+HARD_FLAT = time(15, 50)
 
 
 def floor_tick(price: float, tick: float = TICK) -> float:
@@ -34,6 +41,19 @@ def time_exit_deadline(entry_bar_close: datetime) -> datetime:
     A 12:00 entry is flat at 2:00 PM. A 12:15 entry is flat at 2:15 PM.
     """
     return entry_bar_close + timedelta(hours=HOLD_HOURS)
+
+
+def hard_flat_deadline(day: datetime | date) -> datetime:
+    """3:50 PM ET on the trade's own day: the backstop for a spread still open.
+
+    Not a replacement for +8 points or for :func:`time_exit_deadline`, and
+    always later than that flat — the last noon-window bar closes at 1:00 PM,
+    so the latest two-hour deadline is 3:00 PM. ``day`` is the entry bar's
+    close or that bar's date.
+    """
+    if isinstance(day, datetime):
+        day = day.astimezone(ET).date()
+    return datetime.combine(day, HARD_FLAT, ET)
 
 
 def quote_mid(quote) -> float | None:
