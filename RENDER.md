@@ -22,7 +22,7 @@ production yourself.
 
    | Variable | What it is |
    | --- | --- |
-   | `TASTY_ACCOUNT` | tastytrade account to trade. Blank only works when the order session has exactly one account. |
+   | `BROKER_ACCOUNT` | tastytrade account to trade. Blank only works when the order session has exactly one account. |
    | `TASTYTRADE_PROD_CLIENT_SECRET` | production OAuth client secret (quotes) |
    | `TASTYTRADE_PROD_REFRESH_TOKEN` | production refresh token (quotes) |
    | `TASTYTRADE_SANDBOX_CLIENT_SECRET` | sandbox OAuth client secret (orders) |
@@ -49,7 +49,7 @@ and need no typing:
 | `MODE` | `live` | `live`, `dry`, `alerts` | `live` transmits; `dry` and `alerts` send nothing |
 | `TASTY_DATA` | `production` | `production`, `sandbox` | the quotes, bars, chain, and greeks host |
 | `TASTY_ORDERS` | `sandbox` | `sandbox`, `production` | the order host. `production` is real money |
-| `TASTY_ACCOUNT` | the file's account | any account id, or blank | blank is the first account on the order session |
+| `BROKER_ACCOUNT` | the file's `broker_account` | any account id, or blank | blank is the first account on the order session |
 
 `broker` in `/data/config.json` names the broker, and the seed ships
 `"broker": "tasty"`. `BROKER` is this worker's override of that one key: the
@@ -146,7 +146,7 @@ with sandbox data raises a `SafetyError` and the process will not start.
 4. `MODE` is already `live`. Confirm it: `dry` and `alerts` send nothing.
 5. Save, then **Manual Deploy**. Outside 11:45–15:10 ET.
 6. Check the next `boot` line: `ORDERS=api.tastyworks.com` and `REAL MONEY=YES`.
-   The orders now go to the production account in `TASTY_ACCOUNT` with the
+   The orders now go to the production account in `BROKER_ACCOUNT` with the
    production credentials. Going back is the same trip with `sandbox`.
 
 Sandbox orders need the sandbox credential pair; production orders need the
@@ -162,8 +162,8 @@ every worker.
    from the same Dockerfile, and give it its own name (`spx-noon-two`).
 2. Its own disk, mounted at `/data` again. Disks are not shared, and two workers
    must never share one.
-3. Its own five secrets: that account's `TASTY_ACCOUNT` and its own credential
-   pairs. A worker only ever trades the account its own `TASTY_ACCOUNT` names.
+3. Its own five secrets: that account's `BROKER_ACCOUNT` and its own credential
+   pairs. A worker only ever trades the account its own `BROKER_ACCOUNT` names.
 4. The same non-secret variables, same values: `DATA=/data`,
    `PYTHONUNBUFFERED=1`, `BROKER=tasty`, `MODE=live`, `TASTY_DATA=production`,
    `TASTY_ORDERS=sandbox` until you switch that one worker to real money.

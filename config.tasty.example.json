@@ -3,7 +3,7 @@
   "broker": "tasty",
   "mode": "dry",
   "plan": "B",
-  "account": "",
+  "broker_account": "",
   "tasty_data": "production",
   "tasty_orders": "sandbox",
   "max_orders_per_min": 10,

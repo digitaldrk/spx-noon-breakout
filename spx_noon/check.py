@@ -33,8 +33,8 @@ def main(argv=None) -> int:
 
 def ib_main(cfg, client_id_arg=None) -> int:
     """Paper only. check never dials 7496 or 4001; a live config fails closed here."""
-    client_id = client_id_arg or cfg.check_client_id
-    if cfg.mode == "live" or int(cfg.port) != PAPER_PORT:
+    client_id = client_id_arg or cfg.ibkr_check_client_id
+    if cfg.mode == "live" or int(cfg.ibkr_port) != PAPER_PORT:
         print("refusing: not the paper port. check does not connect to a live port.")
         return 2
     from ib_async import IB, Index

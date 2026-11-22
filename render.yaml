@@ -40,7 +40,7 @@ services:
         value: sandbox
       # Pasted in the dashboard, never in the repo, the image, or a log line.
       # Blank means the first account on the order session.
-      - key: TASTY_ACCOUNT
+      - key: BROKER_ACCOUNT
         sync: false
       - key: TASTYTRADE_PROD_CLIENT_SECRET
         sync: false

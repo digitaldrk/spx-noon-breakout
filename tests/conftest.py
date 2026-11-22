@@ -25,7 +25,7 @@ PREFIXES = ("TASTYTRADE_", "SPX_NOON_")
 
 #: The hosted worker's own plain names, from :mod:`spx_noon.service`. Cleared by
 #: exact name: ``DATA`` and ``MODE`` are too common to clear by prefix.
-WORKER_NAMES = ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "TASTY_ACCOUNT")
+WORKER_NAMES = ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "BROKER_ACCOUNT")
 
 #: Not read anywhere in this repo. Unset anyway, so a machine that exports it
 #: cannot start feeding it to something later.
