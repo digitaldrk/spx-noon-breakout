@@ -22,7 +22,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import guard
-from .broker import Broker
+from .broker import Broker, select_option_lines
 from .config import ORDER_PREFIX, SafetyError
 from .pricing import floor_tick
 from .strategy import Bar, OptQuote, Px
@@ -306,6 +306,13 @@ class TastyBroker(Broker):
         self._quotes: dict[tuple, OptQuote] = {}
         self._quote_lock = threading.Lock()
         self._want: set = set()
+        #: When each wanted line was first wanted, and when a held line left the
+        #: wanted set. Both feed :func:`select_option_lines`, the same way the
+        #: IBKR path does: subscribe once, hold, and never drop a pinned leg.
+        self._line_since: dict = {}
+        self._line_cold: dict = {}
+        self._opt_pins: set = set()
+        self._opt_pin_expiry = ""
         self._expiry: str | None = None
         self._feed_started = False
         self._stop = False
@@ -679,7 +686,30 @@ class TastyBroker(Broker):
         found = sorted(strikes) or None
         return found, book
 
+    def pin_options(self, expiry, legs):
+        """Hold these legs until the pins are cleared. ``legs`` is ``None`` to clear.
+
+        Same rule as the IBKR path, and pins belong to one expiry.
+        """
+        self._opt_pin_expiry = str(expiry or "")
+        self._opt_pins = {(round(float(strike), 2), str(right)) for strike, right in (legs or ())}
+        forward = getattr(self.transport, "pin_options", None) if self.transport is not None else None
+        if callable(forward):
+            forward(expiry, legs)
+
+    def _pins_for(self, expiry) -> set:
+        if str(expiry or "") != str(self._opt_pin_expiry or ""):
+            return set()
+        return set(self._opt_pins)
+
     def ensure_options(self, expiry, strikes):
+        """Pick the lines to stream. The feed subscribes and unsubscribes the difference.
+
+        One line is one ``(strike, right)``, and the budget is
+        ``max_option_lines`` lines. A line is streamed once and held: a smaller
+        strike list, or a spot that moved a little, does not drop it, and a
+        pinned leg is never dropped.
+        """
         self._expiry = str(expiry)
         if self.transport is not None:
             ensure = getattr(self.transport, "ensure_options", None)
@@ -688,16 +718,48 @@ class TastyBroker(Broker):
             return
         if expiry not in self._strikes:
             self.chain_strikes(expiry)
-        spot = None
         cached = self._index.get(INDEX)
-        if cached is not None:
-            spot = cached.value
-        want = {round(float(strike), 2) for strike in strikes}
-        budget = max(1, int(self.cfg.max_option_lines) // 2)
-        if spot and len(want) > budget:
-            want = set(sorted(want, key=lambda strike: abs(strike - spot))[:budget])
-        self._want = {(strike, right) for strike in want for right in ("C", "P")}
+        spot = None if cached is None else cached.value
+        pins = self._pins_for(expiry)
+        candidates = [
+            key
+            for key in ((round(float(strike), 2), right)
+                        for strike in strikes for right in ("C", "P"))
+            if (self._book.get(key) or {}).get("streamer")
+        ]
+        now = self.now()
+        held = dict(self._line_since)
+        selected = select_option_lines(
+            candidates,
+            spot=spot,
+            now=now,
+            budget=self.cfg.max_option_lines,
+            subscribed_at=held,
+            pinned={key for key in pins
+                    if (self._book.get(key) or {}).get("streamer") or key in held},
+            hold_s=self.cfg.option_line_hold_s,
+            undesired_since=self._line_cold,
+        )
+        dropped = set(held) - selected.keep
+        self._want = set(selected.keep)
+        self._line_cold = dict(selected.undesired_since)
+        self._line_since = {key: held.get(key, now) for key in self._want}
+        if dropped:
+            # Those symbols stop arriving, so their last prices are not a quote
+            # any more.
+            with self._quote_lock:
+                for key in dropped:
+                    self._quotes.pop(key, None)
         self.start_streams()
+
+    def _want_symbols(self) -> set[str]:
+        """The streamer symbols for the lines the selector kept. Never SPX or VIX."""
+        out = set()
+        for key in list(self._want):
+            symbol = (self._book.get(key) or {}).get("streamer")
+            if symbol and symbol not in (INDEX, VIX):
+                out.add(symbol)
+        return out
 
     def start_streams(self):
         if self.transport is not None:
@@ -728,18 +790,21 @@ class TastyBroker(Broker):
         async with DXLinkStreamer(self.data_session) as streamer:
             self._streamer = streamer
             await streamer.subscribe(Quote, [INDEX, VIX])
+            # Option symbols only: SPX and VIX are subscribed once above and are
+            # never in this set, so they are never unsubscribed.
             subscribed: set[str] = set()
             while not self._stop:
-                pending = []
-                for key in list(self._want):
-                    meta = self._book.get(key) or {}
-                    symbol = meta.get("streamer")
-                    if symbol and symbol not in subscribed:
-                        pending.append(symbol)
-                        subscribed.add(symbol)
+                wanted = self._want_symbols()
+                pending = sorted(wanted - subscribed)
+                stale = sorted(subscribed - wanted)
                 if pending:
                     await streamer.subscribe(Quote, pending)
                     await streamer.subscribe(Greeks, pending)
+                    subscribed |= set(pending)
+                if stale:
+                    await streamer.unsubscribe(Quote, stale)
+                    await streamer.unsubscribe(Greeks, stale)
+                    subscribed -= set(stale)
                 self._drain(streamer, Quote, Greeks)
                 await asyncio.sleep(0.2)
             self._streamer = None
