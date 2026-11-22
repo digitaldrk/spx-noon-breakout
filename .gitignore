@@ -18,6 +18,7 @@ secrets/
 .sb_refresh
 .prod_secret
 .prod_refresh
+sheets-service-account.json
 .idea/
 graphify-out/
 .DS_Store

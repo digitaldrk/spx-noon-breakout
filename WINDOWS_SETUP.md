@@ -102,3 +102,24 @@ The script keeps Windows awake while the bot runs. Leave `tasty_orders` at `sand
 ## End-of-day note (4:20 PM ET)
 
 `run_wrap.ps1` reads `state\trades.csv` and writes `reports\wrap-<date>.md`. It does not place orders.
+
+It then upserts one daily row for Boi `High Noon` on the Google Sheet Candle and Fly already
+share, `sheets_spreadsheet_id`, default `1tnMlDTidwCYG3_H2Z-lBcIUG5KOX4tgbe8AiRopATsU`. The
+columns are theirs: `Date`, `Boi`, `Traded`, `P&L after fees`, `Worst` (always empty), and
+`What happened`. The key is `(Date, Boi)`, so a second wrap on the same date replaces that row
+and leaves Candle's and Fly's rows alone. **This PC writes the `Tod Comp` tab** — the tab follows
+the operating system only, and Mac and Linux write `Derek Comp`. There is no tab setting.
+
+The credential is a Google service-account json. The first of these that is set wins:
+`SPX_SHEETS_CREDENTIALS_JSON` (the whole json, used in memory and never written to disk), else
+`sheets_credentials` in `config.json` (a path), else `SPX_SHEETS_CREDENTIALS`, else
+`GOOGLE_APPLICATION_CREDENTIALS`, else `C:\spx-noon-breakout\state\sheets-service-account.json`.
+Put the key file at that last path and share the sheet with its `client_email`, then install the
+client once:
+
+```powershell
+.\.venv\Scripts\pip install -e ".[sheets]"
+```
+
+Without a key — or with any sheet error — `run_wrap.ps1` still writes the markdown report, adds
+one status line to it, prints that line, and exits 0.

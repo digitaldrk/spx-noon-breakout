@@ -509,5 +509,6 @@ def test_error_text_redacts_secrets(tmp_path):
 
 def test_secret_filenames_are_gitignored():
     text = (__import__("pathlib").Path(__file__).resolve().parent.parent / ".gitignore").read_text()
-    for name in ("secrets/", ".sb_secret", ".sb_refresh", ".prod_secret", ".prod_refresh"):
+    for name in ("secrets/", ".sb_secret", ".sb_refresh", ".prod_secret", ".prod_refresh",
+                 "sheets-service-account.json"):
         assert name in text

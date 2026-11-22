@@ -328,7 +328,9 @@ class Supervisor:
         if self.config_file is not None:
             # The resolved config, which the child already honors this variable for.
             # It is how the six worker variables reach the process that trades: the
-            # child reads no environment field of its own.
+            # session child reads no environment field of its own, and the wrap
+            # child reads only the sheets credential variables, which it gets from
+            # the inherited os.environ above and never from a config field.
             env["SPX_NOON_CONFIG"] = str(self.config_file)
         # The child inherits the lock descriptor: if this supervisor is killed
         # while the session is still trading, the lock stays held and a

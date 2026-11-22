@@ -16,7 +16,7 @@ production yourself.
 2. Render dashboard → **New → Blueprint** → pick this repo → **Apply**. It
    creates one worker named `spx-noon` on the Starter plan in Ohio, with the
    disk `spx-noon-data` mounted at `/data`.
-3. Render will ask for the five secret values before the first deploy finishes.
+3. Render will ask for the six secret values before the first deploy finishes.
    Paste them in the dashboard (**the worker → Environment**). They are never in
    the repo, the image, or a log line:
 
@@ -27,10 +27,17 @@ production yourself.
    | `TASTYTRADE_PROD_REFRESH_TOKEN` | production refresh token (quotes) |
    | `TASTYTRADE_SANDBOX_CLIENT_SECRET` | sandbox OAuth client secret (orders) |
    | `TASTYTRADE_SANDBOX_REFRESH_TOKEN` | sandbox refresh token (orders) |
+   | `SPX_SHEETS_CREDENTIALS_JSON` | the whole Google service-account json, outer braces included, for the 16:20 wrap's row on the shared sheet. Optional: leave it unset and the wrap writes its report and records that the sheet was not updated. |
 
    Production credentials are needed even in the default setup: quotes, bars,
    the chain, and greeks come from the production host and never fall back to
    sandbox data.
+
+   `SPX_SHEETS_CREDENTIALS_JSON` is **not** one of the six worker settings in
+   the next section. No code in `spx_noon/service.py` reads it: the supervisor
+   hands the wrap child its whole environment, so the value reaches the wrap
+   without ever being copied into `/data/config.json` or
+   `/data/state/service-config.json`. Do not put the json in either file.
 4. Deploy. On the first boot the worker copies `config.render.example.json` to
    `/data/config.json` and prints one `boot` line. It never overwrites that file
    afterwards, so edits you make on the disk survive a deploy.
@@ -97,7 +104,7 @@ Render refuses a deploy by the clock.
 | 12:00–13:00 | the five 15-minute closes. At most one spread, long option nearest 75 delta on plan `B` or 80 on `A1`, limit at the mid. Plan `A1` skips the day outright when a 10:15–11:00 close already broke the prior day's high or low. |
 | up to 15:00 | an open spread is managed to its +30% target (plan `B`) or +8 SPX points (plan `A1`), or flat two hours after the entry bar. Nothing is closed at 14:00. |
 | 15:10 | with nothing open, the session stops looking and exits. |
-| 16:20 | `python -m spx_noon wrap --now` once. Read-only: it connects to nothing and sends nothing, and writes `reports/wrap-<date>.md`. |
+| 16:20 | `python -m spx_noon wrap --now` once. Read-only: it places no order, and writes `reports/wrap-<date>.md`, then upserts one `High Noon` row on the shared sheet (below). |
 
 If the session child crashes, the supervisor restarts it up to three times (5s,
 15s, then 45s) and the restarted session reloads today's position from
@@ -111,6 +118,40 @@ Nothing stops the session child inside trading hours. The one backstop is at
 runner stops trying after three failed sells and says so — is stopped and logged
 as `error`, so tomorrow still happens. If you see that line, close the spread by
 hand and check the alert.
+
+## The 16:20 sheet row
+
+The wrap writes `reports/wrap-<date>.md` first, then upserts **one** row for Boi
+`High Noon` on the Google Sheet Candle and Fly already share, spreadsheet
+`1tnMlDTidwCYG3_H2Z-lBcIUG5KOX4tgbe8AiRopATsU`. The columns are theirs and are
+not changed here: `Date`, `Boi`, `Traded`, `P&L after fees`, `Worst`,
+`What happened`. `Worst` stays empty — the trade log has no such column yet.
+`P&L after fees` is the book's own `pnl`, which is already net of fees. The key
+is `(Date, Boi)`, so a second wrap on the same date replaces that row instead of
+adding one, and Candle's and Fly's rows are never read back or rewritten.
+
+The tab follows the operating system only: Windows writes `Tod Comp`, and
+everything else — the Mac and this Linux worker — writes `Derek Comp`. There is
+no tab setting.
+
+A sheet problem is **quiet**: a missing key, a blob that is not service-account
+json, the Google packages missing, or an API error each leave the markdown report
+in place, append one status line to it, print that line, and exit 0. Render and
+launchd see a successful wrap either way, so the status line is the record. Until
+`SPX_SHEETS_CREDENTIALS_JSON` is pasted the log shows a line like
+`not added to the sheet: no service-account key found …`. No status line ever
+quotes the json, a `private_key`, or a key file's contents. The sheet must be
+shared with the service account's `client_email`.
+
+`spx_noon/sheetsink.py` imports `google.oauth2` and `googleapiclient` only on
+the push itself; the image installs them with `".[sheets]"`.
+
+The dashboard variable is the way in on Render. The same module would also read a
+key file — `sheets_credentials` in the config, then `SPX_SHEETS_CREDENTIALS`,
+then `GOOGLE_APPLICATION_CREDENTIALS`, then
+`/data/state/sheets-service-account.json` — but a file on the disk means a
+credential you have to put back by hand after a disk swap, and anything outside
+`/data` is wiped by every deploy. Paste the json instead.
 
 ## Reading status
 
@@ -162,8 +203,11 @@ every worker.
    from the same Dockerfile, and give it its own name (`spx-noon-two`).
 2. Its own disk, mounted at `/data` again. Disks are not shared, and two workers
    must never share one.
-3. Its own five secrets: that account's `TASTY_ACCOUNT` and its own credential
+3. Its own secrets: that account's `TASTY_ACCOUNT` and its own credential
    pairs. A worker only ever trades the account its own `TASTY_ACCOUNT` names.
+   Give it `SPX_SHEETS_CREDENTIALS_JSON` only if it should write the sheet too —
+   two workers writing the same `(Date, High Noon)` row would overwrite each
+   other, because the sheet has one row per bot per day and no account column.
 4. The same non-secret variables, same values: `DATA=/data`,
    `PYTHONUNBUFFERED=1`, `BROKER=tasty`, `MODE=live`, `TASTY_DATA=production`,
    `TASTY_ORDERS=sandbox` until you switch that one worker to real money.

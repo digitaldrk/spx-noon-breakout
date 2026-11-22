@@ -26,13 +26,16 @@ CHECKS = ("test", "docker")
 #: ``test_the_image_has_no_port_no_health_check_and_copies_no_state``.
 PYTHON = "3.11"
 
-#: What the Dockerfile installs, plus pytest.
+#: What the suite needs: the broker extra the image installs, plus pytest. Not
+#: the ``sheets`` extra — the Google packages are the image's, and the sheet
+#: tests use an in-memory client, so CI must pass without them installed.
 EXTRA = "'.[tasty,test]'"
 
 #: Names no Actions runner may be handed: the launchers' and the worker's own
-#: variables, the five dashboard secrets, and the sheets credential blob.
+#: variables, the dashboard secrets (the sheets credential blob included), and
+#: the two file-path variables :mod:`spx_noon.sheetsink` also reads.
 FORBIDDEN_NAMES = (*SECRET_NAMES, *PLAIN_NAMES, "TASTYTRADE_", "SPX_NOON_", "TASTY_",
-                   "SPX_SHEETS_CREDENTIALS_JSON")
+                   "SPX_SHEETS_CREDENTIALS", "GOOGLE_APPLICATION_CREDENTIALS")
 
 
 def _workflow():

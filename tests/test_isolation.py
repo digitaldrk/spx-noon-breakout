@@ -43,7 +43,8 @@ def test_the_machines_tastytrade_variables_are_not_visible(isolate_machine):
     ):
         assert os.environ.get(name) is None
     for name in ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "TASTY_ACCOUNT",
-                 "SPX_SHEETS_CREDENTIALS_JSON"):
+                 "SPX_SHEETS_CREDENTIALS_JSON", "SPX_SHEETS_CREDENTIALS",
+                 "GOOGLE_APPLICATION_CREDENTIALS"):
         assert name not in os.environ, name
 
 
