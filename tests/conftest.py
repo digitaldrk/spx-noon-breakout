@@ -19,13 +19,13 @@ from types import SimpleNamespace
 
 import pytest
 
-#: Variables the Mac and Windows launchers and ``spx_noon.tasty`` read. Cleared
+#: Variables the Mac launchers and ``spx_noon.tasty`` read. Cleared
 #: by prefix, so a credential name added later is covered without an edit here.
 PREFIXES = ("TASTYTRADE_", "SPX_NOON_")
 
 #: The hosted worker's own plain names, from :mod:`spx_noon.service`. Cleared by
 #: exact name: ``DATA`` and ``MODE`` are too common to clear by prefix.
-WORKER_NAMES = ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "TASTY_ACCOUNT")
+WORKER_NAMES = ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "BROKER_ACCOUNT")
 
 #: The Google Sheets credential, in the three forms :mod:`spx_noon.sheetsink`
 #: looks for. A developer shell that exports any of them would otherwise let a
@@ -126,8 +126,9 @@ def isolate_machine(monkeypatch, tmp_path):
     spx_home = tmp_path / "spx-noon-home"
     for folder in (home, cred_dir, spx_home):
         folder.mkdir(parents=True, exist_ok=True)
-    # Path.home() and os.path.expanduser("~") both follow HOME on this Python;
-    # USERPROFILE is the Windows half of the same answer.
+    # Path.home() and os.path.expanduser("~") both follow HOME on this Python.
+    # USERPROFILE is pinned to the same directory so no interpreter or library
+    # that prefers it can reach the real home.
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     # An empty directory, so tasty.cred_dir() finds no .prod_secret or .sb_secret

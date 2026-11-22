@@ -22,7 +22,7 @@ production yourself.
 
    | Variable | What it is |
    | --- | --- |
-   | `TASTY_ACCOUNT` | tastytrade account to trade. Blank only works when the order session has exactly one account. |
+   | `BROKER_ACCOUNT` | tastytrade account to trade. Blank only works when the order session has exactly one account. |
    | `TASTYTRADE_PROD_CLIENT_SECRET` | production OAuth client secret (quotes) |
    | `TASTYTRADE_PROD_REFRESH_TOKEN` | production refresh token (quotes) |
    | `TASTYTRADE_SANDBOX_CLIENT_SECRET` | sandbox OAuth client secret (orders) |
@@ -56,7 +56,7 @@ and need no typing:
 | `MODE` | `live` | `live`, `dry`, `alerts` | `live` transmits; `dry` and `alerts` send nothing |
 | `TASTY_DATA` | `production` | `production`, `sandbox` | the quotes, bars, chain, and greeks host |
 | `TASTY_ORDERS` | `sandbox` | `sandbox`, `production` | the order host. `production` is real money |
-| `TASTY_ACCOUNT` | the file's account | any account id, or blank | blank is the first account on the order session |
+| `BROKER_ACCOUNT` | the file's `broker_account` | any account id, or blank | blank is the first account on the order session |
 
 `broker` in `/data/config.json` names the broker, and the seed ships
 `"broker": "tasty"`. `BROKER` is this worker's override of that one key: the
@@ -77,8 +77,8 @@ These six win over `/data/config.json`. The worker resolves them once at boot,
 writes the result to `/data/state/service-config.json`, and points the session
 and the wrap at that file, so what you set in the dashboard is what trades. Your
 own edits to `/data/config.json` are still read first and are never overwritten.
-The Mac and Windows launchers keep `SPX_NOON_HOME` and `SPX_NOON_CONFIG`. This
-worker does not read them.
+The Mac launchers keep `SPX_NOON_HOME` and `SPX_NOON_CONFIG`. This worker does
+not read them.
 
 A push to `main` deploys itself, but only once the checks are green.
 `autoDeployTrigger: checksPass` in `render.yaml` tells Render to wait for the
@@ -187,7 +187,7 @@ with sandbox data raises a `SafetyError` and the process will not start.
 4. `MODE` is already `live`. Confirm it: `dry` and `alerts` send nothing.
 5. Save, then **Manual Deploy**. Outside 11:45–15:10 ET.
 6. Check the next `boot` line: `ORDERS=api.tastyworks.com` and `REAL MONEY=YES`.
-   The orders now go to the production account in `TASTY_ACCOUNT` with the
+   The orders now go to the production account in `BROKER_ACCOUNT` with the
    production credentials. Going back is the same trip with `sandbox`.
 
 Sandbox orders need the sandbox credential pair; production orders need the
@@ -203,18 +203,18 @@ every worker.
    from the same Dockerfile, and give it its own name (`spx-noon-two`).
 2. Its own disk, mounted at `/data` again. Disks are not shared, and two workers
    must never share one.
-3. Its own secrets: that account's `TASTY_ACCOUNT` and its own credential
-   pairs. A worker only ever trades the account its own `TASTY_ACCOUNT` names.
-   Give it `SPX_SHEETS_CREDENTIALS_JSON` only if it should write the sheet too —
-   two workers writing the same `(Date, High Noon)` row would overwrite each
+3. Its own secrets: that account's `BROKER_ACCOUNT`, its own credential
+   pairs, and `SPX_SHEETS_CREDENTIALS_JSON` only if it should write the sheet.
+   A worker only ever trades the account its own `BROKER_ACCOUNT` names.
+   Two workers writing the same `(Date, High Noon)` row would overwrite each
    other, because the sheet has one row per bot per day and no account column.
 4. The same non-secret variables, same values: `DATA=/data`,
    `PYTHONUNBUFFERED=1`, `BROKER=tasty`, `MODE=live`, `TASTY_DATA=production`,
    `TASTY_ORDERS=sandbox` until you switch that one worker to real money.
 
-One rule: do not run this worker and the Windows or Mac job against the same
-tastytrade account on the same day. They do not see each other's position file,
-so both would take the noon trade.
+One rule: this worker must not share a tastytrade account with another job — a
+second worker, or a local `tasty` config run by hand — on the same day. They do
+not see each other's position file, so both would take the noon trade.
 
 ## Notes
 
@@ -222,5 +222,5 @@ so both would take the noon trade.
   and do not add a web port to "make health checks work": a background worker
   has no health check.
 - Everything outside `/data` is ephemeral and is wiped by every deploy.
-- The Mac and Windows setups are unchanged. `run.sh`, `run_wrap.sh`,
-  `run_session.ps1`, and `deploy/` have nothing to do with this worker.
+- The Mac setup is unchanged. `run.sh`, `run_wrap.sh`, and `deploy/` have
+  nothing to do with this worker.

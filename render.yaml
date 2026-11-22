@@ -4,7 +4,7 @@
 # restart mid-day still sees today's open position. See RENDER.md.
 #
 # Plain variable names, no bot prefix: every bot is configured the same way on
-# Render. The Mac and Windows launchers keep their own SPX_NOON_HOME.
+# Render. The Mac launchers keep their own SPX_NOON_HOME.
 services:
   - type: worker
     name: spx-noon
@@ -40,7 +40,7 @@ services:
         value: sandbox
       # Pasted in the dashboard, never in the repo, the image, or a log line.
       # Blank means the first account on the order session.
-      - key: TASTY_ACCOUNT
+      - key: BROKER_ACCOUNT
         sync: false
       - key: TASTYTRADE_PROD_CLIENT_SECRET
         sync: false

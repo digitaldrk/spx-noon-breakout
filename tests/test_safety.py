@@ -23,12 +23,13 @@ ROOT = Path(__file__).resolve().parent.parent
 LIVE_ACCOUNT = "U7654321"
 
 
-def _live_cfg(port=7496, account=LIVE_ACCOUNT, **extra):
-    return Config(broker="ibkr", mode="live", account=account, port=port, **extra)
+def _live_cfg(ibkr_port=7496, broker_account=LIVE_ACCOUNT, **extra):
+    return Config(broker="ibkr", mode="live", broker_account=broker_account,
+                  ibkr_port=ibkr_port, **extra)
 
 
 def test_examples_are_dry_and_carry_no_secrets():
-    for name in ("config.example.json", "config.windows.example.json"):
+    for name in ("config.example.json", "config.tasty.example.json"):
         text = (ROOT / name).read_text().lower()
         assert "refresh_token" not in text
         assert "app_secret" not in text
@@ -39,18 +40,18 @@ def test_mac_example_names_ibkr_and_is_the_paper_port(tmp_path):
     assert "dry_run" not in (ROOT / "config.example.json").read_text()
     cfg = load_config(ROOT / "config.example.json")          # no broker flag, no override
     assert cfg.broker == "ibkr" and cfg.mode == "dry" and cfg.dry_run is True
-    assert cfg.port == 7497 and cfg.client_id == 41 and not cfg.live and not cfg.paper
+    assert cfg.ibkr_port == 7497 and cfg.ibkr_client_id == 41 and not cfg.live and not cfg.paper
     # the file is the broker, and only the worker's keyword override beats it
     flipped = tmp_path / "config.json"
-    flipped.write_text('{"broker": "tasty", "mode": "dry", "port": 7497}')
+    flipped.write_text('{"broker": "tasty", "mode": "dry", "ibkr_port": 7497}')
     assert load_config(flipped).broker == "tasty"
     assert load_config(flipped, broker="ibkr").broker == "ibkr"
 
 
-def test_windows_example_stays_tasty_and_does_not_send():
-    text = (ROOT / "config.windows.example.json").read_text()
+def test_the_tasty_example_stays_tasty_and_does_not_send():
+    text = (ROOT / "config.tasty.example.json").read_text()
     assert "dry_run" not in text
-    cfg = load_config(ROOT / "config.windows.example.json")
+    cfg = load_config(ROOT / "config.tasty.example.json")
     assert cfg.broker == "tasty" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
     assert cfg.live is False and cfg.real_money is False
@@ -58,20 +59,20 @@ def test_windows_example_stays_tasty_and_does_not_send():
 
 
 def test_mode_sets_dry_run_and_a_file_key_cannot_override(tmp_path):
-    paper = load_config(_write(tmp_path, "paper.json", '{"mode": "paper", "port": 7497}'), broker="ibkr")
+    paper = load_config(_write(tmp_path, "paper.json", '{"mode": "paper", "ibkr_port": 7497}'), broker="ibkr")
     assert paper.mode == "paper" and paper.dry_run is False and paper.sends_orders()
-    alerts = load_config(_write(tmp_path, "alerts.json", '{"mode": "alerts", "port": 7497}'), broker="ibkr")
+    alerts = load_config(_write(tmp_path, "alerts.json", '{"mode": "alerts", "ibkr_port": 7497}'), broker="ibkr")
     assert alerts.mode == "alerts" and alerts.dry_run is True and not alerts.sends_orders()
-    held = load_config(_write(tmp_path, "held.json", '{"mode": "paper", "dry_run": true, "port": 7497}'), broker="ibkr")
+    held = load_config(_write(tmp_path, "held.json", '{"mode": "paper", "dry_run": true, "ibkr_port": 7497}'), broker="ibkr")
     assert held.mode == "paper" and held.dry_run is False and held.sends_orders()
-    blocked = load_config(_write(tmp_path, "blocked.json", '{"mode": "dry", "dry_run": false, "port": 7497}'), broker="ibkr")
+    blocked = load_config(_write(tmp_path, "blocked.json", '{"mode": "dry", "dry_run": false, "ibkr_port": 7497}'), broker="ibkr")
     assert blocked.mode == "dry" and blocked.dry_run is True and not blocked.sends_orders()
-    leftover = load_config(_write(tmp_path, "leftover.json", '{"dry_run": false, "port": 7497}'), broker="ibkr")
+    leftover = load_config(_write(tmp_path, "leftover.json", '{"dry_run": false, "ibkr_port": 7497}'), broker="ibkr")
     assert leftover.mode == "dry" and leftover.dry_run is True and not leftover.sends_orders()
 
-    live = load_config(_write(tmp_path, "live.json", '{"mode": "live", "dry_run": true, "account": "705"}'), broker="tasty")
+    live = load_config(_write(tmp_path, "live.json", '{"mode": "live", "dry_run": true, "broker_account": "705"}'), broker="tasty")
     assert live.mode == "live" and live.dry_run is False and live.sends_orders()
-    quiet = load_config(_write(tmp_path, "quiet.json", '{"mode": "alerts", "dry_run": false, "account": "705"}'), broker="tasty")
+    quiet = load_config(_write(tmp_path, "quiet.json", '{"mode": "alerts", "dry_run": false, "broker_account": "705"}'), broker="tasty")
     assert quiet.mode == "alerts" and quiet.dry_run is True and not quiet.sends_orders()
 
 
@@ -129,7 +130,7 @@ def test_check_dispatches_on_the_config_file_broker(tmp_path, monkeypatch):
     taken = {}
 
     def _ib(cfg, client_id=None):
-        taken["ibkr"] = (cfg.broker, int(cfg.port), client_id)
+        taken["ibkr"] = (cfg.broker, int(cfg.ibkr_port), client_id)
         return 0
 
     def _tasty(argv=None):
@@ -151,7 +152,7 @@ def test_check_fails_closed_without_a_broker_or_on_a_live_port(tmp_path, capsys)
 
     # an IBKR live file reaches the IBKR branch and fails closed before any socket
     live = _broker_file(tmp_path, "check-live", broker="ibkr", mode="live",
-                        port=LIVE_PORTS[0], account=LIVE_ACCOUNT)
+                        ibkr_port=LIVE_PORTS[0], broker_account=LIVE_ACCOUNT)
     assert check_main(["--config", str(live)]) == 2
     assert "not the paper port" in capsys.readouterr().out
     # a tasty file reaches the tastytrade branch, which has no credentials here
@@ -162,7 +163,7 @@ def test_check_fails_closed_without_a_broker_or_on_a_live_port(tmp_path, capsys)
     assert "broker must be set in config.json" in capsys.readouterr().out
 
 
-EXAMPLES = ("config.example.json", "config.windows.example.json", "config.render.example.json")
+EXAMPLES = ("config.example.json", "config.tasty.example.json", "config.render.example.json")
 
 
 def test_every_example_config_stays_on_plan_b():
@@ -173,7 +174,7 @@ def test_every_example_config_stays_on_plan_b():
 
 def test_the_trading_plan_is_b_or_a1_and_is_never_an_environment_knob(monkeypatch, tmp_path):
     def cfg(plan=None):
-        keys = '{"mode": "dry", "port": 7497'
+        keys = '{"mode": "dry", "ibkr_port": 7497'
         keys += "}" if plan is None else f', "plan": {plan}}}'
         return load_config(_write(tmp_path, "plan.json", keys), broker="ibkr")
 
@@ -198,16 +199,16 @@ def test_mac_refuses_live_and_a_non_paper_port():
     with pytest.raises(SafetyError):
         Config(broker="ibkr", mode="live").validate()
     with pytest.raises(SafetyError):
-        Config(broker="ibkr", port=7496).validate()
+        Config(broker="ibkr", ibkr_port=7496).validate()
     with pytest.raises(SafetyError):
-        Config(broker="ibkr", host="1.2.3.4").validate()
+        Config(broker="ibkr", ibkr_host="1.2.3.4").validate()
     paper = Config(broker="ibkr", mode="paper")
     assert paper.paper and paper.sends_orders()
     dry = Config(broker="ibkr", mode="alerts", dry_run=False)
     assert dry.dry_run is True and not dry.sends_orders()
 
 
-def test_windows_live_is_off_unless_asked():
+def test_tasty_live_is_off_unless_asked():
     with pytest.raises(SafetyError, match="broker must be set in config.json"):
         Config().validate()
     live = Config(broker="tasty", mode="live")
@@ -215,7 +216,7 @@ def test_windows_live_is_off_unless_asked():
     assert live.real_money is False
     # an unknown broker is not a broker, whatever the mode says
     with pytest.raises(SafetyError, match="unknown broker 'nope'"):
-        Config(broker="nope", mode="live", account="").validate()
+        Config(broker="nope", mode="live", broker_account="").validate()
     with pytest.raises(SafetyError):
         Config(broker="tasty", mode="paper").validate()
 
@@ -223,38 +224,38 @@ def test_windows_live_is_off_unless_asked():
 def test_ibkr_live_needs_a_set_non_paper_account_in_the_config(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "darwin")
     for account in ("", "   "):
-        with pytest.raises(SafetyError, match="account"):
-            _live_cfg(account=account).validate()
+        with pytest.raises(SafetyError, match="broker_account"):
+            _live_cfg(broker_account=account).validate()
     for account in ("DU123456", "D"):
         with pytest.raises(SafetyError, match="paper account"):
-            _live_cfg(account=account).validate()
+            _live_cfg(broker_account=account).validate()
     # the config file plus the TWS session is the whole switch
     path = _write(tmp_path, "live.json",
-                  '{"mode": "live", "port": 7496, "account": "%s"}' % LIVE_ACCOUNT)
+                  '{"mode": "live", "ibkr_port": 7496, "broker_account": "%s"}' % LIVE_ACCOUNT)
     cfg = load_config(path, broker="ibkr")
     assert cfg.broker == "ibkr" and cfg.mode == "live" and cfg.ibkr_live is True
-    assert cfg.account == LIVE_ACCOUNT and cfg.dry_run is False
+    assert cfg.broker_account == LIVE_ACCOUNT and cfg.dry_run is False
 
 
 def test_ibkr_live_takes_only_the_two_live_ports_on_localhost(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     assert LIVE_PORTS == (7496, 4001)
     for port in LIVE_PORTS:
-        cfg = _live_cfg(port=port)
+        cfg = _live_cfg(ibkr_port=port)
         cfg.validate()
         assert cfg.ibkr_live is True
     for port in (7497, 4002, 0, 7495):
         with pytest.raises(SafetyError, match="live port"):
-            _live_cfg(port=port).validate()
+            _live_cfg(ibkr_port=port).validate()
     for host in ("1.2.3.4", "tws.example.com", ""):
         with pytest.raises(SafetyError, match="localhost"):
-            _live_cfg(host=host).validate()
+            _live_cfg(ibkr_host=host).validate()
 
 
 def test_ibkr_live_sends_but_is_not_the_tasty_live_path(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     for port in LIVE_PORTS:
-        cfg = _live_cfg(port=port)
+        cfg = _live_cfg(ibkr_port=port)
         cfg.validate()
         assert cfg.dry_run is False
         assert cfg.sends_orders() is True
@@ -266,14 +267,14 @@ def test_ibkr_live_sends_but_is_not_the_tasty_live_path(monkeypatch):
 
 def test_paper_stays_on_7497_and_keeps_its_d_account(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
-    Config(broker="ibkr", mode="paper", port=7497).validate()
+    Config(broker="ibkr", mode="paper", ibkr_port=7497).validate()
     for port in (7496, 4001):
         with pytest.raises(SafetyError, match="paper port"):
-            Config(broker="ibkr", mode="paper", port=port).validate()
-    blank = Config(broker="ibkr", mode="paper", account="")
+            Config(broker="ibkr", mode="paper", ibkr_port=port).validate()
+    blank = Config(broker="ibkr", mode="paper", broker_account="")
     blank.validate()
     assert blank.paper and not blank.ibkr_live
-    explicit = Config(broker="ibkr", mode="paper", account="U7654321")
+    explicit = Config(broker="ibkr", mode="paper", broker_account="U7654321")
     explicit.validate()  # validate stays quiet; the account gate is send/verify time
     with pytest.raises(SafetyError):
         paper_send_allowed(explicit, "U7654321", "SPXNOON-20261112-1")
@@ -285,15 +286,15 @@ def test_paper_stays_on_7497_and_keeps_its_d_account(monkeypatch):
 def test_dry_and_alerts_keep_the_paper_port_and_never_send(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     for mode in ("dry", "alerts"):
-        cfg = Config(broker="ibkr", mode=mode, account=LIVE_ACCOUNT, dry_run=False)
+        cfg = Config(broker="ibkr", mode=mode, broker_account=LIVE_ACCOUNT, dry_run=False)
         cfg.validate()
-        assert cfg.port == 7497 and cfg.dry_run is True
+        assert cfg.ibkr_port == 7497 and cfg.dry_run is True
         assert cfg.sends_orders() is False
         assert cfg.ibkr_live is False and cfg.real_money_flag == "NO"
         with pytest.raises(SafetyError):
             send_allowed(cfg, LIVE_ACCOUNT, "SPXNOON-20261112-1")
         with pytest.raises(SafetyError, match="paper port"):
-            Config(broker="ibkr", mode=mode, port=7496).validate()
+            Config(broker="ibkr", mode=mode, ibkr_port=7496).validate()
 
 
 def test_banner_says_real_money_only_for_ibkr_live(monkeypatch):
@@ -302,17 +303,17 @@ def test_banner_says_real_money_only_for_ibkr_live(monkeypatch):
     live.validate()
     assert startup_banner(live, LIVE_ACCOUNT) == \
         "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=7496 REAL MONEY=YES"
-    gateway = _live_cfg(port=4001)
+    gateway = _live_cfg(ibkr_port=4001)
     gateway.validate()
     assert startup_banner(gateway, LIVE_ACCOUNT).endswith("PORT=4001 REAL MONEY=YES")
     assert LIVE_ACCOUNT not in startup_banner(live, LIVE_ACCOUNT)
-    paper = Config(broker="ibkr", mode="paper", account="DU999001")
+    paper = Config(broker="ibkr", mode="paper", broker_account="DU999001")
     assert startup_banner(paper, "DU999001") == \
         "BROKER=ibkr MODE=paper ACCOUNT=9001 PORT=7497 REAL MONEY=NO"
     for mode in ("dry", "alerts"):
-        cfg = Config(broker="ibkr", mode=mode, account="DU999001")
+        cfg = Config(broker="ibkr", mode=mode, broker_account="DU999001")
         assert startup_banner(cfg, "DU999001").endswith("REAL MONEY=NO")
-    tasty = Config(broker="tasty", mode="live", account="705")
+    tasty = Config(broker="tasty", mode="live", broker_account="705")
     assert startup_banner(tasty, "705").endswith("REAL MONEY=NO")
 
 
@@ -323,7 +324,7 @@ def test_ibkr_order_log_lines_carry_the_flag_and_other_brokers_do_not(monkeypatc
     with caplog.at_level("INFO"):
         log_order(live, 20, "working entry %s", "SPXNOON-20261112-1")
         log_order(Config(broker="ibkr", mode="paper"), 20, "working entry %s", "ref")
-        log_order(Config(broker="tasty", mode="live", account="705"), 20, "tasty entry %s", "ref")
+        log_order(Config(broker="tasty", mode="live", broker_account="705"), 20, "tasty entry %s", "ref")
     messages = [record.getMessage() for record in caplog.records]
     assert messages[0] == "working entry SPXNOON-20261112-1 REAL MONEY=YES"
     assert messages[1] == "working entry ref REAL MONEY=NO"
@@ -344,10 +345,10 @@ def test_account_verifier_needs_no_socket(monkeypatch):
         check_accounts(live, [LIVE_ACCOUNT, "DU999001"])
     # a D account in live mode is refused even though validate() would have caught it
     with pytest.raises(SafetyError, match="paper"):
-        check_accounts(_live_cfg(account="DU999001"), ["DU999001"])
-    with pytest.raises(SafetyError, match="account"):
-        check_accounts(_live_cfg(account=""), [LIVE_ACCOUNT])
-    paper = Config(broker="ibkr", mode="paper", account="DU999001")
+        check_accounts(_live_cfg(broker_account="DU999001"), ["DU999001"])
+    with pytest.raises(SafetyError, match="broker_account"):
+        check_accounts(_live_cfg(broker_account=""), [LIVE_ACCOUNT])
+    paper = Config(broker="ibkr", mode="paper", broker_account="DU999001")
     assert check_accounts(paper, ["DU999001"]) == "DU999001"
     with pytest.raises(SafetyError, match="non-paper") as err:
         check_accounts(paper, ["DU999001", "U1111111"])
@@ -368,13 +369,13 @@ def test_live_send_gate(monkeypatch):
     with pytest.raises(SafetyError, match="configured live account"):
         send_allowed(live, "U1111111", "SPXNOON-20261112-1")
     for port in (7497, 4002):
-        off_port = _live_cfg(port=port)
+        off_port = _live_cfg(ibkr_port=port)
         with pytest.raises(SafetyError):
             send_allowed(off_port, LIVE_ACCOUNT, "SPXNOON-20261112-1")
-    off_host = _live_cfg(host="1.2.3.4")
+    off_host = _live_cfg(ibkr_host="1.2.3.4")
     with pytest.raises(SafetyError, match="localhost"):
         send_allowed(off_host, LIVE_ACCOUNT, "SPXNOON-20261112-1")
-    blank = _live_cfg(account="")
+    blank = _live_cfg(broker_account="")
     with pytest.raises(SafetyError, match="account"):
         send_allowed(blank, "", "SPXNOON-20261112-1")
     # a live config that was turned dry after construction cannot send
@@ -430,7 +431,7 @@ def _broker(cfg, accounts):
 def test_connect_dials_the_validated_port_and_verifies_before_trading(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     for port in LIVE_PORTS:
-        cfg = _live_cfg(port=port)
+        cfg = _live_cfg(ibkr_port=port)
         cfg.validate()
         broker = _broker(cfg, [LIVE_ACCOUNT])
         broker.connect()
@@ -509,7 +510,7 @@ def test_an_account_id_never_reaches_a_log_line(monkeypatch, tmp_path):
     root = logging.getLogger()
     root.addHandler(handler)
     try:
-        redact_account(cfg.account)
+        redact_account(cfg.broker_account)
         # ib_async logs the whole order, account included, at INFO on its own logger
         logging.getLogger("ib_async.ib").warning(
             "placeOrder: New order Trade(order=LimitOrder(account=%r))", LIVE_ACCOUNT)
@@ -527,7 +528,7 @@ def test_an_account_id_never_reaches_a_log_line(monkeypatch, tmp_path):
 
 
 def test_paper_send_gate():
-    cfg = Config(broker="ibkr", mode="paper", account="DU123")
+    cfg = Config(broker="ibkr", mode="paper", broker_account="DU123")
     paper_send_allowed(cfg, "DU123", "SPXNOON-20261028-1")
     with pytest.raises(SafetyError):
         paper_send_allowed(Config(broker="ibkr", mode="dry"), "DU123", "SPXNOON-20261028-1")
@@ -683,19 +684,9 @@ def test_run_scripts_override_the_mode_and_the_book_for_one_launch():
         assert "--mode live" not in code and "--book paper" not in code
 
 
-def test_the_windows_launchers_name_no_broker():
-    """``pwsh`` is not on this Mac, so the scripts themselves are the assertion.
-
-    ``config.json`` names the broker, so neither script takes one or passes one.
-    ``-Mode`` is still theirs.
-    """
-    for name in ("run_session.ps1", "run_wrap.ps1"):
-        text = (ROOT / name).read_text()
-        assert "--broker" not in text and "Broker" not in text
-    session = (ROOT / "run_session.ps1").read_text()
-    assert '[ValidateSet("live", "alerts", "dry")][string]$Mode = "dry"' in session
-    assert '"--mode", $Mode' in session
-    for name in ("run_session.ps1", "run_wrap.ps1", "run.sh", "run_wrap.sh"):
+def test_the_mac_launchers_name_no_broker():
+    """``config.json`` names the broker, so neither script takes one or passes one."""
+    for name in ("run.sh", "run_wrap.sh"):
         code = _code_lines((ROOT / name).read_text()).lower()
         for spelling in ("ibkr", "tasty", "broker"):
             assert spelling not in code, (name, spelling)
@@ -703,14 +694,14 @@ def test_the_windows_launchers_name_no_broker():
 
 def test_nothing_takes_a_broker_flag():
     """``config.json`` is the only source, so the flag is gone everywhere."""
-    for folder, pattern in ((ROOT / "spx_noon", "*.py"), (ROOT, "*.sh"), (ROOT, "*.ps1"),
+    for folder, pattern in ((ROOT / "spx_noon", "*.py"), (ROOT, "*.sh"),
                             (ROOT / "deploy", "*")):
         for path in folder.glob(pattern):
             text = path.read_text()
             assert "--broker" not in text, path.name
             assert "-Broker" not in text, path.name
-    for name in ("README.md", "WINDOWS_SETUP.md", "RENDER.md", "config.example.json",
-                 "config.windows.example.json", "config.render.example.json"):
+    for name in ("README.md", "RENDER.md", "config.example.json",
+                 "config.tasty.example.json", "config.render.example.json"):
         text = (ROOT / name).read_text()
         assert "--broker" not in text, name
         assert "-Broker" not in text, name

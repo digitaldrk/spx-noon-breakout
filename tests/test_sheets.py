@@ -479,7 +479,7 @@ def test_a_blocked_socket_is_not_swallowed_into_a_status_line(tmp_path):
 # --------------------------------------------------------------------------
 
 def _wrap_config(tmp_path, **keys):
-    data = {"broker": "ibkr", "port": 7497, "mode": "dry", "base_dir": str(tmp_path)}
+    data = {"broker": "ibkr", "ibkr_port": 7497, "mode": "dry", "base_dir": str(tmp_path)}
     data.update(keys)
     path = Path(tmp_path) / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -593,7 +593,7 @@ def test_the_row_is_the_book_the_wrap_chose_and_never_the_other_one(monkeypatch,
     monkeypatch.setattr("spx_noon.wrap_run.push_sheet",
                         lambda cfg, tab, incoming: sheetsink.push_sheet(
                             cfg, tab, incoming, client=client))
-    path = _wrap_config(tmp_path, mode="live", port=7496, account="U7654321")
+    path = _wrap_config(tmp_path, mode="live", ibkr_port=7496, broker_account="U7654321")
     today = datetime.now(ET).date()
     Outputs(tmp_path / "state", book="paper").append_trade(
         {**CLOSED, "date": today, "pnl": 11.11, "direction": "CALL", "mode": "paper"})
@@ -703,18 +703,16 @@ def test_the_default_spreadsheet_id_is_the_shared_one_and_the_key_is_not_a_confi
 def test_the_docs_and_the_examples_carry_the_path_the_variables_and_the_tab_rule():
     root = Path(__file__).resolve().parent.parent
     default_id = "1tnMlDTidwCYG3_H2Z-lBcIUG5KOX4tgbe8AiRopATsU"
-    for name in ("README.md", "RENDER.md", "WINDOWS_SETUP.md"):
+    for name in ("README.md", "RENDER.md"):
         text = (root / name).read_text()
         assert default_id in text, name
         assert "sheets-service-account.json" in text, name
         assert "Derek Comp" in text and "Tod Comp" in text, name
         assert '".[sheets]"' in text, name
         assert JSON_ENV in text, name
-    for name in ("README.md", "WINDOWS_SETUP.md"):               # the two key-file machines
-        text = (root / name).read_text()
         for variable in ("SPX_SHEETS_CREDENTIALS", "GOOGLE_APPLICATION_CREDENTIALS"):
             assert variable in text, (name, variable)
-    for name in ("config.example.json", "config.windows.example.json",
+    for name in ("config.example.json", "config.tasty.example.json",
                  "config.render.example.json"):
         data = json.loads((root / name).read_text())
         assert data["sheets_spreadsheet_id"] == default_id, name

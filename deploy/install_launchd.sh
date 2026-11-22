@@ -3,8 +3,8 @@
 #
 #   ./install_launchd.sh   com.derek.spxnoon (run.sh) + com.derek.spxnoon.wrap (run_wrap.sh)
 #
-# There is one job. Paper and live are two settings of it: edit "mode", "port", and
-# "account" in config.json and log TWS into that session. This script takes no arguments.
+# There is one job. Paper and live are two settings of it: edit "mode", "ibkr_port",
+# and "broker_account" in config.json and log TWS into that session. This script takes no arguments.
 set -euo pipefail
 if [ "$#" -gt 0 ]; then
   echo "usage: install_launchd.sh   (no arguments; config.json picks paper or live)" >&2

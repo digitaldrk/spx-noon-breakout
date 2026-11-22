@@ -1,22 +1,22 @@
 """Configuration. ``config.json`` names the broker, and nothing else does.
 
 ``broker`` is ``ibkr`` or ``tasty``, and a missing or blank one refuses to load.
-The Mac template says ``ibkr``, the Windows and Render templates say ``tasty``.
+The Mac template says ``ibkr``; the tasty and Render templates say ``tasty``.
 On the hosted worker a non-blank ``BROKER`` overrides the file, through the
 keyword overrides :mod:`spx_noon.service` hands this module.
-Mac runs IBKR TWS. There is one job and one config: ``mode``, ``port``,
-and ``account`` are the switch, together with the TWS session the operator is
-logged into. mode "paper" is 127.0.0.1:7497 with account ids starting with D.
-mode "live" is real money on 127.0.0.1:7496 (TWS) or 4001 (IB Gateway) with an
-``account`` that is set and does not start with D.
-Windows is tastytrade. ``tasty_data`` (default production) and ``tasty_orders``
-(default sandbox) choose the hosts.
+Mac runs IBKR TWS. There is one job and one config: ``mode``, ``ibkr_port``,
+and ``broker_account`` are the switch, together with the TWS session the operator
+is logged into. mode "paper" is 127.0.0.1:7497 with account ids starting with D.
+mode "live" is real money on 127.0.0.1:7496 (TWS) or 4001 (IB Gateway) with a
+``broker_account`` that is set and does not start with D.
+The hosted Render Linux worker is tastytrade. ``tasty_data`` (default
+production) and ``tasty_orders`` (default sandbox) choose the hosts.
 ``tasty_orders=production`` is real money and requires ``tasty_data=production``.
 No field here is an environment knob. ``SPX_NOON_HOME`` fills ``base_dir`` when
 the file has none and ``SPX_NOON_CONFIG`` names the default file; both belong to
-the local Mac and Windows launchers. The hosted worker reads its own plain
-variables in :mod:`spx_noon.service`, resolves them there, and hands its children
-the resolved file.
+the local Mac launchers. The hosted worker reads its own plain variables in
+:mod:`spx_noon.service`, resolves them there, and hands its children the
+resolved file.
 Tastytrade orders auto-approve: no console prompt takes part. mode "dry" (the
 default) and "alerts" never transmit.
 
@@ -104,7 +104,7 @@ def live_account_ok(account) -> tuple[bool, str]:
     """
     want = str(account)
     if not want.strip():
-        return False, "IBKR live needs account set to the live account id"
+        return False, "IBKR live needs broker_account set to the live account id"
     if want.startswith("D"):
         return False, "IBKR live refuses a paper account id (starts with D)"
     return True, ""
@@ -165,7 +165,7 @@ class Config:
     broker: str = ""
     dry_run: bool = True
     mode: str = ""
-    account: str = ""
+    broker_account: str = ""
     tasty_data: str = "production"
     tasty_orders: str = "sandbox"
 
@@ -173,12 +173,12 @@ class Config:
     #: it and refuses anything else. Not an environment knob on any platform.
     plan: str = "B"
 
-    host: str = "127.0.0.1"
-    port: int = PAPER_PORT
-    client_id: int = 41
-    check_client_id: int = 141
-    wrap_client_id: int = 142
-    tws_naive_tz: str = "US/Central"
+    ibkr_host: str = "127.0.0.1"
+    ibkr_port: int = PAPER_PORT
+    ibkr_client_id: int = 41
+    ibkr_check_client_id: int = 141
+    ibkr_wrap_client_id: int = 142
+    ibkr_tws_naive_tz: str = "US/Central"
 
     #: The spreadsheet Candle and Fly already share. The 16:20 wrap upserts one
     #: ``High Noon`` row on it. Not a secret: it is the document id, and the
@@ -193,7 +193,6 @@ class Config:
     max_orders_per_min: int = 10
     min_replace_secs: float = 15.0
     poll_secs: float = 3.0
-    toast: bool = True
     connect_timeout_s: float = 15.0
     connect_retries: int = 6
     base_dir: str = ""
@@ -268,8 +267,9 @@ class Config:
         """IBKR real money. Deliberately not ``live``: it must not take the
         tastytrade preview-and-approve path in the runner.
 
-        ``validate()`` has already accepted the port, the host, and the account
-        for any config that reaches a broker, so this is the mode alone."""
+        ``validate()`` has already accepted ``ibkr_port``, ``ibkr_host``, and
+        ``broker_account`` for any config that reaches a broker, so this is the
+        mode alone."""
         return self.broker == "ibkr" and self.mode == "live" and not self.dry_run
 
     @property
@@ -298,20 +298,22 @@ class Config:
             if self.mode not in ("paper", "live") and not self.dry_run:
                 raise SafetyError("dry_run stays on unless mode is 'paper' or 'live'")
             if self.mode == "live":
-                allowed, why = live_account_ok(self.account)
+                allowed, why = live_account_ok(self.broker_account)
                 if not allowed:
                     raise SafetyError(f"Refusing to run live: {why}")
-                if int(self.port) not in LIVE_PORTS:
+                if int(self.ibkr_port) not in LIVE_PORTS:
                     raise SafetyError(
-                        f"Refusing to run: port {self.port} is not an IBKR live port "
+                        f"Refusing to run: port {self.ibkr_port} is not an IBKR live port "
                         f"{LIVE_PORTS[0]} (TWS) or {LIVE_PORTS[1]} (IB Gateway).")
-            elif int(self.port) != PAPER_PORT:
+            elif int(self.ibkr_port) != PAPER_PORT:
                 raise SafetyError(
-                    f"Refusing to run: port {self.port} is not the IBKR paper port {PAPER_PORT}.")
-            if self.host not in LOCALHOSTS:
-                raise SafetyError(f"Refusing to run: host {self.host!r} is not localhost.")
-            if int(self.wrap_client_id) == int(self.client_id) or int(self.check_client_id) == int(self.client_id):
-                raise SafetyError("check_client_id and wrap_client_id must differ from client_id")
+                    f"Refusing to run: port {self.ibkr_port} is not the IBKR paper port {PAPER_PORT}.")
+            if self.ibkr_host not in LOCALHOSTS:
+                raise SafetyError(f"Refusing to run: host {self.ibkr_host!r} is not localhost.")
+            if int(self.ibkr_wrap_client_id) == int(self.ibkr_client_id) \
+                    or int(self.ibkr_check_client_id) == int(self.ibkr_client_id):
+                raise SafetyError(
+                    "ibkr_check_client_id and ibkr_wrap_client_id must differ from ibkr_client_id")
         elif self.broker == "tasty":
             if self.mode not in ("dry", "alerts", "live"):
                 raise SafetyError(f"tastytrade mode must be dry, alerts, or live (got {self.mode!r})")
@@ -342,7 +344,7 @@ def startup_banner(cfg, account) -> str:
     """
     return (
         f"BROKER={cfg.broker} MODE={cfg.mode} ACCOUNT={account_tail(account)} "
-        f"PORT={int(cfg.port)} REAL MONEY={cfg.real_money_flag}"
+        f"PORT={int(cfg.ibkr_port)} REAL MONEY={cfg.real_money_flag}"
     )
 
 
@@ -366,8 +368,8 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
     :class:`SafetyError`.
     A ``dry_run`` key inside the file is ignored. ``mode`` sets that flag.
     No config field is read from the environment, ``BROKER`` included. ``plan``,
-    ``mode``, ``tasty_data``, ``tasty_orders``, and ``account`` come from the
-    file or from a keyword — there is no ``PLAN`` variable on any platform — and
+    ``mode``, ``tasty_data``, ``tasty_orders``, and ``broker_account`` come from
+    the file or from a keyword — there is no ``PLAN`` variable on any platform — and
     the hosted worker resolves its own plain variables in
     :mod:`spx_noon.service` before its children ever call this.
     """

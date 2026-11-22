@@ -5,13 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spx-noon-breakout"
 version = "1.0.0"
-description = "SPX 0DTE noon breakout (plan v2 version B). Mac: IBKR paper or latched live. Windows: tastytrade."
+description = "SPX 0DTE noon breakout (plan v2 version B). Mac: IBKR paper or latched live. Render Linux: tastytrade."
 requires-python = ">=3.11"
 dependencies = ["ib_async>=2.1.0", "tzdata"]
 
 [project.optional-dependencies]
 test = ["pytest"]
-toast = ["win11toast"]
 tasty = ["tastytrade>=13.2,<14"]
 # Only the 16:20 wrap's sheet row needs these, and only on a machine that has a
 # service-account key. The imports live inside spx_noon.sheetsink's push path,

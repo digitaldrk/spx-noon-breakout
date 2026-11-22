@@ -8,15 +8,15 @@ bounded number of times if it dies badly, and runs the read-only
 early closes, and years with no holiday list are skipped.
 
 Plain variable names, no bot prefix, the same set every bot uses on Render. The
-Mac and Windows launchers keep ``SPX_NOON_HOME`` and ``SPX_NOON_CONFIG``; this
-process reads neither. ``DATA`` is the mounted disk, not the Unix ``HOME``.
+Mac launchers keep ``SPX_NOON_HOME`` and ``SPX_NOON_CONFIG``; this process reads
+neither. ``DATA`` is the mounted disk, not the Unix ``HOME``.
 
   ``DATA``          disk mount, default ``/data``  -> ``base_dir`` for the children
   ``BROKER``        ibkr or tasty; blank or unset leaves the file's broker
   ``MODE``          live (default) | dry | alerts
   ``TASTY_DATA``    production (default) | sandbox
   ``TASTY_ORDERS``  sandbox (default) | production  <- real money, with production data
-  ``TASTY_ACCOUNT`` blank means the first account on the order session
+  ``BROKER_ACCOUNT`` blank means the first account on the order session
 
 Those six win over ``$DATA/config.json``, and the resolved, secret-free result is
 published to ``$DATA/state/service-config.json``, which is the file both children
@@ -44,7 +44,7 @@ from zoneinfo import ZoneInfo
 
 try:  # POSIX only; the hosted worker is Linux
     import fcntl
-except ImportError:  # pragma: no cover - Windows keeps the pid-file gate
+except ImportError:  # pragma: no cover - a non-POSIX host keeps the pid-file gate
     fcntl = None
 
 from . import resume
@@ -122,8 +122,8 @@ def env_overrides(env=None) -> dict:
         value = (env.get(name) or "").strip().lower()
         if value:                        # blank leaves the file's value, then the default
             over[field] = value
-    if "TASTY_ACCOUNT" in env:           # present and blank means the first account
-        over["account"] = (env["TASTY_ACCOUNT"] or "").strip()
+    if "BROKER_ACCOUNT" in env:          # present and blank means the first account
+        over["broker_account"] = (env["BROKER_ACCOUNT"] or "").strip()
     return over
 
 
