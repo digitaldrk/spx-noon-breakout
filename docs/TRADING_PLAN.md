@@ -117,10 +117,9 @@ On a $10,000 account that is **about +75% at fair pricing** (headline), versus a
 9. **Point exit:** sell when the live SPX print is **8 points** through the entry print in the trade direction. There is no premium target and no resting close.
 10. **Hard time exit:** close at market or near bid **two hours after the entry bar's close**, not two hours after the fill timestamp. The backtest exits on the close of the 15m bar that ends at the entry bar's close + 2h (12:00 entry bar → 2:00 PM; a 12:15 entry bar → 2:15 PM). There is **no stop loss**.
 11. **Hard flat at 3:50 PM ET.** A spread still open at **3:50 PM ET** is sold at the spread bid, whatever the two-hour clock did. It is a backstop, not a replacement: it only has anything to do when +8 and the two-hour flat both failed to sell (a rejected order, no bid, a crash). It is always later than the two-hour flat, whose latest deadline in the window is 3:00 PM from a 1:00 PM bar. The 3:50 sell gets three attempts of its own, and after those the bot alerts and sends nothing more.
-12. **Paper mode first.** For every trade, log: date, timestamp, direction, SPX at entry, PDH/PDL, expected move, W, both strikes, both deltas, spread mid, fill price, **slippage versus mid**, exit time, exit reason (`points`, `time`, or `hard_flat`), exit fill, slippage on the exit, and P&L after $0.65 per contract per leg.
-13. **Slippage benchmark:** typical 0DTE fills come in $0.05–$0.15 off mid. Track the average per side. Anything at $0.20 or more erodes the edge, and $0.30 breaks it.
-14. **Review after 30–60 paper sessions** before going live: win rate, profit factor, and average slippage against the backtest (PF 1.41 at fair pricing; 1.48 rich).
-15. **Live orders require Tod's explicit approval.** The code must not send live orders unless Tod has approved going live.
+12. **Slippage benchmark:** typical 0DTE fills come in $0.05–$0.15 off mid. Track the average per side. Anything at $0.20 or more erodes the edge, and $0.30 breaks it.
+13. **Review after 30–60 paper sessions** before going live: win rate, profit factor, and average slippage against the backtest (PF 1.41 at fair pricing; 1.48 rich).
+14. **Live orders require Tod's explicit approval.** The code must not send live orders unless Tod has approved going live.
 
 ---
 
