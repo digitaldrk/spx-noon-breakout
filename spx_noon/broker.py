@@ -29,6 +29,13 @@ class Broker:
     def spx_bars_15m(self, days: int = 5) -> list[Bar]: ...
     def chain_strikes(self, expiry: str) -> list[float] | None: ...
     def ensure_options(self, expiry: str, strikes: list[float]): ...
+    def pin_options(self, expiry: str, legs):
+        """IBKR keeps these ``(strike, right)`` lines until the pins are cleared.
+
+        ``legs`` is ``None`` to clear. This default does nothing, so tastytrade
+        and ``SimBroker`` keep their own quote behavior. The runner calls it for
+        every broker; ``IBBroker`` is what stores the pins.
+        """
     def option_quotes(self) -> dict: ...
     def preview_combo(self, legs, action, qty, limit, tif="DAY") -> dict:
         return {"ok": True, "rejects": [], "warnings": []}

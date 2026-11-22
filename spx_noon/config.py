@@ -204,6 +204,13 @@ class Config:
     chain_band_pts: float = 150.0
     max_option_lines: int = 120
 
+    #: Seconds an IBKR option line stays subscribed after it leaves the wanted
+    #: set. IBKR is the only reader. Not a strategy knob: it stops a line from
+    #: being cancelled and re-requested every loop when the spot moves a little.
+    #: ``0`` drops a line on the call that stops wanting it, which is what the
+    #: tests use so they never have to sleep.
+    option_line_hold_s: float = 60.0
+
     def t(self, name: str) -> time:
         value = getattr(self, name)
         return value if isinstance(value, time) else _t(value)
@@ -332,6 +339,8 @@ class Config:
             raise ValueError("decision_grace_s must be positive")
         if self.chain_band_pts <= 0:
             raise ValueError("chain_band_pts must be positive")
+        if self.option_line_hold_s < 0:
+            raise ValueError("option_line_hold_s cannot be negative")
 
     def to_dict(self) -> dict:
         return asdict(self)

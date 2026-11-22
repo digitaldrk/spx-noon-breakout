@@ -7,12 +7,17 @@ and ``alerts`` connect read-only on 7497 and never send.
 
 Orders carry orderRef SPXNOON-. The bot never modifies an order that does not.
 Entry orders are DAY. The take-profit is GTC, as the plan specifies.
+
+Every call that takes a reqId is counted by caller and summarised every five
+minutes, so a paper log shows the market-data request rate without any account
+id, order ref, or con id in it.
 """
 from __future__ import annotations
 
 import logging
 import math
 from datetime import datetime
+from typing import NamedTuple
 
 from .broker import Broker, to_et
 from .config import (
@@ -28,6 +33,173 @@ from .config import (
 from .strategy import Bar, OptQuote, Px
 
 log = logging.getLogger("spx_noon.ib")
+
+#: How often the request summary goes to the log, in seconds of broker time.
+REQ_LOG_EVERY_S = 300.0
+
+#: Seconds a line stays subscribed after it leaves the wanted set. IBKR passes
+#: ``Config.option_line_hold_s``, which defaults to this. Tastytrade does not.
+OPTION_LINE_HOLD_S = 60.0
+
+
+class Selection(NamedTuple):
+    """What :func:`select_option_lines` decided.
+
+    ``keep`` is the set of lines that should be subscribed once the call is
+    applied; the broker diffs it against what it holds and cancels or requests
+    only the difference. ``undesired_since`` is the hold clock to carry into the
+    next call: one entry per kept line that is outside the wanted set, stamped
+    when it left it.
+    """
+
+    keep: frozenset
+    undesired_since: dict
+
+
+def _spot_or_none(spot):
+    """A spot that may be ranked against, or ``None``. Zero is not a spot."""
+    try:
+        value = float(spot)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
+def _keys(items):
+    return {(float(strike), str(right)) for strike, right in (items or ())}
+
+
+def select_option_lines(candidates, *, spot, now, budget, subscribed_at=(), pinned=(),
+                        hold_s: float = OPTION_LINE_HOLD_S, undesired_since=None) -> Selection:
+    """Decide which IBKR option lines should be subscribed. One line is one ``(strike, right)``.
+
+    Pure: it reads no broker and mutates nothing it is handed. ``IBBroker`` is
+    the only caller. The tests drive it with fixed datetimes.
+
+    ``candidates`` are the lines the caller would like. ``subscribed_at`` is what
+    is subscribed now, as the broker's mapping of key to the time that
+    subscription started; only the keys matter here, because what ages a line out
+    is how long it has been unwanted, not when it was requested. ``pinned`` lines
+    are the legs of an open spread or a working entry: they are kept whatever the
+    spot does and are subscribed ahead of any unpinned line.
+
+    With a usable spot the wanted lines are every pin plus the nearest unpinned
+    candidates, ranked by ``(distance, strike, right)`` so ties do not follow the
+    caller's order, up to ``budget`` lines. A line that leaves the wanted set
+    stays for ``hold_s`` seconds, so a small spot move does not cancel and
+    re-request the edge of the book; while it holds its slot no new unpinned line
+    is requested over ``budget``. After the hold it is dropped once, and the call
+    that drops it may fill the slot with a wanted line.
+
+    With no usable spot — missing, non-finite, or ``<= 0`` — nothing is ranked
+    against 0: every held line stays, and only a missing pin is added, and only
+    while the budget has room.
+    """
+    budget = max(0, int(budget))
+    hold_s = max(0.0, float(hold_s))
+    held = {(float(strike), str(right)) for strike, right in (subscribed_at or ())}
+    pins = _keys(pinned)
+    wanted_pool = _keys(candidates) | pins
+    stamps = dict(undesired_since or {})
+    usable = _spot_or_none(spot)
+    if usable is None:
+        # No ranking without a spot, so nothing is cancelled. A pin that is not
+        # up yet is still worth having, as long as it fits.
+        keep = set(held)
+        for key in sorted(pins - held):
+            if len(keep) >= budget:
+                break
+            keep.add(key)
+        return Selection(frozenset(keep), {k: v for k, v in stamps.items() if k in keep})
+
+    def rank(key):
+        return (abs(key[0] - usable), key[0], key[1])
+
+    pins_ranked = sorted(pins, key=rank)
+    # Every pin first, then the nearest unpinned candidates fill the budget.
+    wanted = set(pins_ranked[:budget])
+    for key in sorted(wanted_pool - pins, key=rank):
+        if len(wanted) >= budget:
+            break
+        wanted.add(key)
+    cold = {key: stamps.get(key, now) for key in held - wanted}
+    holding = {key for key, since in cold.items() if (now - since).total_seconds() < hold_s}
+    keep = set(pins_ranked[:budget])
+    # What is already subscribed keeps its slot ahead of a line that is not: a
+    # line inside its hold window blocks a new unpinned request, not the reverse.
+    for key in sorted((held & wanted) | holding, key=rank):
+        if len(keep) >= budget:
+            break
+        keep.add(key)
+    for key in sorted(wanted - keep, key=rank):
+        if len(keep) >= budget:
+            break
+        keep.add(key)
+    return Selection(frozenset(keep), {key: since for key, since in cold.items() if key in keep})
+
+
+class _ReqMeter:
+    """Counts the IB calls that take a reqId, by caller.
+
+    Only call counts and the length of the window are kept, so the summary line
+    carries no account id, no order ref, and no con id. ``reqMktData`` and
+    ``cancelMktData`` are counted apart, since they are the pair that churned;
+    the other reqId callers are counted together as ``other`` so one line shows
+    the split.
+    """
+
+    #: Every caller tag, in the order the summary prints them.
+    CALLERS = ("ensure_options", "spx", "qualify", "historical", "chain",
+               "contract_details", "open_orders")
+
+    def __init__(self, started, every_s: float = REQ_LOG_EVERY_S):
+        self.started = started
+        self.every_s = float(every_s)
+        self.req: dict[str, int] = {}
+        self.cancel: dict[str, int] = {}
+        self.other: dict[str, int] = {}
+
+    def _book(self, kind: str) -> dict:
+        return {"req": self.req, "cancel": self.cancel, "other": self.other}[kind]
+
+    def count(self, kind: str, caller: str, n: int = 1) -> None:
+        book = self._book(kind)
+        book[caller] = book.get(caller, 0) + int(n)
+
+    def due(self, now) -> bool:
+        return (now - self.started).total_seconds() >= self.every_s
+
+    def summary(self, now) -> str:
+        minutes = max((now - self.started).total_seconds(), 0.0) / 60.0
+        reqs, cancels = sum(self.req.values()), sum(self.cancel.values())
+        others = sum(self.other.values())
+
+        def rate(total: int) -> float:
+            return total / minutes if minutes > 0 else 0.0
+
+        split = []
+        for caller in self.CALLERS:
+            shown = " ".join(
+                f"{label}={self._book(kind).get(caller, 0)}"
+                for kind, label in (("req", "req"), ("cancel", "cancel"), ("other", "calls"))
+                if self._book(kind).get(caller, 0)
+            )
+            split.append(f"{caller} {shown or '0'}")
+        return (f"market data over {minutes:.1f} min: reqMktData {reqs} ({rate(reqs):.1f}/min) "
+                f"cancelMktData {cancels} ({rate(cancels):.1f}/min) other reqIds {others}; "
+                + ", ".join(split))
+
+    def flush(self, now, logger=log) -> str:
+        """Log the window and start a new one."""
+        line = self.summary(now)
+        logger.info("%s", line)
+        self.started = now
+        self.req.clear()
+        self.cancel.clear()
+        self.other.clear()
+        return line
 
 
 def _f(value):
@@ -157,9 +329,51 @@ class IBBroker(Broker):
         self.ib.errorEvent += self._on_error
         self._opt_tickers: dict = {}
         self._opt_contracts: dict = {}
+        #: When each line was requested, and when each held line left the wanted
+        #: set. Both feed :func:`select_option_lines`.
+        self._opt_since: dict = {}
+        self._opt_cold: dict = {}
+        self._opt_pins: set = set()
+        self._opt_pin_expiry = ""
+        self._reqs = _ReqMeter(self.now())
         self._trades: dict = {}
         self.spx = None
         self.verified_account: str | None = None
+
+    def _store(self, name: str) -> dict:
+        """A private dict, created on first use.
+
+        ``tests/test_safety.py`` builds this broker with ``__new__`` and sets only
+        the attributes it needs, so nothing below may assume ``__init__`` ran.
+        """
+        book = getattr(self, name, None)
+        if book is None:
+            book = {}
+            setattr(self, name, book)
+        return book
+
+    def _meter(self) -> _ReqMeter:
+        meter = getattr(self, "_reqs", None)
+        if meter is None:
+            meter = self._reqs = _ReqMeter(self.now())
+        return meter
+
+    def _count(self, kind: str, caller: str, n: int = 1) -> None:
+        """Count ``n`` reqId-taking calls and log the window when it is up."""
+        self._meter().count(kind, caller, n)
+        self._report_requests()
+
+    def _report_requests(self) -> None:
+        """Log the window once five minutes of broker time have gone by.
+
+        Called on every ``ensure_options`` as well as on every count, so a quiet
+        stretch — which is the whole point of this change — still prints its own
+        near-zero line instead of waiting for the next request.
+        """
+        meter = self._meter()
+        now = self.now()
+        if meter.due(now):
+            meter.flush(now, log)
 
     def _on_error(self, reqId, code, msg, contract):
         from .broker import ET
@@ -204,12 +418,22 @@ class IBBroker(Broker):
         except Exception as exc:  # noqa: BLE001
             log.warning("reconnect failed: %s", exc)
             return False
+        # A real reconnect drops TWS's subscriptions, so the local book and its
+        # clocks go with them and start_streams requests SPX again.
         self._opt_tickers.clear()
+        self._store("_opt_since").clear()
+        self._store("_opt_cold").clear()
         self._streams_started = False
         self.start_streams()
         return True
 
     def disconnect(self):
+        meter = getattr(self, "_reqs", None)
+        if meter is not None:
+            try:
+                meter.flush(self.now(), log)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             self.ib.disconnect()
         except Exception:  # noqa: BLE001
@@ -235,10 +459,12 @@ class IBBroker(Broker):
         from ib_async import Index
         if self.spx is None:
             self.spx = Index("SPX", "CBOE", "USD")
+            self._count("other", "qualify")
             self.ib.qualifyContracts(self.spx)
 
     def spx_hours(self):
         self._qualify_spx()
+        self._count("other", "contract_details")
         details = self.ib.reqContractDetails(self.spx)
         if not details:
             return None, None
@@ -249,6 +475,7 @@ class IBBroker(Broker):
         if getattr(self, "_streams_started", False):
             return
         self._qualify_spx()
+        self._count("req", "spx")
         self._spx_t = self.ib.reqMktData(self.spx, "", False, False)
         self._streams_started = True
 
@@ -266,6 +493,7 @@ class IBBroker(Broker):
 
     def spx_bars_15m(self, days: int = 5):
         self._qualify_spx()
+        self._count("other", "historical")
         bars = self.ib.reqHistoricalData(
             self.spx, endDateTime="", durationStr=f"{days} D", barSizeSetting="15 mins",
             whatToShow="TRADES", useRTH=True, formatDate=2, timeout=60)
@@ -279,6 +507,7 @@ class IBBroker(Broker):
 
     def chain_strikes(self, expiry: str):
         self._qualify_spx()
+        self._count("other", "chain")
         chains = self.ib.reqSecDefOptParams("SPX", "", "IND", self.spx.conId)
         for chain in chains:
             if chain.tradingClass == "SPXW" and chain.exchange == "SMART":
@@ -287,8 +516,29 @@ class IBBroker(Broker):
                 return None
         return None
 
+    def pin_options(self, expiry, legs):
+        """Hold these legs until the pins are cleared. ``legs`` is ``None`` to clear.
+
+        The pins belong to one expiry: a pin set for another day is ignored
+        rather than held against today's book.
+        """
+        self._opt_pin_expiry = str(expiry or "")
+        self._opt_pins = {(float(strike), str(right)) for strike, right in (legs or ())}
+
+    def _pins_for(self, expiry) -> set:
+        if str(expiry or "") != str(getattr(self, "_opt_pin_expiry", "") or ""):
+            return set()
+        return set(getattr(self, "_opt_pins", None) or ())
+
     def ensure_options(self, expiry, strikes):
+        """Subscribe the lines the selector wants, cancel only what it dropped.
+
+        A line is requested once and reused. Nothing is cancelled because the
+        spot moved a little, and a pinned leg is never cancelled at all, so the
+        5-second management loop stops opening new request ids.
+        """
         from ib_async import Option
+        pins = self._pins_for(expiry)
         wanted = []
         seen = set()
         for strike in strikes:
@@ -297,6 +547,11 @@ class IBBroker(Broker):
                 if key not in seen:
                     seen.add(key)
                     wanted.append(key)
+        # A pin that is outside the passed band still needs its contract.
+        for key in sorted(pins):
+            if key not in seen:
+                seen.add(key)
+                wanted.append(key)
         missing = [key for key in wanted if key not in self._opt_contracts]
         contracts = [
             Option("SPX", expiry, strike, right, "SMART", multiplier="100", currency="USD",
@@ -304,27 +559,51 @@ class IBBroker(Broker):
             for strike, right in missing
         ]
         if contracts:
+            # qualifyContracts fans out to one reqContractDetails per contract,
+            # so the count is the batch size, not the call.
+            self._count("other", "qualify", len(contracts))
             for contract in self.ib.qualifyContracts(*contracts):
                 if contract is not None and getattr(contract, "conId", 0):
                     self._opt_contracts[(float(contract.strike), contract.right)] = contract
-        spot = self.spx_px().value or 0.0
-        budget = self.cfg.max_option_lines
-
-        def rank(key):
-            return abs(key[0] - spot)
-
-        keep = set(sorted(wanted, key=rank)[:budget])
+        known = self._opt_contracts
+        now = self.now()
+        spot = _f(self.spx_px().value)
+        since = self._store("_opt_since")
+        cold = self._store("_opt_cold")
+        selected = select_option_lines(
+            [key for key in wanted if key in known],
+            spot=spot,
+            now=now,
+            budget=self.cfg.max_option_lines,
+            subscribed_at={key: since.get(key, now) for key in self._opt_tickers},
+            pinned={key for key in pins if key in known or key in self._opt_tickers},
+            hold_s=self.cfg.option_line_hold_s,
+            undesired_since=cold,
+        )
+        keep = selected.keep
+        self._opt_cold = dict(selected.undesired_since)
         for key in list(self._opt_tickers):
-            if key not in keep:
-                self.ib.cancelMktData(self._opt_contracts[key])
-                del self._opt_tickers[key]
-        for key in sorted(keep, key=rank):
+            if key in keep:
+                continue
+            contract = known.get(key)
+            if contract is not None:
+                self._count("cancel", "ensure_options")
+                self.ib.cancelMktData(contract)
+            del self._opt_tickers[key]
+            since.pop(key, None)
+        # Nearest first, as before: on a slow TWS the money strikes arrive first.
+        nearest = (lambda key: (abs(key[0] - spot), key[0], key[1])) if spot and spot > 0 \
+            else (lambda key: (0.0, key[0], key[1]))
+        for key in sorted(keep, key=nearest):
             if key in self._opt_tickers:
                 continue
-            contract = self._opt_contracts.get(key)
+            contract = known.get(key)
             if contract is None:
                 continue
+            self._count("req", "ensure_options")
             self._opt_tickers[key] = self.ib.reqMktData(contract, "", False, False)
+            since[key] = now
+        self._report_requests()
 
     def option_quotes(self):
         out = {}
@@ -388,6 +667,7 @@ class IBBroker(Broker):
     def order_state(self, handle):
         trade = self._trades.get(handle)
         if trade is None:
+            self._count("other", "open_orders")
             for candidate in list(self.ib.trades()) + list(self.ib.reqAllOpenOrders()):
                 if self._matches(candidate, handle):
                     trade = self._trades[handle] = candidate
@@ -412,6 +692,7 @@ class IBBroker(Broker):
 
     def own_open_orders(self):
         out = []
+        self._count("other", "open_orders")
         for trade in self.ib.reqAllOpenOrders():
             if not self._is_own(trade) or trade.isDone():
                 continue

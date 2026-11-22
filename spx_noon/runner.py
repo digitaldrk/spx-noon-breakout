@@ -219,18 +219,55 @@ def _await_terminal(broker, order_id, seconds: float):
     return status
 
 
-def _ensure_position_quotes(cfg, broker, pos: dict) -> None:
+def _pos_expiry(pos: dict) -> str:
     entry = pos.get("entry_close")
     if isinstance(entry, datetime):
-        expiry = entry.strftime("%Y%m%d")
-    else:
-        expiry = str(pos.get("date") or "").replace("-", "")
+        return entry.strftime("%Y%m%d")
+    return str(pos.get("date") or "").replace("-", "")
+
+
+def _leg_keys(pos: dict) -> list[tuple[float, str]]:
+    """The spread's two lines, as the broker keys them: ``(strike, right)``."""
+    right = str(pos.get("right") or "")
+    return [(float(pos["long_strike"]), right), (float(pos["short_strike"]), right)]
+
+
+def _pin_spread(broker, expiry: str, pos: dict) -> None:
+    """Pin the legs of the open spread, or of the working entry, for this expiry."""
+    pin = getattr(broker, "pin_options", None)
+    if not callable(pin):
+        return
+    try:
+        pin(expiry, _leg_keys(pos))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not pin the spread's legs: %s", exc)
+
+
+def _clear_pins(broker) -> None:
+    """Nothing is held any more: the spread is flat and no entry is working."""
+    pin = getattr(broker, "pin_options", None)
+    if not callable(pin):
+        return
+    try:
+        pin("", None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not clear the option pins: %s", exc)
+
+
+def _ensure_position_quotes(cfg, broker, pos: dict) -> None:
+    """Keep the open spread's two lines subscribed. One call, and it never shrinks.
+
+    The legs are pinned first, so ``ensure_options`` holds them whatever the spot
+    does and whatever band a decision-window call asks for. The band itself is
+    ``_subscribe``'s job, on the decision path only: refreshing it here is what
+    cancelled and re-requested the whole book every five seconds.
+    """
+    expiry = _pos_expiry(pos)
     if not expiry:
         return
-    spot = float(pos.get("spx") or pos["long_strike"])
     try:
-        _subscribe(cfg, broker, spot, expiry)
-        broker.ensure_options(expiry, [float(pos["long_strike"]), float(pos["short_strike"])])
+        _pin_spread(broker, expiry, pos)
+        broker.ensure_options(expiry, [strike for strike, _right in _leg_keys(pos)])
     except Exception as exc:  # noqa: BLE001
         log.warning("could not subscribe the open spread: %s", exc)
 
@@ -476,6 +513,9 @@ def _record_exit(cfg, broker, notifier, out: Outputs, state: _State, exit_fill: 
         f"exit {exit_fill:.2f}  pnl {pnl:.2f} after fees {fees:.2f}",
     )
     state.position = None
+    # Flat, and nothing is working: the legs stop being held.
+    if state.working is None:
+        _clear_pins(broker)
 
 
 def _flatten(cfg, broker, notifier, out, state, reason: str, prices: dict | None) -> bool:
@@ -636,6 +676,7 @@ def _poll_working(cfg, broker, notifier, out, state: _State) -> None:
     out.append_trade(_row_from_plan(working["order_plan"], cfg.mode, "skip_no_fill"))
     notifier.alert("Noon no fill", f"entry {working['ref']} cancelled unfilled. Not chasing.")
     state.working = None
+    _clear_pins(broker)
     resume.mark_closed(cfg.state_dir, live=cfg.ibkr_live)
 
 
@@ -779,6 +820,9 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
         working["order_plan"] = plan
         working["cancel_after"] = _next_decision(close_at, grace)
         state.working = working
+        # The entry is working, so its legs are held from here until the spread is
+        # flat and nothing is working again.
+        _pin_spread(broker, expiry, working)
         # ``order_plan`` is the OrderPlan object; the saved file keeps the plan name.
         _persist(cfg, {k: v for k, v in working.items() if k != "order_plan"})
         log_order(cfg, logging.INFO, "working entry %s limit %.2f", ref, plan.limit)
@@ -842,6 +886,8 @@ def _load_saved(cfg, broker, state: _State, saved: dict) -> None:
             pos["id"] = order_id
             pos["order_plan"] = _plan_shim(pos)
             state.working = pos
+            # The restored entry is still working, so its legs are held again.
+            _pin_spread(broker, _pos_expiry(pos), pos)
             return
         resume.mark_closed(cfg.state_dir, live=cfg.ibkr_live)
         return
