@@ -439,7 +439,6 @@ def _open_position(cfg, broker, notifier, state: _State, working: dict, fill: fl
         "Noon filled",
         f"{pos['direction']} filled {fill:.2f} (mid was {plan.mid:.2f}). "
         f"{parked}. Flat at {pos['deadline']:%H:%M} ET. No stop.",
-        toast=cfg.mode != "dry",
     )
 
 
@@ -474,7 +473,6 @@ def _record_exit(cfg, broker, notifier, out: Outputs, state: _State, exit_fill: 
     notifier.alert(
         f"Noon exit {reason}",
         f"exit {exit_fill:.2f}  pnl {pnl:.2f} after fees {fees:.2f}",
-        toast=cfg.mode != "dry",
     )
     state.position = None
 
@@ -487,7 +485,6 @@ def _flatten(cfg, broker, notifier, out, state, reason: str, prices: dict | None
             notifier.alert(
                 "Noon flatten stuck",
                 "three exit attempts failed; no further sells. Close the spread by hand.",
-                toast=True,
             )
             try:
                 _persist(cfg, pos)
@@ -511,7 +508,7 @@ def _flatten(cfg, broker, notifier, out, state, reason: str, prices: dict | None
             return False
         if not pos.get("flat_alerted"):
             pos["flat_alerted"] = True
-            notifier.alert("Noon flatten", "no positive bid at the deadline; one last 0.05 sell", toast=True)
+            notifier.alert("Noon flatten", "no positive bid at the deadline; one last 0.05 sell")
         limit = 0.05
     else:
         limit = max(0.05, floor_tick(bid))
@@ -636,7 +633,7 @@ def _poll_working(cfg, broker, notifier, out, state: _State) -> None:
                   "entry %s still working after cancel; keeping it", working["id"])
         return
     out.append_trade(_row_from_plan(working["order_plan"], cfg.mode, "skip_no_fill"))
-    notifier.alert("Noon no fill", f"entry {working['ref']} cancelled unfilled. Not chasing.", toast=False)
+    notifier.alert("Noon no fill", f"entry {working['ref']} cancelled unfilled. Not chasing.")
     state.working = None
     resume.mark_closed(cfg.state_dir, live=cfg.ibkr_live)
 
@@ -694,7 +691,6 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
                     "Noon skip",
                     f"plan A1: the 10:15–11:00 window already broke "
                     f"({close_time(broke):%H:%M} close {broke.c:.2f}). No trade today.",
-                    toast=False,
                 )
                 return
         breakout = qualifies(bar, today, pdh, pdl, cfg.plan)
@@ -728,7 +724,6 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
             notifier.alert(
                 "Noon skip",
                 f"slippage {plan.slippage_per_side:.3f}/side is over 0.20. Not chasing.",
-                toast=False,
             )
             continue
         if not cfg.sends_orders():
@@ -736,7 +731,6 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
             notifier.alert(
                 "Noon signal (not sent)",
                 _ticket_text(plan, broker=cfg.broker, plan_name=cfg.plan),
-                toast=cfg.mode == "alerts",
             )
             state.done_for_day = True
             return
@@ -755,12 +749,12 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
                 continue
             if broker.now() > close_at + grace:
                 out.append_trade(_row_from_plan(plan, cfg.mode, "skip_stale"))
-                notifier.alert("Noon skipped", f"{ticket} decision window closed", toast=False)
+                notifier.alert("Noon skipped", f"{ticket} decision window closed")
                 continue
             fresh = _revalidate(cfg, broker, breakout, float(spot), expiry)
             if fresh is None or fresh.skip:
                 out.append_trade(_row_from_plan(plan, cfg.mode, "skip_stale"))
-                notifier.alert("Noon skipped", f"{ticket} quotes moved or went stale", toast=False)
+                notifier.alert("Noon skipped", f"{ticket} quotes moved or went stale")
                 continue
             plan = fresh
             broker.approve_ticket(ticket, plan.limit)
@@ -841,7 +835,7 @@ def _load_saved(cfg, broker, state: _State, saved: dict) -> None:
                 "ticket": pos.get("ticket"),
                 "id": order_id,
             }
-            _open_position(cfg, broker, Notifier(cfg.home / "logs", toast=False), state, dummy, status["avg_price"])
+            _open_position(cfg, broker, Notifier(cfg.home / "logs"), state, dummy, status["avg_price"])
             return
         if status and not status.get("done"):
             pos["id"] = order_id
@@ -929,7 +923,7 @@ def _write_report(cfg, out: Outputs, day, calendar_status, plan: str | None = No
 def run_session(cfg, broker, notifier=None) -> int:
     cfg.validate()
     cfg.ensure_dirs()
-    notifier = notifier or Notifier(cfg.home / "logs", toast=cfg.toast and cfg.mode == "live")
+    notifier = notifier or Notifier(cfg.home / "logs")
     out = Outputs(cfg.state_dir, book="live" if cfg.ibkr_live else "paper")
     _connect(cfg, broker)
     try:
@@ -944,7 +938,7 @@ def run_session(cfg, broker, notifier=None) -> int:
         calendar_status = trading_day_status(day, hours, tz)
         out.write_status(day, {"calendar": calendar_status, "mode": cfg.mode, "broker": cfg.broker})
         if not calendar_status["trade_allowed"]:
-            notifier.alert("Noon flat", f"{day} is {calendar_status['status']}. No trade.", toast=False)
+            notifier.alert("Noon flat", f"{day} is {calendar_status['status']}. No trade.")
             _write_report(cfg, out, day, calendar_status)
             return 0
         starter = getattr(broker, "start_streams", None)

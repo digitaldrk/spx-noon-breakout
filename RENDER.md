@@ -70,8 +70,8 @@ These six win over `/data/config.json`. The worker resolves them once at boot,
 writes the result to `/data/state/service-config.json`, and points the session
 and the wrap at that file, so what you set in the dashboard is what trades. Your
 own edits to `/data/config.json` are still read first and are never overwritten.
-The Mac and Windows launchers keep `SPX_NOON_HOME` and `SPX_NOON_CONFIG`. This
-worker does not read them.
+The Mac launchers keep `SPX_NOON_HOME` and `SPX_NOON_CONFIG`. This worker does
+not read them.
 
 A push to `main` deploys itself, but only once the checks are green.
 `autoDeployTrigger: checksPass` in `render.yaml` tells Render to wait for the
@@ -168,9 +168,9 @@ every worker.
    `PYTHONUNBUFFERED=1`, `BROKER=tasty`, `MODE=live`, `TASTY_DATA=production`,
    `TASTY_ORDERS=sandbox` until you switch that one worker to real money.
 
-One rule: do not run this worker and the Windows or Mac job against the same
-tastytrade account on the same day. They do not see each other's position file,
-so both would take the noon trade.
+One rule: this worker must not share a tastytrade account with another job — a
+second worker, or a local `tasty` config run by hand — on the same day. They do
+not see each other's position file, so both would take the noon trade.
 
 ## Notes
 
@@ -178,5 +178,5 @@ so both would take the noon trade.
   and do not add a web port to "make health checks work": a background worker
   has no health check.
 - Everything outside `/data` is ephemeral and is wiped by every deploy.
-- The Mac and Windows setups are unchanged. `run.sh`, `run_wrap.sh`,
-  `run_session.ps1`, and `deploy/` have nothing to do with this worker.
+- The Mac setup is unchanged. `run.sh`, `run_wrap.sh`, and `deploy/` have
+  nothing to do with this worker.

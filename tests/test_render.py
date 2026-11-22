@@ -35,8 +35,8 @@ PLAIN_NAMES = ("DATA", "PYTHONUNBUFFERED", "BROKER", "MODE", "TASTY_DATA", "TAST
 
 MONDAY = date(2026, 11, 16)
 
-#: flock, SIGKILL, and a child that can ignore SIGTERM. The worker runs on Linux;
-#: on Windows spx_noon is the launcher in run_session.ps1, not this.
+#: flock, SIGKILL, and a child that can ignore SIGTERM. Both supported hosts are
+#: POSIX (Mac and the Render Linux worker); the skip keeps the gate honest.
 posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX flock and signals")
 
 
@@ -85,7 +85,7 @@ def test_the_file_names_the_broker_on_every_platform(monkeypatch, tmp_path):
     for i, value in enumerate(("", "   ")):
         blanks.append(_write(tmp_path / f"blank{i}", "config.json",
                              {"broker": value, "mode": "dry"}))
-    for platform in ("linux", "darwin", "win32"):
+    for platform in ("linux", "darwin"):
         monkeypatch.setattr(sys, "platform", platform)
         monkeypatch.setenv("BROKER", "ibkr")       # load_config reads no variable of its own
         assert load_config(path).broker == "tasty"
@@ -107,7 +107,7 @@ def test_the_file_names_the_broker_on_every_platform(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------
 
 def test_the_defaults_are_the_disk_live_mode_and_sandbox_orders(tmp_path):
-    base = _disk(tmp_path, toast=False)
+    base = _disk(tmp_path)
     cfg = service.build_config(base / "config.json", _env(base))
     assert cfg.broker == "tasty" and cfg.mode == "live" and cfg.dry_run is False
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
@@ -190,7 +190,7 @@ def test_real_money_needs_production_data_production_orders_and_live_mode(tmp_pa
 
 
 def test_the_launcher_names_are_not_worker_settings(tmp_path):
-    """SPX_NOON_* belongs to the Mac and Windows launchers. The worker does not read it."""
+    """SPX_NOON_* belongs to the Mac launchers. The worker does not read it."""
     base = _disk(tmp_path, mode="dry")
     env = _env(base, BROKER="tasty", MODE="live", TASTY_DATA="production",
                TASTY_ORDERS="sandbox", TASTY_ACCOUNT="mine",
@@ -209,7 +209,6 @@ def test_the_workers_list_of_variables_is_closed(tmp_path):
         "HOST": "1.2.3.4",
         "ACCOUNT": "U7654321",
         "DRY_RUN": "0",
-        "TOAST": "1",
         "SPX_NOON_CONFIG": str(tmp_path / "nowhere.json"),
     }
     env = {**noise, **_env(base)}
@@ -575,7 +574,7 @@ def test_a_session_child_keeps_the_lock_when_its_supervisor_is_killed(tmp_path):
 
 
 def test_without_flock_an_existing_lock_file_is_refused(tmp_path, monkeypatch):
-    """Windows has no flock, so creating the file is the only atomic step."""
+    """Without flock, creating the file is the only atomic step."""
     monkeypatch.setattr(service, "fcntl", None)
     path = tmp_path / service.LOCK_NAME
     mine = service.Lock(path)
@@ -596,7 +595,7 @@ def test_without_flock_an_existing_lock_file_is_refused(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 
 def _cfg(tmp_path, **extra):
-    data = dict(broker="tasty", mode="live", account="705", base_dir=str(tmp_path), toast=False)
+    data = dict(broker="tasty", mode="live", account="705", base_dir=str(tmp_path))
     data.update(extra)
     cfg = Config(**data)
     cfg.validate()
@@ -1143,13 +1142,13 @@ def test_the_docs_use_the_new_names_for_the_worker():
     assert "$DATA/config.json" in seed and "SPX_NOON" not in seed
 
 
-def test_the_worker_left_no_trace_in_the_mac_and_windows_launchers():
+def test_the_worker_left_no_trace_in_the_mac_launchers():
     """The hosted worker is its own entrypoint; the launchers keep their own job.
 
     What those scripts do is pinned by the launcher and launchd tests in
     test_safety.py. This one is only about the worker not reaching into them.
     """
-    for name in ("run.sh", "run_wrap.sh", "run_session.ps1"):
+    for name in ("run.sh", "run_wrap.sh"):
         text = (ROOT / name).read_text().lower()
         for word in ("render", "docker", "spx_noon.service", "/data"):
             assert word not in text

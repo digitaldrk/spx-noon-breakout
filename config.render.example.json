@@ -6,7 +6,6 @@
   "tasty_data": "production",
   "tasty_orders": "sandbox",
   "account": "",
-  "toast": false,
   "start_not_before": "11:45:00",
   "decision_grace_s": 90,
   "loop_interval_s": 5,

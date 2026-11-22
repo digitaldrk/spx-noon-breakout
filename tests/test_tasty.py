@@ -383,7 +383,7 @@ def test_tasty_live_auto_approves_without_a_prompt(tmp_path):
     state = _State()
     # _maybe_enter takes no approver: there is nothing a human could be asked
     _maybe_enter(
-        cfg, broker, Notifier(tmp_path / "logs", toast=False),
+        cfg, broker, Notifier(tmp_path / "logs"),
         Outputs(cfg.state_dir), state, "5WT12345", [noon],
     )
     buys = [order for order in broker.placed if order["action"] == "BUY"]
