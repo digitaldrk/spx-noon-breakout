@@ -477,7 +477,7 @@ def test_flatten_stops_after_three_failed_attempts(tmp_path):
     }
     state = _State()
     state.position = pos
-    notifier = Notifier(tmp_path / "logs", toast=False)
+    notifier = Notifier(tmp_path / "logs")
     out = Outputs(cfg.state_dir)
     for _ in range(3):
         assert _flatten(cfg, broker, notifier, out, state, "time", {"close_bid": 12.0}) is False
@@ -720,7 +720,7 @@ def test_a_triggered_a1_point_exit_is_not_forgotten_when_the_print_comes_back(tm
     pos["deadline"] = TWO
     pos["legs"] = [tuple(leg) for leg in pos["legs"]]
     state.position = pos
-    notifier = Notifier(tmp_path / "logs", toast=False)
+    notifier = Notifier(tmp_path / "logs")
     out = Outputs(cfg.state_dir)
     assert _manage_position(cfg, broker, notifier, out, state) is False
     assert pos["points_hit"] is True
@@ -748,7 +748,7 @@ def test_a_triggered_a1_point_exit_survives_a_restart(tmp_path):
     state = _State(position=pos, plan="A1")
     # +8 is reached while there is no quote to sell against: nothing can be sent
     broker = _Drift(ONE, [], {}, spot=7008)
-    notifier = Notifier(tmp_path / "logs", toast=False)
+    notifier = Notifier(tmp_path / "logs")
     assert _manage_position(cfg, broker, notifier, Outputs(cfg.state_dir), state) is False
     assert broker.placed == []
     assert json.loads((cfg.state_dir / "own_position.json").read_text())["points_hit"] is True

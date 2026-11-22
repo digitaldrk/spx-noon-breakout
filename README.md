@@ -40,7 +40,7 @@ The delta, the width, the $0.20 skip, the +30% target, A1's 8 points, and the tw
 | `tasty_orders` | `sandbox` | Order host. `production` is real money and requires `tasty_data=production`. Startup prints `DATA=<host> ORDERS=<host> REAL MONEY=YES/NO`. |
 | `host`, `port`, `client_id` | `127.0.0.1`, `7497`, `41` | Mac TWS. Host must be localhost. Port must be 7497 for `dry`, `alerts`, and `paper`, or 7496/4001 for `live`. Client 41 leaves Candle (77) and Fly (31) alone. |
 | `account` | `""` | Mac paper: paper account id (starts with `D`); blank uses the first account TWS shows, which must also start with `D`. Mac live: the live account id, required, must not start with `D`, and TWS must report it. Tastytrade: blank uses the only order-session account. |
-| `base_dir` | `~/Documents/spx-noon-breakout`; left out of the tasty and Render examples | State, logs, and reports. Left out, `SPX_NOON_HOME` fills it, and the hosted worker uses `DATA`. Tastytrade order ids go in `state/tt_orders-<date>.json`. |
+| `base_dir` | `~/Documents/spx-noon-breakout`; left out of the tasty and Render examples | State, logs, and reports. Left out, `SPX_NOON_HOME` fills it, then the code default (`~/Documents/spx-noon-breakout` for `ibkr`, `~/spx-noon-breakout` for `tasty`); the hosted worker uses `DATA`. Tastytrade order ids go in `state/tt_orders-<date>.json`. |
 
 ## IBKR live mode (real money)
 
