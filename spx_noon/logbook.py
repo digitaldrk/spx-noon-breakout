@@ -1,4 +1,4 @@
-"""Trade log. One row per attempt, with every field from plan §8.11 on a completed trade."""
+"""Trade log. One row per attempt, with the fields a completed trade records."""
 from __future__ import annotations
 
 import csv

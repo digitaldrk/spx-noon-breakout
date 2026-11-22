@@ -1,15 +1,15 @@
 # Noon Breakout Plan v2 — 2026-10-28
 
-The bot implements **plan A1** (section 10) by default, and **version B** (section 1 and the checklist in section 8) when `config.json` says `"plan": "B"`. A missing `plan` key is A1. One code base runs both; nothing is forked. Sections 1 through 8 below are version B's rules and the research behind them, and they stay as written — they describe what `"plan": "B"` selects, not what the bot runs by default. The original version A of this note — 70 delta, +17% target — is recorded in section 1 and is still not coded. Candle Boy is a different repo.
+The bot trades one strategy: the first noon-window close beyond the prior day's high or low, an 80-delta debit, a skip when 10:15–11:00 already broke those levels, and an exit at +8 SPX points or two hours, whichever comes first. Section 10 is that strategy. Sections 1 through 8 are the October 2026 research note on a 75-delta debit with a 30% premium target. That study is not a second strategy and the bot does not trade it. Candle Boy is a different repo.
 
 
 *Sources: `filter-backtests-2026-10-28.md`, `filter-bt/stress/stress_out.md`, `filter-bt/noon_B_trades_k0.6.csv` and `filter-bt/noon_B_trades_k0.42.csv`. Sample: 181 SPX sessions, 2026-02-09 to 2026-10-27, 118 trades. Two pricing levels: **fair** = 0.42× VIX (**the default scenario used throughout**) and **rich** = 0.6× VIX (secondary reference). Read-only research. No bot code was changed.*
 
-> **Bottom line (this 2026-10-28 research note's recommendation, which is version B's case, not the bot's current default):** Run version **B** (75-delta vertical, +30% target, flat 2h after entry, no stop) on **paper first**, with real option chains, and log every fill against mid. At fair pricing: 118 trades, 69% win rate, net **+$7,492** (PF 1.41, about $63 per trade), or **about +75% on $10k** before real slippage. It passed every stress test until slippage reached $0.30 a side.
+> **Bottom line of this 2026-10-28 research note:** it studied a 75-delta vertical with a +30% premium target, flat 2h after entry, and no stop. At fair pricing: 118 trades, 69% win rate, net **+$7,492** (PF 1.41, about $63 per trade), or **about +75% on $10k** before real slippage. It passed every stress test until slippage reached $0.30 a side. The bot does not trade that study. Section 10 is what it trades.
 
 ---
 
-## 1. Strategy to run (version B — what `"plan": "B"` selects)
+## 1. October 2026 research note (75 delta, +30% premium target)
 
 | Rule | Setting |
 |---|---|
@@ -102,9 +102,9 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
 
 ---
 
-## 8. Implementation checklist (version B — for Derek)
+## 8. Implementation checklist
 
-*Version B's spec, which is what `"plan": "B"` selects; the bot's default is plan A1 in section 10, and steps 3, 5, and 9 are the three the default changes. A step-by-step spec you can code by hand, with AI, or in Cursor. Steps 2–4 follow the backtest code exactly (`filter-bt/noon.py` `gen()`/`sim2()`, helpers in `bt.py`, `win.py`, `loss.py`). Times are ET.*
+*What the bot trades. Times are ET. The October research note's 75-delta and +30% premium target are not in this checklist.*
 
 1. **Data needed**
     - SPX 15-minute RTH bars (9:30–16:00 ET, open/high/low/close), live intraday plus the prior session.
@@ -112,19 +112,17 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
     - 0DTE SPX option chain with bid, ask, mid and delta.
     - VIX (live) or the 0DTE ATM straddle, for the expected move. The backtest used EM = the price of the ATM straddle (strike = spot rounded to 5) at entry.
 2. **Entry window.** Check the 15m bars that close at **12:00, 12:15, 12:30, 12:45 and 1:00 PM**. Take the first bar that qualifies. Most entries (100/118) came on the 12:00 close; the rest came on the later closes. If the NYSE list or the broker hours say the day is closed or an early close, do not trade. A 1:00 PM early close runs into this window.
-3. **Breakout rule.** Check calls first, then puts. A bar qualifies for **calls** when all three of these are true (mirror everything for puts, using PDL and "below"):
-    - a. At least one 15m close earlier today, from 9:45 on, was above PDH. The first such bar is the **trigger bar**. It can be in the morning.
-    - b. This bar's close is still above PDH.
-    - c. This bar's close is above the trigger bar's **low** (trigger bar's high for puts).
+3. **Breakout rule.** Check calls first, then puts. A bar qualifies for **calls** when its close is above PDH, and for **puts** when its close is below PDL. That close is the whole signal. No earlier bar is required. A fresh break on the window bar itself qualifies. Beyond is strict: a close equal to the level does not qualify.
     - *No moving-average check.* The backtest's 20-period EMA gate was tested on vs. off: identical 118 trades, same days, same results (PF 1.48 rich / 1.41 fair, same drawdowns). Only 4 closes ever failed it and none changed an entry. Dropped to simplify the code.
+    - **Morning skip.** If any 15-minute close from 10:15 through 11:00 ET was already beyond PDH or PDL, skip the day. A 9:45 break does not, by itself, skip the day.
 4. **Max 1 trade per day.** Stop checking for the day after one entry.
-5. **Long leg:** the strike whose delta is nearest **0.75** (in the money), in 5-point strikes.
+5. **Long leg:** the strike whose delta is nearest **0.80** (in the money), in 5-point strikes.
 6. **Short leg:** W = max(10, floor(expected_move / 5) × 5) points further out of the money (long + W for calls, long − W for puts).
 7. **Size:** 1 spread on a $10,000 account.
 8. **Order:** a limit order for the debit spread at **mid**. If the fill would be **more than $0.20 per side worse than mid**, skip the trade. Do not chase. (The backtest breaks at $0.30 a side.)
-9. **Target exit:** right after the fill, place a GTC closing limit at **debit × 1.30**. Exit when the spread **bid ≥ debit × 1.30**.
+9. **Point exit:** sell when the live SPX print is **8 points** through the entry print in the trade direction. There is no premium target and no resting close.
 10. **Hard time exit:** close at market or near bid **2 hours after entry**. The backtest exits on the close of the 15m bar that ends at entry + 2h (12:00 entry → 2:00 PM). There is **no stop loss**.
-11. **Paper mode first.** For every trade, log: date, timestamp, direction, SPX at entry, PDH/PDL, expected move, W, both strikes, both deltas, spread mid, fill price, **slippage versus mid**, exit time, exit reason (target or time), exit fill, slippage on the exit, and P&L after $0.65 per contract per leg.
+11. **Paper mode first.** For every trade, log: date, timestamp, direction, SPX at entry, PDH/PDL, expected move, W, both strikes, both deltas, spread mid, fill price, **slippage versus mid**, exit time, exit reason (`points` or `time`), exit fill, slippage on the exit, and P&L after $0.65 per contract per leg.
 12. **Slippage benchmark:** typical 0DTE fills come in $0.05–$0.15 off mid. Track the average per side. Anything at $0.20 or more erodes the edge, and $0.30 breaks it.
 13. **Review after 30–60 paper sessions** before going live: win rate, profit factor, and average slippage against the backtest (PF 1.41 at fair pricing; 1.48 rich).
 14. **Live orders require Tod's explicit approval.** The code must not send live orders unless Tod has approved going live.
@@ -162,15 +160,11 @@ logged into paper. No environment variable takes part in either. Tastytrade is u
    account to start with `D`. A mismatch closes the socket and exits; it is not retried as a
    dropped connection.
 2. It prints and logs one banner, including on a day it will not trade:
-   `BROKER=ibkr MODE=<mode> ACCOUNT=<last 4> PORT=<port> PLAN=<plan> REAL MONEY=YES/NO`. Only
-   the last four characters of the verified account appear. `PLAN=` is the plan this config
-   resolved to, which is the plan a new entry takes that day; a reloaded spread keeps its own,
-   and the session report names that one. `REAL MONEY=YES` means IBKR mode `live`; paper,
-   dry, and alerts say `NO`. Every IBKR order log line carries the same flag.
-3. It trades the plan `config.json` names — A1 (section 10) unless the file says `"plan": "B"`
-   — exactly as written there. Live does **not** take the tastytrade preview path, and the
-   thresholds, windows, delta, slippage cap, exit, and flat time are identical to a paper run
-   on the same plan.
+   `BROKER=ibkr MODE=<mode> ACCOUNT=<last 4> PORT=<port> REAL MONEY=YES/NO`. Only
+   the last four characters of the verified account appear. `REAL MONEY=YES` means IBKR
+   mode `live`; paper, dry, and alerts say `NO`. Every IBKR order log line carries the same flag.
+3. It trades section 10. Live does **not** take the tastytrade preview path, and the
+   thresholds, windows, delta, slippage cap, exit, and flat time are identical to a paper run.
 4. It tracks only its own `SPXNOON-` orders and its own spread
    (`state/own_position-live.json`), writes fills to `state/trades-live.csv`, and writes the
    session note to `state/report-live-<date>.md`. The paper running total is never touched.
@@ -181,61 +175,49 @@ logged into paper. No environment variable takes part in either. Tastytrade is u
 
 ---
 
-## 10. Plan A1 — the default (`"plan": "A1"`)
+## 10. The strategy
 
-A1 is what High Noon runs. It is the same strategy as version B with four rules
-changed, and it is one config key, not a fork: `plan` in `config.json` is `A1`
-(the default, and what a missing key means) or `B`, whitespace and case are
-forgiven, and any other value refuses to start. No environment variable takes
-part, on any machine or on the hosted worker, and all three committed templates
-ship on `A1`. The resolved value is in the logs: `PLAN=` on the IBKR session
-banner and on the tastytrade announce, `plan=` on the hosted worker's `boot`
-line.
+This is what High Noon runs. It is not a config key. A `plan` key left in an old
+`config.json` is ignored.
 
-A spread that is already open is not affected by the key. It keeps the plan it
-was opened under, and a position file with no `plan` field is managed as version
-B — see item 11 in `AMBIGUITIES.md`.
+| Rule | What the bot does |
+|---|---|
+| Signal | the day's **first** window close beyond PDH (calls) or PDL (puts) |
+| Morning | **skip the day** when any 15-minute close from 10:15 through 11:00 ET was already beyond PDH or PDL |
+| Long leg | nearest **0.80** delta |
+| Exit | **+8 SPX points** in the trade direction, else the two-hour flat |
 
-| Rule | A1 (default) | B (`"plan": "B"`) |
-|---|---|---|
-| Signal | the day's **first** window close beyond PDH (calls) or PDL (puts), with **no trigger bar** | the trigger from the 9:45 close on, then this close beyond the level and beyond the trigger bar's extreme (section 8, step 3) |
-| Morning | **skip the day** when any 15-minute close from 10:15 through 11:00 ET was already beyond PDH or PDL | no filter |
-| Long leg | nearest **0.80** delta | nearest **0.75** delta |
-| Exit | **+8 SPX points** in the trade direction, else the two-hour flat | GTC at debit × 1.30, else the two-hour flat |
-
-**Signal.** A1's candidate is the day's first 15-minute close, among the five
+**Signal.** The candidate is the day's first 15-minute close, among the five
 window closes at 12:00, 12:15, 12:30, 12:45, and 1:00, that is beyond PDH for
 calls or PDL for puts. That is the whole test. No earlier close is read: there is
 no trigger bar, and no check that this close is beyond a trigger bar's low or
 high. A fresh break on the window bar itself qualifies even when nothing from
 9:45 on was beyond that level. Beyond is strict — a close equal to PDH or PDL
 does not qualify — calls are checked before puts, and only the first qualifying
-window bar is taken. Version B's rule in section 8, step 3 is unchanged.
+window bar is taken.
 
 **Morning skip.** The window is the four closes at 10:15, 10:30, 10:45, and 11:00.
 Beyond is strict here too: a close equal to PDH or PDL does not skip. One such
 close skips the whole day, either side of the levels, and that day sends no order,
 does not try a later noon bar, and writes one trade-log row with `exit_reason`
-`skip_morning`. A 9:45 close beyond the level does not, by itself, skip the day:
-it is still a valid trigger on B, and on A1 it neither skips the day nor stops a
-later window close from being the signal. A bar the broker did not return is not
-a break.
+`skip_morning`. A 9:45 close beyond the level does not, by itself, skip the day,
+and it does not stop a later window close from being the signal. A bar the broker
+did not return is not a break.
 
-**Long leg.** Absolute delta nearest 0.80, in the money only, with the same
-tie-break as 0.75: the strike closer to spot, then the lower strike. The width, the
-short strike, the mid limit, and the $0.20-per-side skip are unchanged.
+**Long leg.** Absolute delta nearest 0.80, in the money only. A tie goes to the
+strike closer to spot, then the lower strike. The width, the short strike, the
+mid limit, and the $0.20-per-side skip are in section 8.
 
 **Exit.** The spread leaves when the live SPX print is 8.0 or more points through
 the entry print in the trade direction — calls at entry + 8, puts at entry − 8,
 exactly 8 counts — or at the same two-hour flat, whichever comes first. The
 reference is the live print at the entry decision, the `spx` column in the trade
-log. A1 rests no take-profit order and never exits because the spread bid reached
-debit × 1.30. There is no stop. The point exit reads `points` in `exit_reason`, and
-the two-hour flat still reads `time`. Both sell at the spread bid.
+log. Nothing rests, and the spread bid reaching a premium multiple is not an
+exit. There is no stop. The point exit reads `points` in `exit_reason`, and
+the two-hour flat reads `time`. Both sell at the spread bid.
 
-Everything else is identical to version B: the 12:00–1:00 PM ET closes, the first
-qualifying bar, one fill per day, calls before puts,
-`W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20 skip, one
-spread, the fees, the two-hour clock measured from the entry bar's close, the
-calendar and live gates, the books, and the order prefix. The 0.75, the 0.80, and
-the 8 points are code, not config keys.
+The 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls
+before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20 skip,
+one spread, the fees, the two-hour clock measured from the entry bar's close, the
+calendar and live gates, the books, and the order prefix are the same on every
+trade. The 0.80 and the 8 points are code, not config keys.

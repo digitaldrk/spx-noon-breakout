@@ -253,34 +253,33 @@ def test_the_workers_list_of_variables_is_closed(tmp_path):
     assert sorted(service.env_overrides(_env(base))) == ["base_dir", "broker", "mode"]
 
 
-def test_the_trading_plan_comes_off_the_disk_and_is_not_a_worker_variable(tmp_path):
-    """``plan`` is a file key. The worker's list of variables stays the six it has."""
-    base = _disk(tmp_path / "b", mode="dry", plan="b")
+def test_a_leftover_plan_key_is_ignored_and_never_published(tmp_path):
+    """An old disk can still say ``"plan": "B"``. It is not a field and not a variable."""
+    base = _disk(tmp_path / "b", mode="dry", plan="B")
     cfg = service.build_config(base / "config.json", _env(base))
-    assert cfg.plan == "B"                                  # it survives build_config
+    assert not hasattr(cfg, "plan")
     published = service.publish_config(cfg, cfg.state_dir / service.SERVICE_CONFIG)
-    assert json.loads(published.read_text())["plan"] == "B"  # and is published
-    assert load_config(published).plan == "B"
-    # a PLAN variable is not an override: the disk file, or the default, is the switch
-    flat = _disk(tmp_path / "a1", mode="dry")
+    assert "plan" not in json.loads(published.read_text())
+    assert not hasattr(load_config(published), "plan")
+    flat = _disk(tmp_path / "plain", mode="dry")
     env = _env(flat, PLAN="B")
-    assert service.build_config(flat / "config.json", env).plan == "A1"
+    assert not hasattr(service.build_config(flat / "config.json", env), "plan")
     assert sorted(service.env_overrides(env)) == ["base_dir", "broker", "mode"]
-    with pytest.raises(SafetyError, match="plan must be A1 or B"):
-        service.build_config(_disk(tmp_path / "bad", mode="dry", plan="A") / "config.json",
-                             _env(tmp_path / "bad"))
+    # a nonsense value refuses nothing: the key is not read
+    odd = _disk(tmp_path / "bad", mode="dry", plan="A")
+    assert not hasattr(service.build_config(odd / "config.json", _env(odd)), "plan")
 
 
-def test_an_explicit_version_b_on_the_disk_survives_a_restart(tmp_path):
-    """The seed says A1 now, and nothing rewrites an operator's ``"plan": "B"``."""
+def test_a_leftover_plan_key_is_left_on_disk_and_never_rewritten(tmp_path):
+    """The seed never overwrites an existing file, leftover key included."""
     base = _disk(tmp_path, broker="tasty", mode="dry", plan="B")
     disk = base / "config.json"
     for _boot in range(2):
-        assert service.seed_config(disk) is False           # the file is already there
+        assert service.seed_config(disk) is False
         cfg = service.build_config(disk, _env(base))
-        assert cfg.plan == "B"
+        assert not hasattr(cfg, "plan")
         service.publish_config(cfg, cfg.state_dir / service.SERVICE_CONFIG)
-    assert json.loads(disk.read_text())["plan"] == "B"      # still the operator's value
+    assert json.loads(disk.read_text())["plan"] == "B"
 
 
 def test_load_config_reads_no_config_field_from_the_environment(monkeypatch, tmp_path):
@@ -461,9 +460,8 @@ def test_the_boot_line_names_the_hosts_and_the_real_money_rule_and_no_secret(
 
     line = boot()
     assert "broker=tasty mode=live" in line and f"home={tmp_path}" in line
-    # the disk was empty, so the seed was copied: its plan is on the boot line
-    assert "plan=A1" in line
-    assert json.loads((tmp_path / "config.json").read_text())["plan"] == "A1"
+    assert "plan=" not in line
+    assert "plan" not in json.loads((tmp_path / "config.json").read_text())
     assert "DATA=api.tastyworks.com ORDERS=api.cert.tastyworks.com REAL MONEY=NO" in line
     assert "5WX12345" not in line                     # the account is not in a boot line
     for name in ("SPX_NOON_", "BROKER_ACCOUNT", "TASTY_ORDERS", "TASTY_DATA", "BROKER=",

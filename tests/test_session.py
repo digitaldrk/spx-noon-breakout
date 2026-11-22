@@ -1,9 +1,6 @@
-"""One simulated day: skip, single fill, target, time flat, a restart, and plan A1.
+"""One simulated day: skip, single fill, time flat, and a restart.
 
-Plan A1 is the config default. ``_run`` and ``_live_cfg`` are the version B
-scenarios and say ``plan="B"`` out loud, because ``today_call_bars()`` has a
-10:15 break that A1 skips. ``_run(..., plan=None)`` leaves the key out, so the
-session runs on whatever :class:`Config` defaults to.
+There is one strategy. A leftover ``plan`` keyword on the helpers is ignored.
 """
 import csv
 import json
@@ -24,7 +21,6 @@ from spx_noon.runner import (
     _manage_position,
     _persist,
     _poll_working,
-    _rest_target,
     run_session,
 )
 from spx_noon.strategy import Bar, OptQuote
@@ -37,6 +33,7 @@ LIVE_ACCOUNT = "U7654321"
 
 
 def _cfg(tmp, **extra):
+    extra.pop("plan", None)
     data = dict(broker="sim", mode="paper", base_dir=str(tmp), loop_interval_s=60, decision_grace_s=90)
     data.update(extra)
     return Config(**data)
@@ -71,10 +68,8 @@ def _quotes(kind: str):
     return book
 
 
-def _run(tmp, kind, start_hour=11, start_min=50, bars=None, plan="B", **cfg_extra):
-    """A version B session by default. ``plan=None`` omits the key entirely."""
-    if plan is not None:
-        cfg_extra.setdefault("plan", plan)
+def _run(tmp, kind, start_hour=11, start_min=50, bars=None, plan=None, **cfg_extra):
+    """``plan`` is accepted and ignored. There is one strategy."""
     bars = levels()[0] + (today_call_bars() if bars is None else bars)
     start = datetime(2026, 10, 28, start_hour, start_min, tzinfo=ET)
     broker = SimBroker(start, bars, _quotes(kind), spot=7000)
@@ -105,11 +100,11 @@ def test_a_later_bar_can_still_trade_after_a_slippage_skip(tmp_path):
     assert any(row["exit_reason"] in ("target", "time") for row in rows)
 
 
-def test_target_exit_and_only_one_entry(tmp_path):
+def test_a_premium_rise_is_not_an_exit_and_there_is_one_entry(tmp_path):
     code, rows, buys, sells, _broker = _run(tmp_path, "target")
     assert code == 0
     assert len(buys) == 1
-    done = [row for row in rows if row["exit_reason"] == "target"]
+    done = [row for row in rows if row["exit_reason"] == "time"]
     assert len(done) == 1
     fill = float(done[0]["fill_price"])
     exit_fill = float(done[0]["exit_fill"])
@@ -120,7 +115,7 @@ def test_target_exit_and_only_one_entry(tmp_path):
     assert done[0]["direction"] == "CALL"
     assert float(done[0]["width"]) == 30
     assert float(done[0]["long_strike"]) == 6950
-    assert any(order["tif"] == "GTC" for order in sells)
+    assert sells and all(order["tif"] == "DAY" for order in sells)
 
 
 def test_no_stop_and_flat_two_hours_after_the_noon_bar(tmp_path):
@@ -157,14 +152,14 @@ def test_dry_and_alerts_never_reach_the_order_adapter(tmp_path, mode):
     # and the adapter itself is never reached, even with a qualifying bar
     start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
     guarded = _NoOrders(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
-    assert run_session(_cfg(tmp_path / (mode + "2"), mode=mode, plan="B"), guarded) == 0
+    assert run_session(_cfg(tmp_path / (mode + "2"), mode=mode), guarded) == 0
 
 
 def _live_cfg(tmp, **extra):
-    """An IBKR live config on version B: these scenarios trade ``today_call_bars()``."""
     data = dict(broker="ibkr", mode="live", ibkr_port=7496, broker_account=LIVE_ACCOUNT,
-                base_dir=str(tmp), plan="B", loop_interval_s=60, decision_grace_s=90)
+                base_dir=str(tmp), loop_interval_s=60, decision_grace_s=90)
     data.update(extra)
+    data.pop("plan", None)
     return Config(**data)
 
 
@@ -186,10 +181,11 @@ def test_ibkr_live_keeps_its_own_book_position_file_and_report(tmp_path, monkeyp
     assert not (state / "report_2026-10-28.md").exists()
     with (state / "trades-live.csv").open() as fh:
         rows = list(csv.DictReader(fh))
-    assert [row["exit_reason"] for row in rows if row["exit_reason"] == "target"]
+    assert [row["exit_reason"] for row in rows if row["exit_reason"] == "time"]
     assert all(row["mode"] == "live" for row in rows)
     printed = capsys.readouterr().out
-    assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=7496 PLAN=B REAL MONEY=YES" in printed
+    assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=7496 REAL MONEY=YES" in printed
+    assert "PLAN=" not in printed
     assert LIVE_ACCOUNT not in printed
 
 
@@ -219,11 +215,11 @@ def test_a_live_session_banner_prints_on_a_day_that_will_not_trade(tmp_path, mon
     start = datetime(2026, 11, 26, 11, 50, tzinfo=ET)  # Thanksgiving
     bars = [Bar(datetime(2026, 11, 25, 10, 0, tzinfo=ET), 1, 2, 1, 1)]
     broker = SimBroker(start, bars, _quotes("target"), spot=7000, account=LIVE_ACCOUNT)
-    assert run_session(_live_cfg(tmp_path, ibkr_port=4001, plan="A1"), broker) == 0
+    assert run_session(_live_cfg(tmp_path, ibkr_port=4001), broker) == 0
     assert broker.placed == []
     printed = capsys.readouterr().out
-    # the banner names the plan that is armed, even on a day that will not trade
-    assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=4001 PLAN=A1 REAL MONEY=YES" in printed
+    assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=4001 REAL MONEY=YES" in printed
+    assert "PLAN=" not in printed
 
 
 def test_a_live_session_stops_on_an_account_mismatch(tmp_path, monkeypatch):
@@ -324,7 +320,7 @@ def test_wrap_with_no_book_follows_a_live_config(tmp_path):
 
 
 def test_restart_manages_the_open_spread_and_does_not_enter_again(tmp_path):
-    cfg = _cfg(tmp_path, plan="B")
+    cfg = _cfg(tmp_path)
     cfg.ensure_dirs()
     deadline = datetime(2026, 10, 28, 14, 0, tzinfo=ET)
     entry = datetime(2026, 10, 28, 12, 0, tzinfo=ET)
@@ -411,13 +407,13 @@ def test_empty_quotes_retry_inside_the_grace_window(tmp_path):
     bars = levels()[0] + today_call_bars()
     start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
     broker = _Warm(start, bars, _quotes("target"), spot=7000)
-    assert run_session(_cfg(tmp_path, plan="B"), broker) == 0
+    assert run_session(_cfg(tmp_path), broker) == 0
     buys = [order for order in broker.placed if order["action"] == "BUY"]
     assert len(buys) == 1
 
 
 def test_closed_fill_blocks_a_second_entry_after_restart(tmp_path):
-    cfg = _cfg(tmp_path, plan="B")
+    cfg = _cfg(tmp_path)
     cfg.ensure_dirs()
     from spx_noon.resume import save
     save(cfg.state_dir, {"date": DAY.isoformat(), "status": "closed", "had_fill": True, "fill_price": 12.0})
@@ -440,28 +436,6 @@ def test_unconfirmed_cancel_keeps_the_working_entry(tmp_path):
     assert state.working["id"] == 7
     assert broker.cancelled == [7]
     assert state.working["cancel_after"] > broker.now() - timedelta(seconds=1)
-
-
-def test_known_target_id_is_kept_when_the_save_fails(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path)
-    cfg.ensure_dirs()
-    broker = SimBroker(datetime(2026, 10, 28, 12, 5, tzinfo=ET), [], _book(), spot=7000)
-    pos = {
-        "legs": [(69501, 1), (69801, -1)],
-        "account": "DU999001",
-        "ref": "SPXNOON-20261028-1",
-        "tp_limit": 15.6,
-        "tp_order_id": None,
-        "deadline": datetime(2026, 10, 28, 14, 0, tzinfo=ET),
-    }
-
-    def boom(_cfg, _pos):
-        raise OSError("disk full")
-
-    monkeypatch.setattr("spx_noon.runner._persist", boom)
-    _rest_target(cfg, broker, pos)
-    assert pos["tp_order_id"]
-    assert any(order["tif"] == "GTC" for order in broker.placed)
 
 
 class _NoSell(SimBroker):
@@ -501,12 +475,12 @@ def test_flatten_stops_after_three_failed_attempts(tmp_path):
 def test_session_starts_the_quote_stream(tmp_path):
     start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
     broker = _Watch(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
-    assert run_session(_cfg(tmp_path, mode="dry", plan="B"), broker) == 0
+    assert run_session(_cfg(tmp_path, mode="dry"), broker) == 0
     assert broker.streams == 1
 
 
 # --------------------------------------------------------------------------
-# Plan A1: the morning skip, the 80-delta fill, the +8 exit, and a restart
+# The morning skip, the 80-delta fill, the +8 exit, and a restart
 # --------------------------------------------------------------------------
 
 A1_LEGS = [[69251, 1], [69551, -1]]
@@ -563,10 +537,8 @@ def _rows(tmp):
         return list(csv.DictReader(fh))
 
 
-def _a1_run(tmp, bars=None, *, kind="flat", moves_at=None, moves_to=None, plan="A1", **cfg_extra):
-    """``plan="A1"`` is named here. ``plan=None`` omits the key, so the config default runs."""
-    if plan is not None:
-        cfg_extra.setdefault("plan", plan)
+def _a1_run(tmp, bars=None, *, kind="flat", moves_at=None, moves_to=None, plan=None, **cfg_extra):
+    """``plan`` is accepted and ignored."""
     bars = levels()[0] + (a1_call_bars() if bars is None else bars)
     broker = _Drift(datetime(2026, 10, 28, 11, 50, tzinfo=ET), bars, _a1_quotes(kind),
                     spot=7000, moves_at=moves_at, moves_to=moves_to)
@@ -576,56 +548,43 @@ def _a1_run(tmp, bars=None, *, kind="flat", moves_at=None, moves_to=None, plan="
     return code, _rows(tmp), buys, sells, broker
 
 
-def test_a_config_with_no_plan_key_trades_the_fresh_noon_break_and_b_does_not(tmp_path):
-    """Acceptance 5: the omitted plan is A1, so the fresh 12:00 break is a trade."""
-    default_cfg = _cfg(tmp_path / "default")
-    assert default_cfg.plan == "A1"                          # no plan key was passed
+def test_a_fresh_noon_break_is_a_trade(tmp_path):
     code, rows, buys, sells, _broker = _a1_run(
-        tmp_path / "default", bars=a1_fresh_call_bars(), plan=None,
+        tmp_path / "default", bars=a1_fresh_call_bars(),
         moves_at=ONE, moves_to=7008)
     assert code == 0
     assert len(buys) == 1 and len(sells) == 1
     assert [row["exit_reason"] for row in rows] == ["points"]
-    assert float(rows[0]["long_strike"]) == 6925            # A1's 80-delta leg
+    assert float(rows[0]["long_strike"]) == 6925
     assert rows[0]["timestamp"].startswith("2026-10-28T12:00")
-    assert json.loads(
-        (tmp_path / "default" / "state" / "own_position.json").read_text())["plan"] == "A1"
+    saved = json.loads((tmp_path / "default" / "state" / "own_position.json").read_text())
+    assert "plan" not in saved
     report = (tmp_path / "default" / "state" / "report_2026-10-28.md").read_text()
-    assert "Plan A1" in report and "Version B" not in report
-    # the same bars with an explicit version B: no trigger, so nothing is sent
-    b_code, b_rows, b_buys, b_sells, b_broker = _run(
-        tmp_path / "b", "target", bars=a1_fresh_call_bars(), plan="B")
-    assert b_code == 0
-    assert b_buys == [] and b_sells == [] and b_broker.placed == []
-    assert b_rows == []
-    assert not (tmp_path / "b" / "state" / "own_position.json").exists()
+    assert "80-delta" in report and "+8 SPX points" in report
+    assert "Version" not in report and "Plan " not in report
 
 
-def test_a1_trades_a_fresh_noon_break_that_version_b_passes_on(tmp_path):
-    """The 12:00 close is the day's first break of PDH. A1 takes it; B has no trigger."""
+def test_the_first_window_close_beyond_pdh_is_the_trade(tmp_path):
     code, rows, buys, sells, _broker = _a1_run(
-        tmp_path / "a1", bars=a1_fresh_call_bars(), moves_at=ONE, moves_to=7008)
+        tmp_path, bars=a1_fresh_call_bars(), moves_at=ONE, moves_to=7008)
     assert code == 0
     assert len(buys) == 1 and len(sells) == 1
     entry = [row for row in rows if row["exit_reason"] == "points"]
     assert len(entry) == 1
     row = entry[0]
     assert row["direction"] == "CALL"
-    assert row["timestamp"].startswith("2026-10-28T12:00")   # the first window close
+    assert row["timestamp"].startswith("2026-10-28T12:00")
     assert float(row["long_strike"]) == 6925 and float(row["long_delta"]) == 0.8
     assert "skip_morning" not in [r["exit_reason"] for r in rows]
-    # the same bars on version B: no earlier close beyond the levels, so no trade
-    b_code, b_rows, b_buys, b_sells, b_broker = _run(
-        tmp_path / "b", "target", bars=a1_fresh_call_bars(), plan="B")
-    assert b_code == 0
-    assert b_buys == [] and b_sells == [] and b_broker.placed == []
-    assert b_rows == []
-    assert not (tmp_path / "b" / "state" / "own_position.json").exists()
 
 
-def test_a1_skips_the_whole_day_when_the_morning_already_broke(tmp_path):
-    # today_call_bars() has a 10:15 close (bar start 10:00) above PDH
-    code, rows, buys, sells, broker = _a1_run(tmp_path / "a1", bars=today_call_bars())
+def test_a_morning_break_skips_the_whole_day(tmp_path):
+    broke = [
+        Bar(datetime(2026, 10, 28, 9, 30, tzinfo=ET), 7000, 7008, 6995, 7002),
+        Bar(datetime(2026, 10, 28, 10, 0, tzinfo=ET), 7000, 7030, 7000, 7011),
+        Bar(datetime(2026, 10, 28, 11, 45, tzinfo=ET), 7008, 7025, 7006, 7011),
+    ]
+    code, rows, buys, sells, broker = _a1_run(tmp_path, bars=broke)
     assert code == 0
     assert broker.placed == [] and buys == [] and sells == []
     assert len(rows) == 1
@@ -633,12 +592,9 @@ def test_a1_skips_the_whole_day_when_the_morning_already_broke(tmp_path):
     assert rows[0]["timestamp"].startswith("2026-10-28T12:00")
     assert "10:15" in rows[0]["note"]
     assert rows[0]["long_strike"] == "" and rows[0]["fill_price"] == ""
-    assert not (tmp_path / "a1" / "state" / "own_position.json").exists()
-    report = (tmp_path / "a1" / "state" / "report_2026-10-28.md").read_text()
-    assert "Plan A1" in report and "+8 SPX points" in report
-    # the same day on version B is a trade: the morning break is an A1 rule only
-    b_code, _b_rows, b_buys, _b_sells, _b = _run(tmp_path / "b", "target", plan="B")
-    assert b_code == 0 and len(b_buys) == 1
+    assert not (tmp_path / "state" / "own_position.json").exists()
+    report = (tmp_path / "state" / "report_2026-10-28.md").read_text()
+    assert "80-delta" in report and "+8 SPX points" in report
 
 
 def test_a1_buys_the_eighty_delta_and_exits_on_eight_points(tmp_path):
@@ -682,18 +638,18 @@ def test_a1_holds_a_move_against_the_trade_to_the_two_hour_flat(tmp_path):
     assert len(sells) == 1 and sells[0]["tif"] == "DAY"
 
 
-def test_an_a1_ticket_names_the_plan_and_no_premium_target(tmp_path):
+def test_a_ticket_names_the_point_exit_and_no_premium_target(tmp_path):
     code, rows, _buys, _sells, _broker = _a1_run(tmp_path, mode="dry")
     assert code == 0 and rows[0]["exit_reason"] == "dry_signal"
     ticket = (tmp_path / "logs" / "alerts.log").read_text()
-    assert "plan A1" in ticket
+    assert "plan" not in ticket.lower()
     assert "long 6925C" in ticket
     assert "exit +8 SPX points or flat at 14:00 ET" in ticket
     assert "target" not in ticket
 
 
 def _a1_saved(**extra):
-    """An open A1 spread on disk, as ``_persist`` writes it. No plan key unless asked."""
+    """An open spread on disk, as ``_persist`` writes it."""
     payload = {
         "date": DAY.isoformat(), "status": "open", "direction": "CALL", "right": "C",
         "spx": 7000, "pdh": 7010, "pdl": 6890, "em": 30, "width": 30,
@@ -707,7 +663,7 @@ def _a1_saved(**extra):
     return payload
 
 
-def _restart(tmp, saved, *, plan="B", moves_to=None):
+def _restart(tmp, saved, *, plan=None, moves_to=None):
     from spx_noon.resume import save
     cfg = _cfg(tmp, plan=plan)
     cfg.ensure_dirs()
@@ -721,21 +677,20 @@ def _restart(tmp, saved, *, plan="B", moves_to=None):
 
 
 def test_an_a1_restart_rests_no_premium_order_and_exits_on_points(tmp_path):
-    rows, broker = _restart(tmp_path / "points", _a1_saved(plan="A1"), plan="A1", moves_to=7008)
+    rows, broker = _restart(tmp_path / "points", _a1_saved(), moves_to=7008)
     assert all(order["tif"] == "DAY" for order in broker.placed)
     assert rows[-1]["exit_reason"] == "points"
     assert rows[-1]["exit_time"].startswith("2026-10-28T13:30")
     # and one that never gets there keeps the saved deadline
-    rows, broker = _restart(tmp_path / "time", _a1_saved(plan="A1"), plan="A1")
+    rows, broker = _restart(tmp_path / "time", _a1_saved())
     assert all(order["tif"] == "DAY" for order in broker.placed)
     assert rows[-1]["exit_reason"] == "time"
     assert rows[-1]["exit_time"].startswith("2026-10-28T14:00")
-    # the stored plan also names the report, even if the config has moved to B
-    rows, broker = _restart(tmp_path / "switched", _a1_saved(plan="A1"), plan="B", moves_to=7008)
+    rows, broker = _restart(tmp_path / "again", _a1_saved(), moves_to=7008)
     assert all(order["tif"] == "DAY" for order in broker.placed)
     assert rows[-1]["exit_reason"] == "points"
-    report = (tmp_path / "switched" / "state" / "report_2026-10-28.md").read_text()
-    assert "Plan A1" in report and "Version B" not in report
+    report = (tmp_path / "again" / "state" / "report_2026-10-28.md").read_text()
+    assert "80-delta" in report and "Version" not in report and "Plan " not in report
 
 
 class _NoSellDrift(_Drift):
@@ -749,12 +704,12 @@ class _NoSellDrift(_Drift):
 
 
 def test_a_triggered_a1_point_exit_is_not_forgotten_when_the_print_comes_back(tmp_path):
-    """A1 has no resting GTC behind it, so a hit has to keep being worked."""
-    cfg = _cfg(tmp_path, plan="A1", exit_wait_s=1)
+    """There is no resting premium order, so a hit has to keep being worked."""
+    cfg = _cfg(tmp_path, exit_wait_s=1)
     cfg.ensure_dirs()
     broker = _NoSellDrift(ONE, [], _a1_quotes(), spot=7008)
     state = _State()
-    pos = dict(_a1_saved(plan="A1"))
+    pos = dict(_a1_saved())
     pos["entry_close"] = NOON
     pos["deadline"] = TWO
     pos["legs"] = [tuple(leg) for leg in pos["legs"]]
@@ -777,14 +732,14 @@ def test_a_triggered_a1_point_exit_is_not_forgotten_when_the_print_comes_back(tm
 
 def test_a_triggered_a1_point_exit_survives_a_restart(tmp_path):
     """The latch is saved when it trips, not only when a sell goes out."""
-    cfg = _cfg(tmp_path, plan="A1")
+    cfg = _cfg(tmp_path)
     cfg.ensure_dirs()
-    pos = dict(_a1_saved(plan="A1"))
+    pos = dict(_a1_saved())
     pos["entry_close"] = NOON
     pos["deadline"] = TWO
     pos["legs"] = [tuple(leg) for leg in pos["legs"]]
     _persist(cfg, pos)
-    state = _State(position=pos, plan="A1")
+    state = _State(position=pos)
     # +8 is reached while there is no quote to sell against: nothing can be sent
     broker = _Drift(ONE, [], {}, spot=7008)
     notifier = Notifier(tmp_path / "logs")
@@ -794,22 +749,22 @@ def test_a_triggered_a1_point_exit_survives_a_restart(tmp_path):
     # a restart with the print back under +8 still takes the point exit
     broker = _Drift(ONE + timedelta(minutes=1), levels()[0] + a1_call_bars(),
                     _a1_quotes(), spot=7001)
-    assert run_session(_cfg(tmp_path, plan="A1"), broker) == 0
+    assert run_session(_cfg(tmp_path), broker) == 0
     assert [order for order in broker.placed if order["action"] == "BUY"] == []
     assert _rows(tmp_path)[-1]["exit_reason"] == "points"
 
 
-def test_a_closed_a1_trade_keeps_its_plan_in_a_later_report_that_day(tmp_path):
-    rows, _broker = _restart(tmp_path, _a1_saved(plan="A1"), plan="A1", moves_to=7008)
+def test_a_closed_trade_stays_in_a_later_report_that_day(tmp_path):
+    rows, _broker = _restart(tmp_path, _a1_saved(), moves_to=7008)
     assert rows[-1]["exit_reason"] == "points"
     report = tmp_path / "state" / "report_2026-10-28.md"
-    assert "Plan A1" in report.read_text()
-    # the same day, restarted after the config moved back to B: the trade was A1
+    assert "points" in report.read_text() and "80-delta" in report.read_text()
     broker = _Drift(datetime(2026, 10, 28, 14, 30, tzinfo=ET),
                     levels()[0] + a1_call_bars(), _a1_quotes(), spot=7000)
-    assert run_session(_cfg(tmp_path, plan="B"), broker) == 0
+    assert run_session(_cfg(tmp_path), broker) == 0
     assert broker.placed == []
-    assert "Plan A1" in report.read_text()
+    text = report.read_text()
+    assert "points" in text and "Version" not in text and "Plan " not in text
 
 
 class _AlwaysFilled(_Drift):
@@ -821,9 +776,9 @@ class _AlwaysFilled(_Drift):
 
 def test_a_working_a1_entry_that_filled_before_the_restart_rests_no_gtc(tmp_path):
     from spx_noon.resume import save
-    cfg = _cfg(tmp_path, plan="A1")
+    cfg = _cfg(tmp_path)
     cfg.ensure_dirs()
-    save(cfg.state_dir, _a1_saved(status="working", plan="A1", entry_order_id=101))
+    save(cfg.state_dir, _a1_saved(status="working", entry_order_id=101))
     start = datetime(2026, 10, 28, 13, 30, tzinfo=ET)
     broker = _AlwaysFilled(start, levels()[0] + a1_call_bars(), _a1_quotes(), spot=7000,
                            moves_at=start, moves_to=7008)
@@ -832,36 +787,31 @@ def test_a_working_a1_entry_that_filled_before_the_restart_rests_no_gtc(tmp_path
     assert all(order["tif"] == "DAY" for order in broker.placed)
     rows = _rows(tmp_path)
     assert rows[-1]["exit_reason"] == "points"
-    assert json.loads((cfg.state_dir / "own_position.json").read_text())["plan"] == "A1"
+    assert "plan" not in json.loads((cfg.state_dir / "own_position.json").read_text())
 
 
-def test_a_restart_with_no_stored_plan_is_still_version_b(tmp_path):
-    for plan in ("B", "A1"):
-        # the position file is the authority, even when today's config says A1
-        rows, broker = _restart(tmp_path / plan, _a1_saved(), plan=plan, moves_to=7008)
-        # the premium target still rests, and +8 points is not an exit on version B
-        assert any(order["tif"] == "GTC" for order in broker.placed), plan
-        assert rows[-1]["exit_reason"] == "time"
-        assert rows[-1]["exit_time"].startswith("2026-10-28T14:00")
-        report = (tmp_path / plan / "state" / "report_2026-10-28.md").read_text()
-        assert "Version B" in report and "Plan A1" not in report
+def test_a_restart_with_no_stored_plan_exits_on_points(tmp_path):
+    rows, broker = _restart(tmp_path, _a1_saved(), moves_to=7008)
+    assert all(order["tif"] == "DAY" for order in broker.placed)
+    assert rows[-1]["exit_reason"] == "points"
+    report = (tmp_path / "state" / "report_2026-10-28.md").read_text()
+    assert "80-delta" in report and "Version" not in report
 
 
-def test_a_working_entry_with_no_stored_plan_fills_as_version_b(tmp_path):
-    """A working file written before the plan key existed is a version B entry."""
+def test_a_working_entry_with_no_stored_plan_exits_on_points(tmp_path):
+    """A working file from before the plan key existed is the one strategy."""
     from spx_noon.resume import save
-    cfg = _cfg(tmp_path, plan="A1")
+    cfg = _cfg(tmp_path)
     cfg.ensure_dirs()
-    save(cfg.state_dir, _a1_saved(status="working", entry_order_id=101))   # no plan key
+    save(cfg.state_dir, _a1_saved(status="working", entry_order_id=101))
     start = datetime(2026, 10, 28, 13, 30, tzinfo=ET)
     broker = _AlwaysFilled(start, levels()[0] + a1_call_bars(), _a1_quotes(), spot=7000,
                            moves_at=start, moves_to=7008)
     assert run_session(cfg, broker) == 0
     saved = json.loads((cfg.state_dir / "own_position.json").read_text())
-    assert saved["plan"] == "B" and saved["tp_limit"] == 23.4
-    # the premium target went out, and +8 points did not close the spread
-    assert any(order["tif"] == "GTC" for order in broker.placed)
-    assert _rows(tmp_path)[-1]["exit_reason"] == "target"
+    assert "plan" not in saved and "tp_limit" not in saved
+    assert all(order["tif"] == "DAY" for order in broker.placed)
+    assert _rows(tmp_path)[-1]["exit_reason"] == "points"
 
 
 #: Distinct from ``SimBroker``'s own ids, which start at 101, so the double
@@ -897,35 +847,28 @@ class _WorkingThenCancelled(_Drift):
         super().cancel(handle)
 
 
-def test_a_reloaded_b_entry_that_never_filled_does_not_report_a_later_a1_trade_as_b(tmp_path):
-    """The report follows what the session ran, not what it reloaded and dropped.
-
-    A restart picks up a version B working entry, works it until the broker says
-    it was cancelled unfilled, and then enters on today's config, A1. The
-    cancelled entry is managed as B; the day the report describes is A1's.
-    """
+def test_a_reloaded_entry_that_never_filled_does_not_block_the_day(tmp_path):
+    """A cancelled unfilled entry is one row. The session can still enter."""
     from spx_noon.resume import save
-    cfg = _cfg(tmp_path)                                  # no plan key: A1, the default
-    assert cfg.plan == "A1"
+    cfg = _cfg(tmp_path)
+    assert not hasattr(cfg, "plan")
     cfg.ensure_dirs()
-    # a working entry from a version B build: no plan key, and its own order id
     save(cfg.state_dir, _a1_saved(status="working", entry_order_id=RELOADED_ID,
                                   cancel_after=NOON.isoformat()))
-    bars = levels()[0] + a1_fresh_call_bars()             # the 12:00 close is a fresh break
+    bars = levels()[0] + a1_fresh_call_bars()
     broker = _WorkingThenCancelled(datetime(2026, 10, 28, 11, 50, tzinfo=ET), bars,
                                    _a1_quotes(), spot=7000)
     assert run_session(cfg, broker) == 0
-    # the reloaded entry really was restored, worked, then cancelled
     assert broker.looks >= 2 and broker.cancelled == [RELOADED_ID]
     rows = _rows(tmp_path)
-    assert rows[0]["exit_reason"] == "skip_no_fill"        # the reloaded B entry's row
+    assert rows[0]["exit_reason"] == "skip_no_fill"
     buys = [order for order in broker.placed if order["action"] == "BUY"]
     assert len(buys) == 1 and buys[0]["id"] != RELOADED_ID
     position = json.loads((cfg.state_dir / "own_position.json").read_text())
-    assert position["plan"] == "A1"                       # the day's own trade is A1
-    assert float(position["long_strike"]) == 6925         # on A1's 80-delta leg
+    assert "plan" not in position
+    assert float(position["long_strike"]) == 6925
     report = (cfg.state_dir / "report_2026-10-28.md").read_text()
-    assert "Plan A1" in report and "Version B" not in report
+    assert "80-delta" in report and "Version" not in report and "Plan " not in report
 
 
 def test_holiday_does_not_trade(tmp_path):
@@ -935,6 +878,6 @@ def test_holiday_does_not_trade(tmp_path):
     broker = SimBroker(start, bars, _quotes("target"), spot=7000)
     # Thursday session hours would still be closed by the holiday list.
     broker.t = start
-    assert run_session(_cfg(tmp_path, plan="B"), broker) == 0
+    assert run_session(_cfg(tmp_path), broker) == 0
     assert broker.placed == []
     assert thanksgiving.isoformat() == "2026-11-26"

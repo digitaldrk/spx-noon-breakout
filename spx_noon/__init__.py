@@ -1,4 +1,4 @@
-"""Noon Breakout — plan v2, plan A1 by default or version B by the ``plan`` key in config.json.
+"""Noon Breakout — the noon 0DTE SPX debit vertical.
 
 Mac uses IBKR (paper or live, picked by config.json). The hosted Render Linux
 worker uses tastytrade.

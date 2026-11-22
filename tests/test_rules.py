@@ -1,9 +1,4 @@
-"""Entry, width, delta, slippage, and exit rules from plan v2: plan A1 and version B.
-
-``A1`` is the default, so a call that omits ``plan=`` is A1. Every assertion
-about version B's own rules passes ``plan="B"`` (or ``"B"`` positionally)
-explicitly.
-"""
+"""Entry, width, delta, slippage, and exit rules."""
 import pytest
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -12,14 +7,12 @@ from spx_noon.pricing import (
     entry_skipped,
     limit_at_mid,
     slippage_per_side,
-    take_profit_limit,
-    target_reached,
     time_exit_deadline,
     trade_pnl,
 )
 from spx_noon.strategy import (
-    A1_EXIT_POINTS,
-    A1_TARGET_DELTA,
+    EXIT_POINTS,
+    TARGET_DELTA,
     Bar,
     OptQuote,
     atm_strike,
@@ -27,7 +20,6 @@ from spx_noon.strategy import (
     first_breakout,
     morning_break,
     pdh_pdl,
-    plan_target_delta,
     point_exit_reached,
     qualifies,
     select_long_strike,
@@ -62,7 +54,7 @@ def today_call_bars():
     return [
         b(DAY, 9, 15, 7100, 7200, 6900, 7150),  # before 9:30, ignored
         b(DAY, 9, 30, 7005, 7020, 7002, 7012),  # 9:45 close, first trigger, low 7002
-        b(DAY, 10, 0, 7014, 7030, 7008, 7022),  # later break, higher low
+        b(DAY, 10, 0, 7002, 7009, 6998, 7006),  # 10:15 close, inside the levels
         b(DAY, 11, 30, 7018, 7040, 7016, 7030),  # 11:45 close, outside the window
         b(DAY, 11, 45, 7010, 7025, 7008, 7011),  # 12:00 close
         b(DAY, 12, 0, 7012, 7030, 7010, 7018),  # 12:15 close
@@ -70,11 +62,7 @@ def today_call_bars():
 
 
 def a1_call_bars():
-    """The same day with nothing in A1's 10:15–11:00 window.
-
-    Only the 10:00 bar is dropped, so the 9:45 close is still the trigger: a
-    9:45 break is a valid A1 entry and does not skip the day.
-    """
+    """The same day with the 10:00 bar dropped, so the morning window is quiet."""
     return [bar for bar in today_call_bars()
             if not (bar.t.hour == 10 and bar.t.minute == 0)]
 
@@ -82,14 +70,13 @@ def a1_call_bars():
 def a1_fresh_call_bars():
     """A quiet morning whose 12:00 close is itself the day's first break of PDH.
 
-    No close from 9:45 on, and no later window close, is beyond PDH 7010 or
-    PDL 6890, so version B never has a trigger and never enters on this day.
-    A1 takes the 12:00 close at 7011.
+    No close from 9:45 on is beyond PDH 7010 or PDL 6890 until the 12:00 close
+    at 7011, and nothing in the 10:15–11:00 window is a break.
     """
     return [
         b(DAY, 9, 15, 7100, 7200, 6900, 7150),   # before 9:30, ignored on both plans
         b(DAY, 9, 30, 7000, 7008, 6995, 7002),   # 9:45 close, inside the levels
-        b(DAY, 10, 0, 7002, 7009, 6998, 7005),   # 10:15 close, no A1 morning break
+        b(DAY, 10, 0, 7002, 7009, 6998, 7005),   # 10:15 close, inside the levels
         b(DAY, 11, 30, 7005, 7010, 7000, 7008),  # 11:45 close, still inside
         b(DAY, 11, 45, 7008, 7025, 7006, 7011),  # 12:00 close, the first break of PDH
         b(DAY, 12, 0, 7012, 7020, 7002, 7005),   # 12:15 close, back inside PDH
@@ -101,67 +88,27 @@ def test_prior_day_high_and_low_ignore_older_sessions():
     assert pdh == 7010 and pdl == 6890
 
 
-def test_call_uses_the_first_trigger_low():
+def test_a_window_close_beyond_pdh_is_a_call_on_that_bar():
     bars, pdh, pdl = levels()
     today = today_call_bars()
-    # 7011 is above PDH and above the first trigger low (7002), but below the later bar's low (7008).
-    found = qualifies(today[-2], bars + today, pdh, pdl, "B")
+    noon = today[-2]
+    found = qualifies(noon, bars + today, pdh, pdl)
     assert found is not None
     assert found.direction == "CALL"
-    assert found.trigger.t.hour == 9 and found.trigger.t.minute == 30
-    assert found.entry.c < found.trigger.c  # still qualifies with no average gate
+    assert found.entry is noon and found.trigger is noon
 
 
 def test_eleven_forty_five_close_is_outside_the_window():
     bars, pdh, pdl = levels()
     today = today_call_bars()
     eleven = [bar for bar in today if bar.t.hour == 11 and bar.t.minute == 30][0]
-    assert qualifies(eleven, bars + today, pdh, pdl, "B") is None
-    assert qualifies(eleven, bars + today, pdh, pdl) is None      # A1, the default
-
-
-def test_pre_open_break_does_not_count_and_nine_forty_five_does():
-    bars, pdh, pdl = levels()
-    early_only = [
-        b(DAY, 9, 15, 7100, 7200, 6900, 7150),
-        b(DAY, 11, 45, 7010, 7025, 7008, 7015),
-    ]
-    assert qualifies(early_only[-1], bars + early_only, pdh, pdl, "B") is None
-    with_open = early_only + [b(DAY, 9, 30, 7005, 7020, 7002, 7012)]
-    # 9:30 bar is earlier than the noon bar even though it was appended last
-    found = qualifies(early_only[-1], bars + with_open, pdh, pdl, "B")
-    assert found is not None and found.trigger.t.hour == 9
-
-
-def test_the_entry_bar_cannot_be_its_own_trigger():
-    """Version B's rule. On A1 there is no trigger, so the same bar is the entry."""
-    bars, pdh, pdl = levels()
-    noon = b(DAY, 11, 45, 7000, 7020, 7004, 7015)  # first close above PDH
-    later = b(DAY, 12, 0, 7012, 7022, 7006, 7016)
-    assert qualifies(noon, bars + [noon, later], pdh, pdl, "B") is None
-    found = qualifies(later, bars + [noon, later], pdh, pdl, "B")
-    assert found is not None
-    assert found.trigger is noon
-
-
-def test_put_uses_the_first_trigger_high():
-    bars, pdh, pdl = levels()
-    first = b(DAY, 10, 0, 6900, 6950, 6870, 6880)  # close below PDL, high 6950
-    later = b(DAY, 11, 0, 6880, 6880, 6860, 6870)  # high 6880
-    noon = b(DAY, 11, 45, 6884, 6889, 6880, 6888)  # below PDL and below 6950, not below 6880
-    found = qualifies(noon, bars + [first, later, noon], pdh, pdl, "B")
-    assert found is not None
-    assert found.direction == "PUT"
-    assert found.trigger is first
+    assert qualifies(eleven, bars + today, pdh, pdl) is None
 
 
 def test_calls_win_when_both_sides_match():
     # Pathological levels so one close can be above PDH and below PDL.
-    today = [
-        b(DAY, 10, 0, 150, 160, 140, 155),
-        b(DAY, 11, 45, 150, 160, 140, 150),
-    ]
-    found = qualifies(today[-1], today, pdh=100, pdl=200, plan="B")
+    today = [b(DAY, 11, 45, 150, 160, 140, 150)]
+    found = qualifies(today[-1], today, pdh=100, pdl=200)
     assert found is not None and found.direction == "CALL"
 
 
@@ -181,7 +128,7 @@ def test_atm_strike_rounds_half_away_from_zero():
     assert atm_strike(7000) == 7000
 
 
-def test_long_strike_is_the_in_the_money_delta_nearest_75():
+def test_long_strike_tie_goes_to_the_strike_closer_to_spot():
     spot = 7000
     quotes = {
         (6900, "C"): OptQuote(1, 1.1, delta=0.90, con_id=1),
@@ -193,8 +140,8 @@ def test_long_strike_is_the_in_the_money_delta_nearest_75():
         (6990, "P"): OptQuote(1, 1.1, delta=-0.80, con_id=7),  # call-side strike, not ITM as a put
     }
     # 0.76 and 0.74 are equally far from 0.75. The strike closer to spot wins.
-    assert select_long_strike(quotes, "C", spot) == (6950, 0.74)
-    assert select_long_strike(quotes, "P", spot) == (7050, -0.74)
+    assert select_long_strike(quotes, "C", spot, 0.75) == (6950, 0.74)
+    assert select_long_strike(quotes, "P", spot, 0.75) == (7050, -0.74)
     assert short_strike(6950, 30, "C") == 6980
     assert short_strike(7050, 15, "P") == 7035
 
@@ -220,9 +167,9 @@ def test_slippage_boundary_is_strict():
 def test_order_plan_skips_a_wide_market_and_builds_the_tight_one():
     bars, pdh, pdl = levels()
     today = today_call_bars()
-    bo = qualifies(today[-2], bars + today, pdh, pdl, "B")
+    bo = qualifies(today[-2], bars + today, pdh, pdl)
     tight = _chain(long_ask=40.2)
-    plan, reason = build_order_plan(bo, tight, 7000, "B")
+    plan, reason = build_order_plan(bo, tight, 7000)
     assert reason == ""
     assert plan is not None and plan.skip is False
     assert plan.direction == "CALL"
@@ -232,7 +179,7 @@ def test_order_plan_skips_a_wide_market_and_builds_the_tight_one():
     assert plan.em == 30
     assert plan.limit <= plan.mid
     wide = _chain(long_ask=44)
-    skipped, why = build_order_plan(bo, wide, 7000, "B")
+    skipped, why = build_order_plan(bo, wide, 7000)
     assert why == "slippage" and skipped.skip is True
     assert entry_skipped(skipped.natural, skipped.mid)
 
@@ -247,18 +194,13 @@ def _chain(long_ask: float):
     }
 
 
-def test_target_is_thirty_percent_and_the_flat_is_two_hours_after_the_bar():
+def test_the_flat_is_two_hours_after_the_bar_and_fees_come_off_pnl():
     noon = datetime(2026, 10, 28, 12, 0, tzinfo=ET)
     quarter = datetime(2026, 10, 28, 12, 15, tzinfo=ET)
     one = datetime(2026, 10, 28, 13, 0, tzinfo=ET)
     assert time_exit_deadline(noon) == datetime(2026, 10, 28, 14, 0, tzinfo=ET)
     assert time_exit_deadline(quarter) == datetime(2026, 10, 28, 14, 15, tzinfo=ET)
     assert time_exit_deadline(one) == datetime(2026, 10, 28, 15, 0, tzinfo=ET)
-    assert take_profit_limit(10) == 13.0
-    assert take_profit_limit(12.71) == 16.50
-    assert target_reached(13.0, 10.0)
-    assert not target_reached(12.99, 10.0)
-    assert not target_reached(None, 10.0)
     pnl, fees = trade_pnl(12.71, 12.71 * 1.30)
     assert fees == 2.60
     assert pnl == pytest.approx((12.71 * 0.30 * 100) - 2.60)
@@ -266,47 +208,31 @@ def test_target_is_thirty_percent_and_the_flat_is_two_hours_after_the_bar():
     assert round(pnl) == 379
 
 
-# --------------------------------------------------------------------------
-# Plan A1: the fresh break, the morning skip, the 80-delta long leg, and the
-# +8 point exit
-# --------------------------------------------------------------------------
-
-def test_a1_takes_a_fresh_window_break_that_version_b_passes_on():
+def test_a_fresh_window_break_is_the_signal():
     bars, pdh, pdl = levels()                        # PDH 7010, PDL 6890
     today = a1_fresh_call_bars()
     noon = today[-2]                                 # the 12:00 close, 7011
-    # version B has no trigger on this day, so B passes on it
-    assert qualifies(noon, bars + today, pdh, pdl, "B") is None
-    found = qualifies(noon, bars + today, pdh, pdl, "A1")
+    found = qualifies(noon, bars + today, pdh, pdl)
     assert found is not None and found.direction == "CALL"
-    assert found.entry is noon
-    assert found.trigger is noon                     # the break bar, not a trigger rule
-    # A1 is the default, so the omitted argument is the same trade
-    omitted = qualifies(noon, bars + today, pdh, pdl)
-    assert omitted is not None and omitted.direction == "CALL" and omitted.entry is noon
-    # the scanner agrees with the qualifier, named or omitted
-    first = first_breakout(bars + today, pdh, pdl, plan="A1")
+    assert found.entry is noon and found.trigger is noon
+    first = first_breakout(bars + today, pdh, pdl)
     assert first is not None and first.entry is noon
-    assert first_breakout(bars + today, pdh, pdl).entry is noon
-    assert first_breakout(bars + today, pdh, pdl, plan="B") is None
-    # A1's morning skip is untouched: nothing from 10:15 to 11:00 is beyond the levels
     assert morning_break(today, pdh, pdl) is None
 
 
-def test_a1_still_takes_only_the_first_qualifying_window_close():
+def test_only_the_first_qualifying_window_close_is_taken():
     bars, pdh, pdl = levels()
     today = [
         b(DAY, 9, 30, 7000, 7008, 6995, 7002),       # 9:45 close, inside the levels
         b(DAY, 11, 45, 7008, 7025, 7006, 7011),      # 12:00 close, the first break
         b(DAY, 12, 0, 7012, 7030, 7010, 7018),       # 12:15 close, also beyond PDH
     ]
-    first = first_breakout(bars + today, pdh, pdl, plan="A1")
+    first = first_breakout(bars + today, pdh, pdl)
     assert first is not None and first.entry is today[1]
-    # the later bar on its own would still qualify; it is simply not the first
-    assert qualifies(today[2], bars + today, pdh, pdl, "A1") is not None
+    assert qualifies(today[2], bars + today, pdh, pdl) is not None
 
 
-def test_an_a1_break_after_noon_waits_for_its_own_close():
+def test_a_break_after_noon_waits_for_its_own_close():
     bars, pdh, pdl = levels()
     today = [
         b(DAY, 11, 45, 7000, 7008, 6995, 7002),      # 12:00 close, inside the levels
@@ -315,44 +241,36 @@ def test_an_a1_break_after_noon_waits_for_its_own_close():
     ]
     noon_fifteen = datetime(DAY.year, DAY.month, DAY.day, 12, 15, tzinfo=ET)
     half_past = datetime(DAY.year, DAY.month, DAY.day, 12, 30, tzinfo=ET)
-    assert first_breakout(bars + today, pdh, pdl, noon_fifteen, "A1") is None
-    found = first_breakout(bars + today, pdh, pdl, half_past, "A1")
+    assert first_breakout(bars + today, pdh, pdl, noon_fifteen) is None
+    found = first_breakout(bars + today, pdh, pdl, half_past)
     assert found is not None and found.entry is today[2]
 
 
-def test_a1_takes_a_fresh_put_break_with_no_earlier_close_below_pdl():
+def test_a_fresh_put_break_needs_no_earlier_close_below_pdl():
     bars, pdh, pdl = levels()
     today = [
-        b(DAY, 9, 30, 7000, 7008, 6995, 7002),       # 9:45 close, inside the levels
-        b(DAY, 11, 45, 6900, 6905, 6880, 6889),      # 12:00 close, the first break of PDL
+        b(DAY, 9, 30, 7000, 7008, 6995, 7002),
+        b(DAY, 11, 45, 6900, 6905, 6880, 6889),
     ]
-    assert qualifies(today[-1], bars + today, pdh, pdl, "B") is None
-    found = qualifies(today[-1], bars + today, pdh, pdl, "A1")
+    found = qualifies(today[-1], bars + today, pdh, pdl)
     assert found is not None and found.direction == "PUT"
     assert found.entry is today[-1] and found.trigger is today[-1]
 
 
-def test_the_a1_signal_is_strict_at_the_level_and_still_checks_calls_first():
+def test_the_signal_is_strict_at_the_level_and_checks_calls_first():
     _bars, pdh, pdl = levels()
-    # equal to PDH or PDL is not beyond it
     equal_high = b(DAY, 11, 45, 7000, 7020, 6990, 7010)
     equal_low = b(DAY, 11, 45, 6900, 6910, 6880, 6890)
-    assert qualifies(equal_high, [equal_high], pdh, pdl, "A1") is None
-    assert qualifies(equal_low, [equal_low], pdh, pdl, "A1") is None
-    # the window is the same five closes: an 11:45 close is outside it on A1 too
+    assert qualifies(equal_high, [equal_high], pdh, pdl) is None
+    assert qualifies(equal_low, [equal_low], pdh, pdl) is None
     eleven = b(DAY, 11, 30, 7005, 7030, 7000, 7011)
-    assert qualifies(eleven, [eleven], pdh, pdl, "A1") is None
-    # pathological levels so one close is both above PDH and below PDL: calls win
+    assert qualifies(eleven, [eleven], pdh, pdl) is None
     both = b(DAY, 11, 45, 150, 160, 140, 150)
-    found = qualifies(both, [both], pdh=100, pdl=200, plan="A1")
+    found = qualifies(both, [both], pdh=100, pdl=200)
     assert found is not None and found.direction == "CALL"
-    # whitespace and case on the plan name are forgiven; anything else is version B
-    noon = b(DAY, 11, 45, 7008, 7025, 7006, 7011)
-    assert qualifies(noon, [noon], pdh, pdl, " a1 ") is not None
-    assert qualifies(noon, [noon], pdh, pdl, "B") is None
-    assert qualifies(noon, [noon], pdh, pdl, "") is None
 
-def test_the_a1_morning_skip_is_the_1015_through_1100_closes():
+
+def test_the_morning_skip_is_the_1015_through_1100_closes():
     _bars, pdh, pdl = levels()                       # PDH 7010, PDL 6890
     quiet = a1_call_bars()
     assert morning_break(quiet, pdh, pdl) is None
@@ -372,16 +290,16 @@ def test_the_a1_morning_skip_is_the_1015_through_1100_closes():
     assert morning_break([b(DAY, 10, 0, 7000, 7030, 6880, 6890)], pdh, pdl) is None
     # a bar inside the window that only traded through the level is not a break
     assert morning_break([b(DAY, 10, 0, 7000, 7050, 6800, 7005)], pdh, pdl) is None
-    # one such close is the whole day, and the first one is the one reported
-    broke = morning_break(today_call_bars(), pdh, pdl)
+    broke = morning_break(
+        [b(DAY, 9, 30, 7000, 7012, 6990, 7005), b(DAY, 10, 0, 7000, 7030, 7000, 7011)],
+        pdh, pdl)
     assert broke is not None and (broke.t.hour, broke.t.minute) == (10, 0)
     assert morning_break([], pdh, pdl) is None        # a missing bar is not a break
+    assert morning_break(today_call_bars(), pdh, pdl) is None
 
 
-def test_the_a1_long_leg_is_the_in_the_money_delta_nearest_80():
-    assert A1_TARGET_DELTA == 0.80
-    assert plan_target_delta("A1") == plan_target_delta() == 0.80   # A1 is the default
-    assert plan_target_delta("B") == 0.75
+def test_the_long_leg_is_the_in_the_money_delta_nearest_80():
+    assert TARGET_DELTA == 0.80
     spot = 7000
     quotes = {
         (6900, "C"): OptQuote(1, 1.1, delta=0.90, con_id=1),
@@ -392,41 +310,29 @@ def test_the_a1_long_leg_is_the_in_the_money_delta_nearest_80():
         (7075, "P"): OptQuote(1, 1.1, delta=-0.81, con_id=6),  # sign is ignored
         (7100, "P"): OptQuote(1, 1.1, delta=-0.79, con_id=7),
     }
-    assert select_long_strike(quotes, "C", spot, A1_TARGET_DELTA) == (6925, 0.80)
-    assert select_long_strike(quotes, "C", spot) == (6950, 0.74)
+    assert select_long_strike(quotes, "C", spot) == (6925, 0.80)
     # 0.81 and 0.79 are equally far from 0.80; the strike closer to spot wins
-    assert select_long_strike(quotes, "P", spot, A1_TARGET_DELTA) == (7075, -0.81)
+    assert select_long_strike(quotes, "P", spot) == (7075, -0.81)
 
 
-def test_b_and_a1_price_the_same_chain_with_their_own_long_leg():
+def test_the_order_buys_the_eighty_delta_and_names_a_missing_strike():
     bars, pdh, pdl = levels()
     today = today_call_bars()
-    bo = qualifies(today[-2], bars + today, pdh, pdl, "B")
+    bo = qualifies(today[-2], bars + today, pdh, pdl)
     chain = _a1_chain()
-    version_b, reason = build_order_plan(bo, chain, 7000, "B")
-    assert reason == "" and version_b.skip is False
-    assert (version_b.long_strike, version_b.short_strike) == (6950, 6980)
-    a1, reason = build_order_plan(bo, chain, 7000, "A1")
-    assert reason == "" and a1.skip is False
-    assert (a1.long_strike, a1.short_strike) == (6925, 6955)
-    assert a1.long_delta == 0.80
-    # the omitted argument is A1's leg, not B's
-    omitted, reason = build_order_plan(bo, chain, 7000)
-    assert reason == "" and (omitted.long_strike, omitted.short_strike) == (6925, 6955)
-    # width, the mid limit, and the $0.20 skip are the same rule on both plans
-    assert a1.width == version_b.width == 30
-    assert a1.em == version_b.em == 30 and a1.limit <= a1.mid
-    assert a1.slippage_per_side == pytest.approx(0.10)
+    order, reason = build_order_plan(bo, chain, 7000)
+    assert reason == "" and order.skip is False
+    assert (order.long_strike, order.short_strike) == (6925, 6955)
+    assert order.long_delta == 0.80
+    assert order.width == 30 and order.em == 30 and order.limit <= order.mid
+    assert order.slippage_per_side == pytest.approx(0.10)
     wide = _a1_chain(long_ask=58)
-    skipped, why = build_order_plan(bo, wide, 7000, "A1")
+    skipped, why = build_order_plan(bo, wide, 7000)
     assert why == "slippage" and skipped.skip is True
-    # a missing strike for the active target refuses the order and names it
     straddle_only = {
         (7000, "C"): OptQuote(14.5, 15.5, delta=0.50, con_id=70001),
         (7000, "P"): OptQuote(14.5, 15.5, delta=-0.50, con_id=70002),
     }
-    assert build_order_plan(bo, straddle_only, 7000, "B") == (None, "no 75-delta strike")
-    assert build_order_plan(bo, straddle_only, 7000, "A1") == (None, "no 80-delta strike")
     assert build_order_plan(bo, straddle_only, 7000) == (None, "no 80-delta strike")
 
 
@@ -438,8 +344,8 @@ def _a1_chain(long_ask: float = 52.2):
     return chain
 
 
-def test_the_a1_point_exit_is_eight_points_in_the_trade_direction():
-    assert A1_EXIT_POINTS == 8.0
+def test_the_point_exit_is_eight_points_in_the_trade_direction():
+    assert EXIT_POINTS == 8.0
     assert point_exit_reached("C", 7000, 7008) is True       # exactly 8 counts
     assert point_exit_reached("C", 7000, 7020.5) is True
     assert point_exit_reached("C", 7000, 7007.99) is False

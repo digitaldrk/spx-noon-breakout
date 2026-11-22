@@ -67,16 +67,8 @@ blueprint; clearing `BROKER` there refuses with
 `broker must be set in config.json: ibkr or tasty` until you add the key to
 `/data/config.json`.
 
-There is no `PLAN` variable, and the list above is closed. The trading plan is a
-key in `/data/config.json` — `"plan": "A1"` (the default, and what a missing key
-means) or `"plan": "B"` — and the seed ships on `A1`. Edit that file on the disk
-and restart the worker to switch; the resolved value is published to the children
-with the rest of the config, and the `boot` line prints it as `plan=`.
-
-A disk that was seeded while the seed still said `B` keeps that `"plan": "B"`:
-the seed is copied only when `/data/config.json` is missing and an existing file
-is never overwritten. After a deploy, read `plan=` on the `boot` line, and edit
-the key on the disk by hand if it still says `B`.
+The list above is closed. The trading rules are code, not a config key. A
+`plan` key left in `/data/config.json` from an older seed is ignored.
 
 These six win over `/data/config.json`. The worker resolves them once at boot,
 writes the result to `/data/state/service-config.json`, and points the session
@@ -106,8 +98,8 @@ Render refuses a deploy by the clock.
 | --- | --- |
 | overnight | `waiting` for the next session. Weekends, NYSE holidays, early closes, and any year past the hard-coded 2026–2027 list log `skip` and trade nothing. |
 | 11:45 | starts the session as a child process: `python -m spx_noon` |
-| 12:00–13:00 | the five 15-minute closes. At most one spread, long option nearest 80 delta on plan `A1` (the default) or 75 on `B`, limit at the mid. Plan `A1` skips the day outright when a 10:15–11:00 close already broke the prior day's high or low. |
-| up to 15:00 | an open spread is managed to +8 SPX points (plan `A1`) or its +30% target (plan `B`), or flat two hours after the entry bar. Nothing is closed at 14:00. |
+| 12:00–13:00 | the five 15-minute closes. At most one spread, long option nearest 80 delta, limit at the mid. The day is skipped when a 10:15–11:00 close already broke the prior day's high or low. |
+| up to 15:00 | an open spread is managed to +8 SPX points, or flat two hours after the entry bar. Nothing is closed at 14:00. |
 | 15:10 | with nothing open, the session stops looking and exits. |
 | 16:20 | `python -m spx_noon wrap --now` once. Read-only: it places no order, and writes `reports/wrap-<date>.md`, then upserts one `High Noon` row on the shared sheet (below). |
 
@@ -164,17 +156,12 @@ URL to open and no health check to read. Lines are plain and start with one of
 `boot`, `waiting`, `running`, `done`, `skip`, `restart`, or `error`:
 
 ```
-boot broker=tasty mode=live plan=A1 home=/data config=/data/config.json child-config=/data/state/service-config.json DATA=api.tastyworks.com ORDERS=api.cert.tastyworks.com REAL MONEY=NO
+boot broker=tasty mode=live home=/data config=/data/config.json child-config=/data/state/service-config.json DATA=api.tastyworks.com ORDERS=api.cert.tastyworks.com REAL MONEY=NO
 waiting the 2026-11-16 session at 2026-11-16 11:45 ET, 3h12m away
 running session 2026-11-16 try 1
 ```
 
 `DATA=` and `ORDERS=` on that line are the two hosts, not the variables.
-`plan=` is the resolved trading plan off `/data/config.json`, so this line is
-what proves which plan is armed and which rules a new entry will take. The
-session child's announce ends with the same value as `PLAN=`. A spread the
-session reloaded from the disk keeps the plan it was opened under instead; the
-session report names that one.
 `REAL MONEY=YES` needs all three of `TASTY_DATA=production`,
 `TASTY_ORDERS=production`, and `MODE=live`: a `dry` or `alerts` run transmits
 nothing, so it says `NO` even with production orders. The environment itself is

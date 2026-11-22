@@ -20,11 +20,9 @@ resolved file.
 Tastytrade orders auto-approve: no console prompt takes part. mode "dry" (the
 default) and "alerts" never transmit.
 
-``plan`` is the one trading rule that is a config key: ``A1`` (the default, and
-what a missing key means) or ``B``. It is read from the file, never from the
-environment, and each operator picks it in their own ``config.json``. Everything
-else about both plans (80 or 75 delta, +30%, $0.20/side, 2h flat, A1's morning
-skip and +8 points, 1 spread) lives in strategy.py and is not a config key.
+The trading rules (0.80 delta, the morning skip, +8 points, $0.20/side, the
+two-hour flat, one spread) live in strategy.py and are not config keys. A
+``plan`` key left in an old file is ignored.
 
 ``sheets_spreadsheet_id`` and ``sheets_credentials`` belong to the 16:20 wrap's
 row on the shared Google Sheet (:mod:`spx_noon.sheetsink`). Neither is a secret:
@@ -41,8 +39,6 @@ import os
 from dataclasses import asdict, dataclass, fields
 from datetime import time
 from pathlib import Path
-
-from .strategy import PLANS
 
 PAPER_PORT = 7497
 LIVE_PORTS = (7496, 4001)
@@ -117,21 +113,6 @@ def _env_name(value, key: str) -> str:
     return text
 
 
-def plan_name(value) -> str:
-    """``A1`` or ``B``, after stripping whitespace and upper-casing.
-
-    ``a1`` and ``b`` canonicalize. A missing key never reaches here: it is
-    :attr:`Config.plan`'s default, ``A1``. Anything else, including a blank
-    string, is a :class:`SafetyError`: a plan the code does not have must not
-    quietly become a plan it does have. The valid names are
-    :data:`spx_noon.strategy.PLANS`.
-    """
-    key = str(value or "").strip().upper()
-    if key not in PLANS:
-        raise SafetyError(f"plan must be {' or '.join(PLANS)} (got {value!r})")
-    return key
-
-
 def _t(value: str) -> time:
     parts = [int(x) for x in str(value).split(":")]
     while len(parts) < 3:
@@ -170,10 +151,6 @@ class Config:
     broker_account: str = ""
     tasty_data: str = "production"
     tasty_orders: str = "sandbox"
-
-    #: The trading plan: ``A1`` (default) or ``B``. ``validate`` canonicalizes
-    #: it and refuses anything else. Not an environment knob on any platform.
-    plan: str = "A1"
 
     ibkr_host: str = "127.0.0.1"
     ibkr_port: int = PAPER_PORT
@@ -295,7 +272,6 @@ class Config:
         return self.paper or self.live or self.ibkr_live
 
     def validate(self) -> None:
-        self.plan = plan_name(self.plan)
         self.tasty_data = _env_name(self.tasty_data, "tasty_data")
         self.tasty_orders = _env_name(self.tasty_orders, "tasty_orders")
         if self.tasty_orders == "production" and self.tasty_data != "production":
@@ -351,15 +327,11 @@ class Config:
 def startup_banner(cfg, account) -> str:
     """One line, printed and logged once the IBKR account has been verified.
 
-    ``PLAN`` is ``cfg``'s resolved trading plan, so a log proves which plan is
-    armed and which rules a new entry takes. A spread the session reloads from
-    disk keeps the plan it was opened under (``runner._pos_plan``); the session
-    report, not this line, names that one.
     Only the last four characters of the verified account appear.
     """
     return (
         f"BROKER={cfg.broker} MODE={cfg.mode} ACCOUNT={account_tail(account)} "
-        f"PORT={int(cfg.ibkr_port)} PLAN={cfg.plan} REAL MONEY={cfg.real_money_flag}"
+        f"PORT={int(cfg.ibkr_port)} REAL MONEY={cfg.real_money_flag}"
     )
 
 
@@ -382,11 +354,10 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
     it: that is how the worker's ``BROKER`` arrives. Neither one set is a
     :class:`SafetyError`.
     A ``dry_run`` key inside the file is ignored. ``mode`` sets that flag.
-    A file with no ``plan`` key loads as ``A1``, :attr:`Config.plan`'s default.
-    No config field is read from the environment, ``BROKER`` included. ``plan``,
-    ``mode``, ``tasty_data``, ``tasty_orders``, and ``broker_account`` come from
-    the file or from a keyword — there is no ``PLAN`` variable on any platform — and
-    the hosted worker resolves its own plain variables in
+    A leftover ``plan`` key is ignored with every other unknown key.
+    No config field is read from the environment, ``BROKER`` included. ``mode``,
+    ``tasty_data``, ``tasty_orders``, and ``broker_account`` come from the file
+    or from a keyword, and the hosted worker resolves its own plain variables in
     :mod:`spx_noon.service` before its children ever call this.
     """
     data: dict = {}
