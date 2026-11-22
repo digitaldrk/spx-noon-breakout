@@ -4,7 +4,7 @@
 # restart mid-day still sees today's open position. See RENDER.md.
 #
 # Plain variable names, no bot prefix: every bot is configured the same way on
-# Render. The Mac and Windows launchers keep their own SPX_NOON_HOME.
+# Render. The Mac launchers keep their own SPX_NOON_HOME.
 services:
   - type: worker
     name: spx-noon

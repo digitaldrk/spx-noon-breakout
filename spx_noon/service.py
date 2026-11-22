@@ -8,8 +8,8 @@ bounded number of times if it dies badly, and runs the read-only
 early closes, and years with no holiday list are skipped.
 
 Plain variable names, no bot prefix, the same set every bot uses on Render. The
-Mac and Windows launchers keep ``SPX_NOON_HOME`` and ``SPX_NOON_CONFIG``; this
-process reads neither. ``DATA`` is the mounted disk, not the Unix ``HOME``.
+Mac launchers keep ``SPX_NOON_HOME`` and ``SPX_NOON_CONFIG``; this process reads
+neither. ``DATA`` is the mounted disk, not the Unix ``HOME``.
 
   ``DATA``          disk mount, default ``/data``  -> ``base_dir`` for the children
   ``BROKER``        ibkr or tasty; blank or unset leaves the file's broker
@@ -44,7 +44,7 @@ from zoneinfo import ZoneInfo
 
 try:  # POSIX only; the hosted worker is Linux
     import fcntl
-except ImportError:  # pragma: no cover - Windows keeps the pid-file gate
+except ImportError:  # pragma: no cover - a non-POSIX host keeps the pid-file gate
     fcntl = None
 
 from . import resume

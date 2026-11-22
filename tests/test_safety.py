@@ -28,7 +28,7 @@ def _live_cfg(port=7496, account=LIVE_ACCOUNT, **extra):
 
 
 def test_examples_are_dry_and_carry_no_secrets():
-    for name in ("config.example.json", "config.windows.example.json"):
+    for name in ("config.example.json", "config.tasty.example.json"):
         text = (ROOT / name).read_text().lower()
         assert "refresh_token" not in text
         assert "app_secret" not in text
@@ -47,10 +47,10 @@ def test_mac_example_names_ibkr_and_is_the_paper_port(tmp_path):
     assert load_config(flipped, broker="ibkr").broker == "ibkr"
 
 
-def test_windows_example_stays_tasty_and_does_not_send():
-    text = (ROOT / "config.windows.example.json").read_text()
+def test_the_tasty_example_stays_tasty_and_does_not_send():
+    text = (ROOT / "config.tasty.example.json").read_text()
     assert "dry_run" not in text
-    cfg = load_config(ROOT / "config.windows.example.json")
+    cfg = load_config(ROOT / "config.tasty.example.json")
     assert cfg.broker == "tasty" and cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
     assert cfg.live is False and cfg.real_money is False
@@ -162,7 +162,7 @@ def test_check_fails_closed_without_a_broker_or_on_a_live_port(tmp_path, capsys)
     assert "broker must be set in config.json" in capsys.readouterr().out
 
 
-EXAMPLES = ("config.example.json", "config.windows.example.json", "config.render.example.json")
+EXAMPLES = ("config.example.json", "config.tasty.example.json", "config.render.example.json")
 
 
 def test_every_example_config_stays_on_plan_b():
@@ -207,7 +207,7 @@ def test_mac_refuses_live_and_a_non_paper_port():
     assert dry.dry_run is True and not dry.sends_orders()
 
 
-def test_windows_live_is_off_unless_asked():
+def test_tasty_live_is_off_unless_asked():
     with pytest.raises(SafetyError, match="broker must be set in config.json"):
         Config().validate()
     live = Config(broker="tasty", mode="live")
@@ -683,19 +683,9 @@ def test_run_scripts_override_the_mode_and_the_book_for_one_launch():
         assert "--mode live" not in code and "--book paper" not in code
 
 
-def test_the_windows_launchers_name_no_broker():
-    """``pwsh`` is not on this Mac, so the scripts themselves are the assertion.
-
-    ``config.json`` names the broker, so neither script takes one or passes one.
-    ``-Mode`` is still theirs.
-    """
-    for name in ("run_session.ps1", "run_wrap.ps1"):
-        text = (ROOT / name).read_text()
-        assert "--broker" not in text and "Broker" not in text
-    session = (ROOT / "run_session.ps1").read_text()
-    assert '[ValidateSet("live", "alerts", "dry")][string]$Mode = "dry"' in session
-    assert '"--mode", $Mode' in session
-    for name in ("run_session.ps1", "run_wrap.ps1", "run.sh", "run_wrap.sh"):
+def test_the_mac_launchers_name_no_broker():
+    """``config.json`` names the broker, so neither script takes one or passes one."""
+    for name in ("run.sh", "run_wrap.sh"):
         code = _code_lines((ROOT / name).read_text()).lower()
         for spelling in ("ibkr", "tasty", "broker"):
             assert spelling not in code, (name, spelling)
@@ -703,14 +693,14 @@ def test_the_windows_launchers_name_no_broker():
 
 def test_nothing_takes_a_broker_flag():
     """``config.json`` is the only source, so the flag is gone everywhere."""
-    for folder, pattern in ((ROOT / "spx_noon", "*.py"), (ROOT, "*.sh"), (ROOT, "*.ps1"),
+    for folder, pattern in ((ROOT / "spx_noon", "*.py"), (ROOT, "*.sh"),
                             (ROOT / "deploy", "*")):
         for path in folder.glob(pattern):
             text = path.read_text()
             assert "--broker" not in text, path.name
             assert "-Broker" not in text, path.name
-    for name in ("README.md", "WINDOWS_SETUP.md", "RENDER.md", "config.example.json",
-                 "config.windows.example.json", "config.render.example.json"):
+    for name in ("README.md", "RENDER.md", "config.example.json",
+                 "config.tasty.example.json", "config.render.example.json"):
         text = (ROOT / name).read_text()
         assert "--broker" not in text, name
         assert "-Broker" not in text, name

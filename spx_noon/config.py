@@ -1,7 +1,7 @@
 """Configuration. ``config.json`` names the broker, and nothing else does.
 
 ``broker`` is ``ibkr`` or ``tasty``, and a missing or blank one refuses to load.
-The Mac template says ``ibkr``, the Windows and Render templates say ``tasty``.
+The Mac template says ``ibkr``; the tasty and Render templates say ``tasty``.
 On the hosted worker a non-blank ``BROKER`` overrides the file, through the
 keyword overrides :mod:`spx_noon.service` hands this module.
 Mac runs IBKR TWS. There is one job and one config: ``mode``, ``port``,
@@ -9,14 +9,14 @@ and ``account`` are the switch, together with the TWS session the operator is
 logged into. mode "paper" is 127.0.0.1:7497 with account ids starting with D.
 mode "live" is real money on 127.0.0.1:7496 (TWS) or 4001 (IB Gateway) with an
 ``account`` that is set and does not start with D.
-Windows is tastytrade. ``tasty_data`` (default production) and ``tasty_orders``
-(default sandbox) choose the hosts.
+The hosted Render Linux worker is tastytrade. ``tasty_data`` (default
+production) and ``tasty_orders`` (default sandbox) choose the hosts.
 ``tasty_orders=production`` is real money and requires ``tasty_data=production``.
 No field here is an environment knob. ``SPX_NOON_HOME`` fills ``base_dir`` when
 the file has none and ``SPX_NOON_CONFIG`` names the default file; both belong to
-the local Mac and Windows launchers. The hosted worker reads its own plain
-variables in :mod:`spx_noon.service`, resolves them there, and hands its children
-the resolved file.
+the local Mac launchers. The hosted worker reads its own plain variables in
+:mod:`spx_noon.service`, resolves them there, and hands its children the
+resolved file.
 Tastytrade orders auto-approve: no console prompt takes part. mode "dry" (the
 default) and "alerts" never transmit.
 
@@ -176,7 +176,6 @@ class Config:
     max_orders_per_min: int = 10
     min_replace_secs: float = 15.0
     poll_secs: float = 3.0
-    toast: bool = True
     connect_timeout_s: float = 15.0
     connect_retries: int = 6
     base_dir: str = ""
