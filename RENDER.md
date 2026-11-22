@@ -130,9 +130,8 @@ not changed here: `Date`, `Boi`, `Traded`, `P&L after fees`, `Worst`,
 is `(Date, Boi)`, so a second wrap on the same date replaces that row instead of
 adding one, and Candle's and Fly's rows are never read back or rewritten.
 
-The tab follows the operating system only: Windows writes `Tod Comp`, and
-everything else — the Mac and this Linux worker — writes `Derek Comp`. There is
-no tab setting.
+The row goes on the `Derek Comp` tab, the same one the Mac writes. There is no
+tab setting.
 
 A sheet problem is **quiet**: a missing key, a blob that is not service-account
 json, the Google packages missing, or an API error each leave the markdown report

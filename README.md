@@ -128,9 +128,9 @@ theirs and are not extended here:
 | `What happened` | direction, both strikes, entry fill, exit fill, fees, and exit reason. A `skip_no_fill` or `skip_morning` day says so; a day with no rows says `No rows for today.` |
 
 The key is `(Date, Boi)`, so a second wrap on the same date replaces that row and never
-duplicates it, and Candle's and Fly's rows on the tab are left exactly as they are. The tab
-follows the operating system only — Windows `Tod Comp`, Mac and Linux (Render included)
-`Derek Comp` — and there is no tab setting.
+duplicates it, and Candle's and Fly's rows on the tab are left exactly as they are. The
+row goes on the `Derek Comp` tab, on this Mac and on the Render worker. There is no tab
+setting.
 
 The key is a Google service-account json. The first of these that is set wins:
 

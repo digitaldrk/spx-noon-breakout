@@ -6,9 +6,8 @@ with one row for Boi ``High Noon``. Candle (``spx-breakout``) and Fly
 the ``(Date, Boi)`` upsert here are theirs, copied rather than imported: this
 repo does not depend on either of them.
 
-The tab follows the operating system only — Windows ``Tod Comp``, everything
-else, Linux on Render included, ``Derek Comp``. There is no ``sheets_tab``
-setting.
+The row goes on the ``Derek Comp`` tab, on the Mac and on the Render Linux
+worker. There is no ``sheets_tab`` setting.
 
 Credentials, first match wins: ``SPX_SHEETS_CREDENTIALS_JSON`` (the whole
 service-account json, for a host with no disk to keep a key file on — it stays
@@ -27,7 +26,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
@@ -60,13 +58,13 @@ KEY_NAME = "sheets-service-account.json"
 FILL_COLS = ("fill_price", "exit_fill", "pnl")
 
 
-def machine_tab(platform: str | None = None) -> str:
-    """Which tab this machine owns. Windows is Tod's; Mac and Linux are Derek's.
+def machine_tab() -> str:
+    """The tab this bot writes: ``Derek Comp``.
 
-    Render runs Linux and writes the same ``Derek Comp`` tab the Mac does, which
-    is deliberate: it is the same book, moved to a host that stays awake.
+    The Mac and the Render Linux worker share that tab. There is no setting
+    and no operating-system switch.
     """
-    return "Tod Comp" if (platform or sys.platform) == "win32" else "Derek Comp"
+    return "Derek Comp"
 
 
 # --------------------------------------------------------------------------

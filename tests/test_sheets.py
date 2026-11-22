@@ -170,20 +170,13 @@ def test_a_sum_of_two_rows_rounds_half_a_cent_away_from_zero(tmp_path):
     assert sheet_row(DAY, rows)[3] == "2.68"
 
 
-def test_the_tab_follows_the_operating_system_and_nothing_else():
-    assert machine_tab("darwin") == TAB
-    assert machine_tab("linux") == TAB            # Render writes Derek's tab too
-    assert machine_tab("win32") == "Tod Comp"
-    assert machine_tab("freebsd13") == TAB
-
-
-def test_the_tab_is_the_only_switch_there_is(monkeypatch):
-    """No ``sheets_tab`` config field and no tab variable."""
+def test_the_tab_is_derek_comp_and_nothing_else(monkeypatch):
+    """No ``sheets_tab`` field, no tab variable, and no operating-system switch."""
     assert not hasattr(Config(broker="ibkr", mode="dry"), "sheets_tab")
-    monkeypatch.setattr(sys, "platform", "win32")
-    assert machine_tab() == "Tod Comp"
-    monkeypatch.setattr(sys, "platform", "linux")
     assert machine_tab() == TAB
+    for platform in ("darwin", "linux"):
+        monkeypatch.setattr(sys, "platform", platform)
+        assert machine_tab() == TAB
 
 
 # --------------------------------------------------------------------------
@@ -703,11 +696,16 @@ def test_the_default_spreadsheet_id_is_the_shared_one_and_the_key_is_not_a_confi
 def test_the_docs_and_the_examples_carry_the_path_the_variables_and_the_tab_rule():
     root = Path(__file__).resolve().parent.parent
     default_id = "1tnMlDTidwCYG3_H2Z-lBcIUG5KOX4tgbe8AiRopATsU"
+    for name in ("README.md", "RENDER.md", "config.example.json",
+                 "config.tasty.example.json", "config.render.example.json"):
+        text = (root / name).read_text()
+        assert "Derek Comp" in text, name
+        for gone in ("Tod Comp", "Windows", "win32"):
+            assert gone not in text, (name, gone)
     for name in ("README.md", "RENDER.md"):
         text = (root / name).read_text()
         assert default_id in text, name
         assert "sheets-service-account.json" in text, name
-        assert "Derek Comp" in text and "Tod Comp" in text, name
         assert '".[sheets]"' in text, name
         assert JSON_ENV in text, name
         for variable in ("SPX_SHEETS_CREDENTIALS", "GOOGLE_APPLICATION_CREDENTIALS"):
