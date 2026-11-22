@@ -1,4 +1,4 @@
-# Noon Breakout (plan v2, version B or A1)
+# Noon Breakout (plan v2, plan A1 or version B)
 
 0DTE SPX debit vertical. `broker` in `config.json` names the broker — `ibkr` or `tasty`, and nothing else sets it:
 
@@ -7,7 +7,7 @@
 | Mac | **IBKR** TWS (`"broker": "ibkr"`). **paper** is `127.0.0.1:7497` with account ids starting with `D`. **live** is real money on `127.0.0.1:7496` (TWS) or `4001` (IB Gateway) | `dry` (default) logs the ticket. `paper` sends it to the paper account. `live` sends real orders to the configured non-`D` account. |
 | Render Linux (hosted worker) | **tastytrade** (`"broker": "tasty"`) | `dry` and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
 
-A missing or blank `broker` refuses to start. On a Mac the config file is also the one switch between paper and real money: `mode`, `ibkr_port`, and `broker_account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first qualifying 15-minute close from noon to 1:00 PM ET, one spread, flat two hours after that bar. `plan` in `config.json` picks the rules: `B` (the default) is 75 delta with a +30% take-profit, and `A1` is 80 delta with a +8-point exit and a morning filter — see [Trading plan](#trading-plan). Candle's 10:00–11:00 strategy is a different repo and is not used here.
+A missing or blank `broker` refuses to start. On a Mac the config file is also the one switch between paper and real money: `mode`, `ibkr_port`, and `broker_account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first qualifying 15-minute close from noon to 1:00 PM ET, one spread, flat two hours after that bar. `plan` in `config.json` picks the rules: `A1` (the default) is 80 delta with a +8-point exit and a morning filter, and `B` is 75 delta with a +30% take-profit — see [Trading plan](#trading-plan). Candle's 10:00–11:00 strategy is a different repo and is not used here.
 
 **Mac:** copy `config.example.json` to `config.json`, keep TWS logged into paper on port 7497 with Read-Only API off, and use `run.sh`. `./run.sh paper` is the launch that transmits. State goes in `~/Documents/spx-noon-breakout/state`. For real money see [IBKR live mode](#ibkr-live-mode-real-money).
 
@@ -31,10 +31,12 @@ Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` 
 
 The delta, the width, the $0.20 skip, the +30% target, A1's 8 points, and the two-hour flat are code, not config keys. `plan` is the one trading rule that is a key. They are in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md).
 
+The resolved plan is in the logs. The Mac/IBKR session banner carries `PLAN=<plan>`, the hosted worker's `boot` line carries `plan=<plan>`, and the tastytrade session announce ends with `PLAN=<plan>`. All three print the value the config resolved to, so a log proves which plan is armed and which rules a new entry takes that day. A spread the session reloaded from disk is the exception: it keeps the plan it was opened under, and the session report is what names that one.
+
 | Key | In the examples | Role |
 | --- | --- | --- |
 | `broker` | `ibkr` (Mac), `tasty` (tastytrade, Render) | The broker: `ibkr` or `tasty`. Missing or blank refuses to start, and so does any other value. The Render worker's `BROKER` overrides it. |
-| `plan` | `B` | The trading plan: `B` or `A1`. A missing key is `B`. Anything else refuses to start. There is no `PLAN` environment variable, including on the Render worker. |
+| `plan` | `A1` | The trading plan: `A1` or `B`. A missing key is `A1`. Anything else refuses to start. There is no `PLAN` environment variable, including on the Render worker. |
 | `mode` | `dry` | Mac/IBKR: `dry`, `alerts`, `paper`, or `live`. Tastytrade: `dry`, `alerts`, or `live`. `dry` and `alerts` never send. `paper` (Mac), `live` (Mac, real money), and `live` (tastytrade) can. |
 | `tasty_data` | `production` | Quote, bar, chain, and greek host. Missing production credentials fail startup. No fallback to sandbox data. |
 | `tasty_orders` | `sandbox` | Order host. `production` is real money and requires `tasty_data=production`. Startup prints `DATA=<host> ORDERS=<host> REAL MONEY=YES/NO`. |
@@ -66,11 +68,12 @@ Once the account is verified the session prints and logs one banner, even on a d
 trade:
 
 ```
-BROKER=ibkr MODE=live ACCOUNT=4321 PORT=7496 REAL MONEY=YES
+BROKER=ibkr MODE=live ACCOUNT=4321 PORT=7496 PLAN=A1 REAL MONEY=YES
 ```
 
-Only the last four characters of the account appear. Paper, dry, and alerts print
-`REAL MONEY=NO`. Every IBKR order log line carries the same `REAL MONEY=YES/NO` flag.
+Only the last four characters of the account appear. `PLAN=` is the plan this config resolved
+to, which is the plan a new entry takes today. Paper, dry, and alerts print `REAL MONEY=NO`.
+Every IBKR order log line carries the same `REAL MONEY=YES/NO` flag.
 
 ### Operator checklist
 
@@ -190,11 +193,11 @@ Hosted tastytrade: [RENDER.md](RENDER.md).
 
 ## Trading plan
 
-The bot implements version B in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md), and plan A1 behind one key. Readings that the plan leaves open are in [docs/AMBIGUITIES.md](docs/AMBIGUITIES.md).
+The bot runs plan A1 (section 10 of [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md)) by default, and version B (section 1 and the checklist in section 8) behind one key. Readings that the plan leaves open are in [docs/AMBIGUITIES.md](docs/AMBIGUITIES.md).
 
-`"plan": "B"` (the default, and what a missing key means) or `"plan": "A1"`. One code base, one job; each machine picks its plan in its own `config.json`. Everything both plans share stays the same: the 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20-per-side skip, and the flat two hours after the entry bar.
+`"plan": "A1"` (the default, and what a missing key means) or `"plan": "B"`. One code base, one job; each machine picks its plan in its own `config.json`. Everything both plans share stays the same: the 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20-per-side skip, and the flat two hours after the entry bar.
 
-A1 changes exactly four things:
+A1 changes exactly four things from B:
 
 | | B | A1 |
 | --- | --- | --- |
@@ -205,12 +208,14 @@ A1 changes exactly four things:
 
 A skipped morning sends no order and writes one `skip_morning` row in the trade log. An A1 exit on the points reads `points` there. The 0.75, the 0.80, and the 8 points are code; `plan` is the only key.
 
+A spread that is already open keeps the plan it was opened under, whatever `plan` says now. A position file with no `plan` field was written by a version B session (or before the key existed), so it keeps B's +30% GTC exit — see item 11 in [docs/AMBIGUITIES.md](docs/AMBIGUITIES.md).
+
 ## Files
 
 | Path | What it does |
 | --- | --- |
-| `spx_noon/strategy.py`, `pricing.py` | Breakout, the 75- or 80-delta vertical, slippage skip, +30%, A1's morning filter and +8 points, two-hour clock |
-| `spx_noon/runner.py` | The session: one fill, the plan's exit (GTC target or +8 points), hard flat, trade log |
+| `spx_noon/strategy.py`, `pricing.py` | Breakout, the 80- or 75-delta vertical, slippage skip, A1's morning filter and +8 points, B's +30%, two-hour clock |
+| `spx_noon/runner.py` | The session: one fill, the plan's exit (+8 points or the GTC target), hard flat, trade log |
 | `spx_noon/ib.py` | Mac broker. `ib_async` against TWS paper (7497) or live (7496/4001) |
 | `spx_noon/tasty.py`, `check_tasty.py` | tastytrade broker, used by the hosted Render Linux worker and by a local `tasty` config. Production data session, sandbox orders unless configured. Auto-approves. |
 | `spx_noon/guard.py` | In-process ticket guard. Refuses a live order with no approved ticket, a price over the cap, or more than 10 requests a minute |

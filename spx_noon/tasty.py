@@ -328,7 +328,9 @@ class TastyBroker(Broker):
             session_host(self.data_session), session_host(self.order_session), self.cfg.tasty_orders)
 
     def _announce(self) -> str:
-        line = self.safety_banner()
+        # ``PLAN`` goes on the announce line, not into ``safety_banner()``: that
+        # function's contract is the two hosts and the real-money flag.
+        line = f"{self.safety_banner()} PLAN={self.cfg.plan}"
         log.info("%s", line)
         print(line, flush=True)
         return line

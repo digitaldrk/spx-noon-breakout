@@ -1,25 +1,26 @@
-"""Noon breakout, plan v2. Version B is the default; A1 is the config key ``plan``.
+"""Noon breakout, plan v2. Plan ``A1`` is the default; ``B`` is the other value
+the config key ``plan`` takes.
 
 Window: 15-minute bars that close at 12:00, 12:15, 12:30, 12:45, and 1:00 PM ET.
 The first bar that qualifies is the candidate. At most one fill per day.
 
 Calls are checked before puts. There is no moving-average gate.
 
-On version B, a call bar qualifies when all three are true:
+On plan ``A1``, the default and what a missing key means, the signal is the day's
+first window close beyond PDH (calls) or PDL (puts). There is no trigger: no
+earlier close is read, and a fresh break on the window bar itself qualifies.
+
+On version B, the alternative, a call bar qualifies when all three are true:
   * some earlier 15m close today, from the 9:45 close on, was above PDH
     (the first such bar is the trigger)
   * this close is still above PDH
   * this close is above the trigger bar's low
 
-Puts mirror that with PDL and the trigger bar's high.
-
-On plan ``A1`` the signal is the day's first window close beyond PDH (calls) or
-PDL (puts). There is no trigger: no earlier close is read, and a fresh break on
-the window bar itself qualifies. Beyond is strict on both plans, and both check
-calls before puts.
+Puts mirror that with PDL and the trigger bar's high. Beyond is strict on both
+plans, and both check calls before puts.
 
 Both plans share the window, the width, the mid limit, the $0.20 skip, and the
-two-hour flat. Plan ``A1`` changes four things:
+two-hour flat. Plan ``A1`` changes four things from B:
 
   * the signal is the first window close beyond PDH/PDL, with no trigger bar
     (:func:`qualifies`)
@@ -51,9 +52,9 @@ STRIKE_STEP = 5.0
 RTH_OPEN = time(9, 30)
 RTH_LAST_START = time(16, 0)
 
-#: The two trading plans. ``B`` is the default and is what a missing key means.
+#: The two trading plans. ``A1`` is the default and is what a missing key means.
 #: The operator picks one in their own ``config.json``; nothing else selects it.
-PLANS = ("B", "A1")
+PLANS = ("A1", "B")
 #: Plan A1's long leg. Plan B's is :data:`TARGET_DELTA`.
 A1_TARGET_DELTA = 0.80
 #: Plan A1's morning skip: these four closes only. A 9:45 close (bar start 9:30)
@@ -98,8 +99,8 @@ class Breakout:
     direction: str  # CALL or PUT
     right: str      # C or P
     entry: Bar
-    #: Version B's trigger bar. On A1, which has no trigger rule, this is the
-    #: break bar itself, so the stored note still names a real bar.
+    #: Version B's trigger bar. On A1, the default, which has no trigger rule,
+    #: this is the break bar itself, so the stored note still names a real bar.
     trigger: Bar
     pdh: float
     pdl: float
@@ -198,17 +199,17 @@ def _prior_closes(today_bars: list[Bar], entry: Bar) -> list[Bar]:
 
 
 def qualifies(entry: Bar, today_bars: list[Bar], pdh: float, pdl: float,
-              plan: str = "B") -> Breakout | None:
+              plan: str = "A1") -> Breakout | None:
     """Return the breakout on this bar, or None. ``plan`` picks the signal.
 
-    Version B, the default and what a missing plan means: the trigger is the
-    first earlier close from 9:45 on beyond the level, not this bar and not a
-    later retest, and this close must also be beyond that bar's low (calls) or
-    high (puts).
+    Plan A1, the default and what a missing plan means: this close beyond the
+    level is the whole signal. No earlier close is read. The break bar is its
+    own :attr:`Breakout.trigger`, which is only what the position note names;
+    A1 has no trigger rule.
 
-    Plan A1: this close beyond the level is the whole signal. No earlier close
-    is read. The break bar is its own :attr:`Breakout.trigger`, which is only
-    what the position note names; A1 has no trigger rule.
+    Version B, the alternative: the trigger is the first earlier close from 9:45
+    on beyond the level, not this bar and not a later retest, and this close must
+    also be beyond that bar's low (calls) or high (puts).
 
     Calls first on both plans. Beyond is strict on both.
     """
@@ -231,7 +232,7 @@ def qualifies(entry: Bar, today_bars: list[Bar], pdh: float, pdl: float,
 
 
 def first_breakout(today_bars: list[Bar], pdh: float, pdl: float,
-                   up_to: datetime | None = None, plan: str = "B") -> Breakout | None:
+                   up_to: datetime | None = None, plan: str = "A1") -> Breakout | None:
     """First qualifying window bar whose close is at or before ``up_to``.
 
     ``plan`` is forwarded to :func:`qualifies`, so this cannot disagree with the
@@ -253,13 +254,14 @@ def _is_a1(plan: str) -> bool:
     return str(plan).strip().upper() == "A1"
 
 
-def plan_target_delta(plan: str = "B") -> float:
+def plan_target_delta(plan: str = "A1") -> float:
     """The long leg's delta for this plan: 0.80 on A1, 0.75 on B."""
     return A1_TARGET_DELTA if _is_a1(plan) else TARGET_DELTA
 
 
 def morning_break(today_bars: list[Bar], pdh: float, pdl: float) -> Bar | None:
-    """Plan A1's morning skip. The first 10:15–11:00 close beyond PDH/PDL, or None.
+    """Plan A1's morning skip, so the default's. The first 10:15–11:00 close
+    beyond PDH/PDL, or None.
 
     ``today_bars`` are today's RTH bars. Timestamps are bar starts, so the
     window is the bars starting 10:00, 10:15, 10:30, and 10:45. Beyond is
@@ -388,11 +390,12 @@ def _norm_quotes(quotes: dict) -> dict:
 
 
 def build_order_plan(breakout: Breakout, quotes: dict, spot: float,
-                     plan: str = "B") -> tuple[OrderPlan | None, str]:
+                     plan: str = "A1") -> tuple[OrderPlan | None, str]:
     """Turn a qualified bar into a 1-lot debit vertical, or a reason string.
 
-    ``plan`` picks the long leg only: 0.75 delta on B, 0.80 on A1. The width,
-    the short strike, the mid limit, and the $0.20 skip are the same on both.
+    ``plan`` picks the long leg only: 0.80 delta on A1, the default, and 0.75 on
+    B. The width, the short strike, the mid limit, and the $0.20 skip are the
+    same on both.
     """
     if spot is None:
         return None, "no spot"

@@ -1,11 +1,11 @@
 """One noon session.
 
 Waits for the 12:00–1:00 PM ET closes, takes the first qualifying bar, and
-sends at most one spread. Config ``plan`` picks the rules: ``B`` (the default)
-needs an earlier trigger close from 9:45 on and rests a debit × 1.30 GTC, and
-``A1`` takes the first window close beyond PDH/PDL with no trigger, skips a day
-whose 10:15–11:00 closes already broke PDH/PDL, buys the 80 delta, and sells at
-+8 SPX points. Both flatten two hours after the entry bar.
+sends at most one spread. Config ``plan`` picks the rules: ``A1`` (the default)
+takes the first window close beyond PDH/PDL with no trigger, skips a day whose
+10:15–11:00 closes already broke PDH/PDL, buys the 80 delta, and sells at
++8 SPX points, and ``B`` needs an earlier trigger close from 9:45 on and rests a
+debit × 1.30 GTC. Both flatten two hours after the entry bar.
 
 One job runs it either way: paper on a Mac goes to
 TWS 7497, and IBKR live — config ``mode`` ``live`` with a non-``D`` account —
@@ -62,7 +62,7 @@ class _State:
     halt: bool = False
     #: The plan this session actually ran: today's config, or the plan stored on
     #: a position it reloaded. The report names this one, not the config key.
-    plan: str = "B"
+    plan: str = "A1"
 
 
 def _setup_logging(cfg) -> None:
@@ -272,7 +272,7 @@ def _ensure_position_quotes(cfg, broker, pos: dict) -> None:
         log.warning("could not subscribe the open spread: %s", exc)
 
 
-def _ticket_text(plan, account: str = "", *, broker: str = "", plan_name: str = "B") -> str:
+def _ticket_text(plan, account: str = "", *, broker: str = "", plan_name: str = "A1") -> str:
     if broker == "tasty":
         tail = "No stop. Tastytrade live auto-approves this ticket. The price cap is the mid limit."
     else:
@@ -333,12 +333,21 @@ def _restore_dt(value):
     return datetime.fromisoformat(str(value))
 
 
-def _row_from_plan(plan, mode: str, reason: str, **extra) -> dict:
-    pos = _pos_from_plan(plan, fill=None)
+def _row_from_plan(order_plan, mode: str, reason: str, plan: str = "A1", **extra) -> dict:
+    """A trade-log row for a candidate that never became a position.
+
+    ``plan`` is the session's plan name, which callers pass as ``cfg.plan`` or as
+    the plan the working entry went out under, so the position dict this builds
+    from is never labelled with a plan the session did not run. It does not
+    reach the csv: :data:`spx_noon.logbook.TRADE_COLS` has no ``plan`` column,
+    and :func:`_base_row` reads none. It is threaded anyway so the default's
+    name cannot leak in if that row ever grows one.
+    """
+    pos = _pos_from_plan(order_plan, fill=None, plan=plan)
     row = _base_row(pos, mode)
     row["fill_price"] = extra.get("fill_price", "")
-    row["slippage_vs_mid"] = extra.get("slippage_vs_mid", plan.natural - plan.mid)
-    row["slippage_per_side"] = extra.get("slippage_per_side", plan.slippage_per_side)
+    row["slippage_vs_mid"] = extra.get("slippage_vs_mid", order_plan.natural - order_plan.mid)
+    row["slippage_per_side"] = extra.get("slippage_per_side", order_plan.slippage_per_side)
     row["exit_reason"] = reason
     row["exit_time"] = extra.get("exit_time", "")
     row["exit_fill"] = extra.get("exit_fill", "")
@@ -351,7 +360,10 @@ def _pos_plan(pos: dict) -> str:
     """The plan this spread was opened under. A position with none is version B.
 
     A file written before the ``plan`` key existed, or by a B session, has no
-    plan on it, so a restart manages it exactly as it does today.
+    plan on it, so a restart manages it exactly as it does today. Deliberately
+    not :attr:`Config.plan`'s default, which is ``A1``: that would put a
+    75-delta B spread on A1's +8 point exit instead of its +30% GTC. See
+    ``docs/AMBIGUITIES.md`` item 11.
     """
     return str(pos.get("plan") or "B").strip().upper()
 
@@ -380,14 +392,16 @@ def _skip_row(cfg, when: datetime, pdh: float, pdl: float, reason: str, note: st
 
 
 def _pos_from_plan(order_plan, fill, **extra) -> dict:
-    """The saved position dict. ``plan`` is the trading plan's name, ``B`` unless
-    the caller says otherwise; ``order_plan`` is today's :class:`OrderPlan`."""
+    """The saved position dict. ``plan`` is the trading plan's name, ``A1`` (the
+    default) unless the caller says otherwise; ``order_plan`` is today's
+    :class:`OrderPlan`. Every caller that knows the session's or the working
+    entry's plan passes it, so this literal is only the default's name."""
     plan = order_plan
     entry_close = plan.entry_close
     pos = {
         "date": entry_close.date().isoformat(),
         "status": "working",
-        "plan": "B",
+        "plan": "A1",
         "direction": plan.direction,
         "right": plan.right,
         "spx": plan.spot,
@@ -673,7 +687,11 @@ def _poll_working(cfg, broker, notifier, out, state: _State) -> None:
         log_order(cfg, logging.WARNING,
                   "entry %s still working after cancel; keeping it", working["id"])
         return
-    out.append_trade(_row_from_plan(working["order_plan"], cfg.mode, "skip_no_fill"))
+    # The entry's own plan, not today's config: a working file written by a
+    # version B build has no plan on it and stays version B. The csv has no plan
+    # column, so this only keeps the row's position dict honest.
+    out.append_trade(_row_from_plan(working["order_plan"], cfg.mode, "skip_no_fill",
+                                    plan=_pos_plan(working)))
     notifier.alert("Noon no fill", f"entry {working['ref']} cancelled unfilled. Not chasing.")
     state.working = None
     _clear_pins(broker)
@@ -698,6 +716,12 @@ def _revalidate(cfg, broker, breakout, spot: float, expiry: str):
 def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes) -> None:
     if state.done_for_day or state.halt or state.working or state.position:
         return
+    # Past that guard nothing from another plan is live: a reloaded position or
+    # working entry would have returned above. Anything this session does from
+    # here runs on today's config, so the report names that plan. Without this a
+    # restart that reloaded a version B entry, then saw it cancel unfilled, would
+    # keep calling the day B after entering on A1.
+    state.plan = cfg.plan
     now = broker.now()
     grace = timedelta(seconds=cfg.decision_grace_s)
     for close_at in closes:
@@ -762,14 +786,15 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
             continue
         state.consumed.add(close_at)
         if plan.skip:
-            out.append_trade(_row_from_plan(plan, cfg.mode, "skip_slippage"))
+            out.append_trade(_row_from_plan(plan, cfg.mode, "skip_slippage", plan=cfg.plan))
             notifier.alert(
                 "Noon skip",
                 f"slippage {plan.slippage_per_side:.3f}/side is over 0.20. Not chasing.",
             )
             continue
         if not cfg.sends_orders():
-            out.append_trade(_row_from_plan(plan, cfg.mode, "dry_signal", slippage_vs_mid="", slippage_per_side=""))
+            out.append_trade(_row_from_plan(plan, cfg.mode, "dry_signal", plan=cfg.plan,
+                                            slippage_vs_mid="", slippage_per_side=""))
             notifier.alert(
                 "Noon signal (not sent)",
                 _ticket_text(plan, broker=cfg.broker, plan_name=cfg.plan),
@@ -787,15 +812,15 @@ def _maybe_enter(cfg, broker, notifier, out, state: _State, account: str, closes
             notifier.alert("Noon ticket " + ticket,
                            _ticket_text(plan, account, broker=cfg.broker, plan_name=cfg.plan))
             if not preview.get("ok", False):
-                out.append_trade(_row_from_plan(plan, cfg.mode, "skip_preview"))
+                out.append_trade(_row_from_plan(plan, cfg.mode, "skip_preview", plan=cfg.plan))
                 continue
             if broker.now() > close_at + grace:
-                out.append_trade(_row_from_plan(plan, cfg.mode, "skip_stale"))
+                out.append_trade(_row_from_plan(plan, cfg.mode, "skip_stale", plan=cfg.plan))
                 notifier.alert("Noon skipped", f"{ticket} decision window closed")
                 continue
             fresh = _revalidate(cfg, broker, breakout, float(spot), expiry)
             if fresh is None or fresh.skip:
-                out.append_trade(_row_from_plan(plan, cfg.mode, "skip_stale"))
+                out.append_trade(_row_from_plan(plan, cfg.mode, "skip_stale", plan=cfg.plan))
                 notifier.alert("Noon skipped", f"{ticket} quotes moved or went stale")
                 continue
             plan = fresh

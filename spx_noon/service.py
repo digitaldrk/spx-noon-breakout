@@ -563,8 +563,8 @@ def main(argv=None) -> int:
     if seeded:
         log.info("boot seeded %s from %s", path, SEED_NAME)
     log.info(
-        "boot broker=%s mode=%s home=%s config=%s child-config=%s %s",
-        cfg.broker, cfg.mode, cfg.home, path, published,
+        "boot broker=%s mode=%s plan=%s home=%s config=%s child-config=%s %s",
+        cfg.broker, cfg.mode, cfg.plan, cfg.home, path, published,
         safety_banner(host_for(cfg.tasty_data), host_for(cfg.tasty_orders),
                       cfg.tasty_orders, real=real_money(cfg)),
     )

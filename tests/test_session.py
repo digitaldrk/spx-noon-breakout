@@ -1,4 +1,10 @@
-"""One simulated day: skip, single fill, target, time flat, a restart, and plan A1."""
+"""One simulated day: skip, single fill, target, time flat, a restart, and plan A1.
+
+Plan A1 is the config default. ``_run`` and ``_live_cfg`` are the version B
+scenarios and say ``plan="B"`` out loud, because ``today_call_bars()`` has a
+10:15 break that A1 skips. ``_run(..., plan=None)`` leaves the key out, so the
+session runs on whatever :class:`Config` defaults to.
+"""
 import csv
 import json
 import sys
@@ -65,7 +71,10 @@ def _quotes(kind: str):
     return book
 
 
-def _run(tmp, kind, start_hour=11, start_min=50, bars=None, **cfg_extra):
+def _run(tmp, kind, start_hour=11, start_min=50, bars=None, plan="B", **cfg_extra):
+    """A version B session by default. ``plan=None`` omits the key entirely."""
+    if plan is not None:
+        cfg_extra.setdefault("plan", plan)
     bars = levels()[0] + (today_call_bars() if bars is None else bars)
     start = datetime(2026, 10, 28, start_hour, start_min, tzinfo=ET)
     broker = SimBroker(start, bars, _quotes(kind), spot=7000)
@@ -148,12 +157,13 @@ def test_dry_and_alerts_never_reach_the_order_adapter(tmp_path, mode):
     # and the adapter itself is never reached, even with a qualifying bar
     start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
     guarded = _NoOrders(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
-    assert run_session(_cfg(tmp_path / (mode + "2"), mode=mode), guarded) == 0
+    assert run_session(_cfg(tmp_path / (mode + "2"), mode=mode, plan="B"), guarded) == 0
 
 
 def _live_cfg(tmp, **extra):
+    """An IBKR live config on version B: these scenarios trade ``today_call_bars()``."""
     data = dict(broker="ibkr", mode="live", ibkr_port=7496, broker_account=LIVE_ACCOUNT,
-                base_dir=str(tmp), loop_interval_s=60, decision_grace_s=90)
+                base_dir=str(tmp), plan="B", loop_interval_s=60, decision_grace_s=90)
     data.update(extra)
     return Config(**data)
 
@@ -179,7 +189,7 @@ def test_ibkr_live_keeps_its_own_book_position_file_and_report(tmp_path, monkeyp
     assert [row["exit_reason"] for row in rows if row["exit_reason"] == "target"]
     assert all(row["mode"] == "live" for row in rows)
     printed = capsys.readouterr().out
-    assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=7496 REAL MONEY=YES" in printed
+    assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=7496 PLAN=B REAL MONEY=YES" in printed
     assert LIVE_ACCOUNT not in printed
 
 
@@ -209,10 +219,11 @@ def test_a_live_session_banner_prints_on_a_day_that_will_not_trade(tmp_path, mon
     start = datetime(2026, 11, 26, 11, 50, tzinfo=ET)  # Thanksgiving
     bars = [Bar(datetime(2026, 11, 25, 10, 0, tzinfo=ET), 1, 2, 1, 1)]
     broker = SimBroker(start, bars, _quotes("target"), spot=7000, account=LIVE_ACCOUNT)
-    assert run_session(_live_cfg(tmp_path, ibkr_port=4001), broker) == 0
+    assert run_session(_live_cfg(tmp_path, ibkr_port=4001, plan="A1"), broker) == 0
     assert broker.placed == []
     printed = capsys.readouterr().out
-    assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=4001 REAL MONEY=YES" in printed
+    # the banner names the plan that is armed, even on a day that will not trade
+    assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=4001 PLAN=A1 REAL MONEY=YES" in printed
 
 
 def test_a_live_session_stops_on_an_account_mismatch(tmp_path, monkeypatch):
@@ -313,7 +324,7 @@ def test_wrap_with_no_book_follows_a_live_config(tmp_path):
 
 
 def test_restart_manages_the_open_spread_and_does_not_enter_again(tmp_path):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, plan="B")
     cfg.ensure_dirs()
     deadline = datetime(2026, 10, 28, 14, 0, tzinfo=ET)
     entry = datetime(2026, 10, 28, 12, 0, tzinfo=ET)
@@ -400,13 +411,13 @@ def test_empty_quotes_retry_inside_the_grace_window(tmp_path):
     bars = levels()[0] + today_call_bars()
     start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
     broker = _Warm(start, bars, _quotes("target"), spot=7000)
-    assert run_session(_cfg(tmp_path), broker) == 0
+    assert run_session(_cfg(tmp_path, plan="B"), broker) == 0
     buys = [order for order in broker.placed if order["action"] == "BUY"]
     assert len(buys) == 1
 
 
 def test_closed_fill_blocks_a_second_entry_after_restart(tmp_path):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, plan="B")
     cfg.ensure_dirs()
     from spx_noon.resume import save
     save(cfg.state_dir, {"date": DAY.isoformat(), "status": "closed", "had_fill": True, "fill_price": 12.0})
@@ -490,7 +501,7 @@ def test_flatten_stops_after_three_failed_attempts(tmp_path):
 def test_session_starts_the_quote_stream(tmp_path):
     start = datetime(2026, 10, 28, 11, 50, tzinfo=ET)
     broker = _Watch(start, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
-    assert run_session(_cfg(tmp_path, mode="dry"), broker) == 0
+    assert run_session(_cfg(tmp_path, mode="dry", plan="B"), broker) == 0
     assert broker.streams == 1
 
 
@@ -552,14 +563,42 @@ def _rows(tmp):
         return list(csv.DictReader(fh))
 
 
-def _a1_run(tmp, bars=None, *, kind="flat", moves_at=None, moves_to=None, **cfg_extra):
+def _a1_run(tmp, bars=None, *, kind="flat", moves_at=None, moves_to=None, plan="A1", **cfg_extra):
+    """``plan="A1"`` is named here. ``plan=None`` omits the key, so the config default runs."""
+    if plan is not None:
+        cfg_extra.setdefault("plan", plan)
     bars = levels()[0] + (a1_call_bars() if bars is None else bars)
     broker = _Drift(datetime(2026, 10, 28, 11, 50, tzinfo=ET), bars, _a1_quotes(kind),
                     spot=7000, moves_at=moves_at, moves_to=moves_to)
-    code = run_session(_cfg(tmp, plan="A1", **cfg_extra), broker)
+    code = run_session(_cfg(tmp, **cfg_extra), broker)
     buys = [order for order in broker.placed if order["action"] == "BUY"]
     sells = [order for order in broker.placed if order["action"] == "SELL"]
     return code, _rows(tmp), buys, sells, broker
+
+
+def test_a_config_with_no_plan_key_trades_the_fresh_noon_break_and_b_does_not(tmp_path):
+    """Acceptance 5: the omitted plan is A1, so the fresh 12:00 break is a trade."""
+    default_cfg = _cfg(tmp_path / "default")
+    assert default_cfg.plan == "A1"                          # no plan key was passed
+    code, rows, buys, sells, _broker = _a1_run(
+        tmp_path / "default", bars=a1_fresh_call_bars(), plan=None,
+        moves_at=ONE, moves_to=7008)
+    assert code == 0
+    assert len(buys) == 1 and len(sells) == 1
+    assert [row["exit_reason"] for row in rows] == ["points"]
+    assert float(rows[0]["long_strike"]) == 6925            # A1's 80-delta leg
+    assert rows[0]["timestamp"].startswith("2026-10-28T12:00")
+    assert json.loads(
+        (tmp_path / "default" / "state" / "own_position.json").read_text())["plan"] == "A1"
+    report = (tmp_path / "default" / "state" / "report_2026-10-28.md").read_text()
+    assert "Plan A1" in report and "Version B" not in report
+    # the same bars with an explicit version B: no trigger, so nothing is sent
+    b_code, b_rows, b_buys, b_sells, b_broker = _run(
+        tmp_path / "b", "target", bars=a1_fresh_call_bars(), plan="B")
+    assert b_code == 0
+    assert b_buys == [] and b_sells == [] and b_broker.placed == []
+    assert b_rows == []
+    assert not (tmp_path / "b" / "state" / "own_position.json").exists()
 
 
 def test_a1_trades_a_fresh_noon_break_that_version_b_passes_on(tmp_path):
@@ -577,7 +616,7 @@ def test_a1_trades_a_fresh_noon_break_that_version_b_passes_on(tmp_path):
     assert "skip_morning" not in [r["exit_reason"] for r in rows]
     # the same bars on version B: no earlier close beyond the levels, so no trade
     b_code, b_rows, b_buys, b_sells, b_broker = _run(
-        tmp_path / "b", "target", bars=a1_fresh_call_bars())
+        tmp_path / "b", "target", bars=a1_fresh_call_bars(), plan="B")
     assert b_code == 0
     assert b_buys == [] and b_sells == [] and b_broker.placed == []
     assert b_rows == []
@@ -598,7 +637,7 @@ def test_a1_skips_the_whole_day_when_the_morning_already_broke(tmp_path):
     report = (tmp_path / "a1" / "state" / "report_2026-10-28.md").read_text()
     assert "Plan A1" in report and "+8 SPX points" in report
     # the same day on version B is a trade: the morning break is an A1 rule only
-    b_code, _b_rows, b_buys, _b_sells, _b = _run(tmp_path / "b", "target")
+    b_code, _b_rows, b_buys, _b_sells, _b = _run(tmp_path / "b", "target", plan="B")
     assert b_code == 0 and len(b_buys) == 1
 
 
@@ -825,6 +864,70 @@ def test_a_working_entry_with_no_stored_plan_fills_as_version_b(tmp_path):
     assert _rows(tmp_path)[-1]["exit_reason"] == "target"
 
 
+#: Distinct from ``SimBroker``'s own ids, which start at 101, so the double
+#: below answers for the reloaded entry only and never for a new order.
+RELOADED_ID = 55
+
+
+class _WorkingThenCancelled(_Drift):
+    """The reloaded entry is working on the first look, then cancelled unfilled.
+
+    Only :data:`RELOADED_ID` is answered here, so every order this session
+    places afterwards goes through ``SimBroker`` and fills as usual.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.looks = 0
+
+    def order_state(self, handle):
+        if handle != RELOADED_ID:
+            return super().order_state(handle)
+        self.looks += 1
+        if self.looks == 1:
+            return {"status": "Submitted", "filled": 0, "remaining": 1,
+                    "avg_price": 0.0, "done": False}
+        return {"status": "Cancelled", "filled": 0, "remaining": 1,
+                "avg_price": 0.0, "done": True}
+
+    def cancel(self, handle):
+        if handle == RELOADED_ID:
+            self.cancelled.append(handle)
+            return
+        super().cancel(handle)
+
+
+def test_a_reloaded_b_entry_that_never_filled_does_not_report_a_later_a1_trade_as_b(tmp_path):
+    """The report follows what the session ran, not what it reloaded and dropped.
+
+    A restart picks up a version B working entry, works it until the broker says
+    it was cancelled unfilled, and then enters on today's config, A1. The
+    cancelled entry is managed as B; the day the report describes is A1's.
+    """
+    from spx_noon.resume import save
+    cfg = _cfg(tmp_path)                                  # no plan key: A1, the default
+    assert cfg.plan == "A1"
+    cfg.ensure_dirs()
+    # a working entry from a version B build: no plan key, and its own order id
+    save(cfg.state_dir, _a1_saved(status="working", entry_order_id=RELOADED_ID,
+                                  cancel_after=NOON.isoformat()))
+    bars = levels()[0] + a1_fresh_call_bars()             # the 12:00 close is a fresh break
+    broker = _WorkingThenCancelled(datetime(2026, 10, 28, 11, 50, tzinfo=ET), bars,
+                                   _a1_quotes(), spot=7000)
+    assert run_session(cfg, broker) == 0
+    # the reloaded entry really was restored, worked, then cancelled
+    assert broker.looks >= 2 and broker.cancelled == [RELOADED_ID]
+    rows = _rows(tmp_path)
+    assert rows[0]["exit_reason"] == "skip_no_fill"        # the reloaded B entry's row
+    buys = [order for order in broker.placed if order["action"] == "BUY"]
+    assert len(buys) == 1 and buys[0]["id"] != RELOADED_ID
+    position = json.loads((cfg.state_dir / "own_position.json").read_text())
+    assert position["plan"] == "A1"                       # the day's own trade is A1
+    assert float(position["long_strike"]) == 6925         # on A1's 80-delta leg
+    report = (cfg.state_dir / "report_2026-10-28.md").read_text()
+    assert "Plan A1" in report and "Version B" not in report
+
+
 def test_holiday_does_not_trade(tmp_path):
     thanksgiving = date(2026, 11, 26)
     start = datetime(2026, 11, 26, 11, 50, tzinfo=ET)
@@ -832,6 +935,6 @@ def test_holiday_does_not_trade(tmp_path):
     broker = SimBroker(start, bars, _quotes("target"), spot=7000)
     # Thursday session hours would still be closed by the holiday list.
     broker.t = start
-    assert run_session(_cfg(tmp_path), broker) == 0
+    assert run_session(_cfg(tmp_path, plan="B"), broker) == 0
     assert broker.placed == []
     assert thanksgiving.isoformat() == "2026-11-26"

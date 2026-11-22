@@ -273,6 +273,26 @@ def test_sandbox_orders_load_sandbox_creds_only(monkeypatch, tmp_path):
     assert text  # creds stayed in the factory log, not the banner
 
 
+def test_the_session_announce_names_the_plan_and_the_banner_itself_does_not(tmp_path, capsys):
+    """``PLAN=`` goes on the announce line. ``safety_banner()``'s contract is the
+    two hosts and the real-money flag, and nothing else."""
+    banner = f"DATA={PROD_HOST} ORDERS={CERT_HOST} REAL MONEY=NO"
+    # no plan key, then each value the file may hold, including one needing a strip
+    for given, want in ((None, "A1"), ("A1", "A1"), ("B", "B"), ("  b  ", "B")):
+        keys = {} if given is None else {"plan": given}
+        cfg = Config(broker="tasty", mode="live", base_dir=str(tmp_path / want / str(given)),
+                     max_orders_per_min=10, **keys)
+        cfg.validate()                                   # the plan the session really runs
+        cfg.ensure_dirs()
+        data_s, order_s = _pair()
+        broker = TastyBroker(cfg, data_session=data_s, order_session=order_s,
+                             transport=Transport(), clock=Clock())
+        broker.connect()
+        assert broker.safety_banner() == banner          # unchanged by the plan
+        assert "PLAN" not in broker.safety_banner()
+        assert f"{banner} PLAN={want}" in capsys.readouterr().out
+
+
 def test_identical_creds_cannot_drive_sandbox_orders(monkeypatch, tmp_path):
     monkeypatch.setenv("TASTYTRADE_PROD_CLIENT_SECRET", "same-secret")
     monkeypatch.setenv("TASTYTRADE_PROD_REFRESH_TOKEN", "same-refresh")
@@ -373,14 +393,16 @@ def test_tasty_live_auto_approves_without_a_prompt(tmp_path):
 
     et = ZoneInfo("America/New_York")
 
+    # version B explicitly: these bars have a 10:15 break, which A1 (the default)
+    # skips, and the auto-approve path is the same on either plan.
     cfg = Config(
-        broker="tasty", mode="live", base_dir=str(tmp_path),
+        broker="tasty", mode="live", base_dir=str(tmp_path), plan="B",
         decision_grace_s=90, loop_interval_s=60,
     )
     cfg.ensure_dirs()
     noon = datetime(2026, 10, 28, 12, 0, tzinfo=et)
     broker = SimBroker(noon, levels()[0] + today_call_bars(), _quotes("target"), spot=7000)
-    state = _State()
+    state = _State(plan=cfg.plan)
     # _maybe_enter takes no approver: there is nothing a human could be asked
     _maybe_enter(
         cfg, broker, Notifier(tmp_path / "logs"),

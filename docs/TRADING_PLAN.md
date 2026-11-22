@@ -1,15 +1,15 @@
 # Noon Breakout Plan v2 — 2026-10-28
 
-The bot implements **version B** (section 1 and the checklist in section 8) by default, and **plan A1** (section 10) when `config.json` says `"plan": "A1"`. One code base runs both; nothing is forked. The original version A of this note — 70 delta, +17% target — is recorded in section 1 and is still not coded. Candle Boy is a different repo.
+The bot implements **plan A1** (section 10) by default, and **version B** (section 1 and the checklist in section 8) when `config.json` says `"plan": "B"`. A missing `plan` key is A1. One code base runs both; nothing is forked. Sections 1 through 8 below are version B's rules and the research behind them, and they stay as written — they describe what `"plan": "B"` selects, not what the bot runs by default. The original version A of this note — 70 delta, +17% target — is recorded in section 1 and is still not coded. Candle Boy is a different repo.
 
 
 *Sources: `filter-backtests-2026-10-28.md`, `filter-bt/stress/stress_out.md`, `filter-bt/noon_B_trades_k0.6.csv` and `filter-bt/noon_B_trades_k0.42.csv`. Sample: 181 SPX sessions, 2026-02-09 to 2026-10-27, 118 trades. Two pricing levels: **fair** = 0.42× VIX (**the default scenario used throughout**) and **rich** = 0.6× VIX (secondary reference). Read-only research. No bot code was changed.*
 
-> **Bottom line:** Run version **B** (75-delta vertical, +30% target, flat 2h after entry, no stop) on **paper first**, with real option chains, and log every fill against mid. At fair pricing: 118 trades, 69% win rate, net **+$7,492** (PF 1.41, about $63 per trade), or **about +75% on $10k** before real slippage. It passed every stress test until slippage reached $0.30 a side.
+> **Bottom line (this 2026-10-28 research note's recommendation, which is version B's case, not the bot's current default):** Run version **B** (75-delta vertical, +30% target, flat 2h after entry, no stop) on **paper first**, with real option chains, and log every fill against mid. At fair pricing: 118 trades, 69% win rate, net **+$7,492** (PF 1.41, about $63 per trade), or **about +75% on $10k** before real slippage. It passed every stress test until slippage reached $0.30 a side.
 
 ---
 
-## 1. Strategy to run (version B)
+## 1. Strategy to run (version B — what `"plan": "B"` selects)
 
 | Rule | Setting |
 |---|---|
@@ -102,9 +102,9 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
 
 ---
 
-## 8. Implementation checklist (for Derek)
+## 8. Implementation checklist (version B — for Derek)
 
-*A step-by-step spec you can code by hand, with AI, or in Cursor. Steps 2–4 follow the backtest code exactly (`filter-bt/noon.py` `gen()`/`sim2()`, helpers in `bt.py`, `win.py`, `loss.py`). Times are ET.*
+*Version B's spec, which is what `"plan": "B"` selects; the bot's default is plan A1 in section 10, and steps 3, 5, and 9 are the three the default changes. A step-by-step spec you can code by hand, with AI, or in Cursor. Steps 2–4 follow the backtest code exactly (`filter-bt/noon.py` `gen()`/`sim2()`, helpers in `bt.py`, `win.py`, `loss.py`). Times are ET.*
 
 1. **Data needed**
     - SPX 15-minute RTH bars (9:30–16:00 ET, open/high/low/close), live intraday plus the prior session.
@@ -162,11 +162,15 @@ logged into paper. No environment variable takes part in either. Tastytrade is u
    account to start with `D`. A mismatch closes the socket and exits; it is not retried as a
    dropped connection.
 2. It prints and logs one banner, including on a day it will not trade:
-   `BROKER=ibkr MODE=<mode> ACCOUNT=<last 4> PORT=<port> REAL MONEY=YES/NO`. Only the last four
-   characters of the verified account appear. `REAL MONEY=YES` means IBKR mode `live`; paper,
+   `BROKER=ibkr MODE=<mode> ACCOUNT=<last 4> PORT=<port> PLAN=<plan> REAL MONEY=YES/NO`. Only
+   the last four characters of the verified account appear. `PLAN=` is the plan this config
+   resolved to, which is the plan a new entry takes that day; a reloaded spread keeps its own,
+   and the session report names that one. `REAL MONEY=YES` means IBKR mode `live`; paper,
    dry, and alerts say `NO`. Every IBKR order log line carries the same flag.
-3. It trades version B exactly as above. Live does **not** take the tastytrade preview path,
-   and the thresholds, windows, delta, slippage cap, target, and flat time are identical.
+3. It trades the plan `config.json` names — A1 (section 10) unless the file says `"plan": "B"`
+   — exactly as written there. Live does **not** take the tastytrade preview path, and the
+   thresholds, windows, delta, slippage cap, exit, and flat time are identical to a paper run
+   on the same plan.
 4. It tracks only its own `SPXNOON-` orders and its own spread
    (`state/own_position-live.json`), writes fills to `state/trades-live.csv`, and writes the
    session note to `state/report-live-<date>.md`. The paper running total is never touched.
@@ -177,20 +181,27 @@ logged into paper. No environment variable takes part in either. Tastytrade is u
 
 ---
 
-## 10. Plan A1 (`"plan": "A1"`)
+## 10. Plan A1 — the default (`"plan": "A1"`)
 
-A1 is the same strategy with four rules changed. It is one config key, not a fork:
-`plan` in `config.json` is `B` (the default, and what a missing key means) or `A1`,
-whitespace and case are forgiven, and any other value refuses to start. No
-environment variable takes part, on any machine or on the hosted worker, and the
-committed templates stay on `B`.
+A1 is what High Noon runs. It is the same strategy as version B with four rules
+changed, and it is one config key, not a fork: `plan` in `config.json` is `A1`
+(the default, and what a missing key means) or `B`, whitespace and case are
+forgiven, and any other value refuses to start. No environment variable takes
+part, on any machine or on the hosted worker, and all three committed templates
+ship on `A1`. The resolved value is in the logs: `PLAN=` on the IBKR session
+banner and on the tastytrade announce, `plan=` on the hosted worker's `boot`
+line.
 
-| Rule | B | A1 |
+A spread that is already open is not affected by the key. It keeps the plan it
+was opened under, and a position file with no `plan` field is managed as version
+B — see item 11 in `AMBIGUITIES.md`.
+
+| Rule | A1 (default) | B (`"plan": "B"`) |
 |---|---|---|
-| Signal | the trigger from the 9:45 close on, then this close beyond the level and beyond the trigger bar's extreme (section 8, step 3) | the day's **first** window close beyond PDH (calls) or PDL (puts), with **no trigger bar** |
-| Morning | no filter | **skip the day** when any 15-minute close from 10:15 through 11:00 ET was already beyond PDH or PDL |
-| Long leg | nearest **0.75** delta | nearest **0.80** delta |
-| Exit | GTC at debit × 1.30, else the two-hour flat | **+8 SPX points** in the trade direction, else the two-hour flat |
+| Signal | the day's **first** window close beyond PDH (calls) or PDL (puts), with **no trigger bar** | the trigger from the 9:45 close on, then this close beyond the level and beyond the trigger bar's extreme (section 8, step 3) |
+| Morning | **skip the day** when any 15-minute close from 10:15 through 11:00 ET was already beyond PDH or PDL | no filter |
+| Long leg | nearest **0.80** delta | nearest **0.75** delta |
+| Exit | **+8 SPX points** in the trade direction, else the two-hour flat | GTC at debit × 1.30, else the two-hour flat |
 
 **Signal.** A1's candidate is the day's first 15-minute close, among the five
 window closes at 12:00, 12:15, 12:30, 12:45, and 1:00, that is beyond PDH for

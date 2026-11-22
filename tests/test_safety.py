@@ -166,33 +166,36 @@ def test_check_fails_closed_without_a_broker_or_on_a_live_port(tmp_path, capsys)
 EXAMPLES = ("config.example.json", "config.tasty.example.json", "config.render.example.json")
 
 
-def test_every_example_config_stays_on_plan_b():
-    """A copied template trades version B. Switching is the operator's edit."""
+def test_every_example_config_stays_on_plan_a1():
+    """A copied template trades plan A1, the default. Switching is the operator's edit."""
     for name in EXAMPLES:
-        assert json.loads((ROOT / name).read_text())["plan"] == "B", name
+        assert json.loads((ROOT / name).read_text())["plan"] == "A1", name
+        # and the note next to the key says so
+        assert "A1 (the default" in json.loads((ROOT / name).read_text())["_plan"], name
 
 
-def test_the_trading_plan_is_b_or_a1_and_is_never_an_environment_knob(monkeypatch, tmp_path):
+def test_the_trading_plan_is_a1_or_b_and_is_never_an_environment_knob(monkeypatch, tmp_path):
     def cfg(plan=None):
         keys = '{"mode": "dry", "ibkr_port": 7497'
         keys += "}" if plan is None else f', "plan": {plan}}}'
         return load_config(_write(tmp_path, "plan.json", keys), broker="ibkr")
 
-    assert cfg().plan == "B"                       # a missing key is version B
-    for given, want in (('"B"', "B"), ('"b"', "B"), ('"A1"', "A1"),
-                        ('"a1"', "A1"), ('"  a1  "', "A1")):
+    assert cfg().plan == "A1"                      # a missing key is plan A1
+    for given, want in (('"A1"', "A1"), ('"a1"', "A1"), ('"  a1  "', "A1"),
+                        ('"B"', "B"), ('"b"', "B"), ('"  b  "', "B")):
         assert cfg(given).plan == want
     for bad in ('""', '"   "', '"A"', '"B1"', '"a2"', '"version B"', "null", "0", "true"):
-        with pytest.raises(SafetyError, match="plan must be B or A1"):
+        with pytest.raises(SafetyError, match="plan must be A1 or B"):
             cfg(bad)
     # the field is not read from the environment on any platform
     for name in ("PLAN", "SPX_NOON_PLAN", "TASTY_PLAN"):
-        monkeypatch.setenv(name, "A1")
-    assert cfg().plan == "B"
-    assert cfg('"A1"').plan == "A1"                # the file is the only switch
+        monkeypatch.setenv(name, "B")
+    assert cfg().plan == "A1"                      # the default, not the variable
+    assert cfg('"B"').plan == "B"                  # the file is the only switch
     # and Config itself refuses it, so no caller can skip the gate by hand
-    with pytest.raises(SafetyError, match="plan must be B or A1"):
+    with pytest.raises(SafetyError, match="plan must be A1 or B"):
         Config(broker="sim", mode="dry", plan="A2").validate()
+    assert Config(broker="sim", mode="dry").plan == "A1"
 
 
 def test_mac_refuses_live_and_a_non_paper_port():
@@ -302,19 +305,30 @@ def test_banner_says_real_money_only_for_ibkr_live(monkeypatch):
     live = _live_cfg()
     live.validate()
     assert startup_banner(live, LIVE_ACCOUNT) == \
-        "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=7496 REAL MONEY=YES"
+        "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=7496 PLAN=A1 REAL MONEY=YES"
     gateway = _live_cfg(ibkr_port=4001)
     gateway.validate()
-    assert startup_banner(gateway, LIVE_ACCOUNT).endswith("PORT=4001 REAL MONEY=YES")
+    assert startup_banner(gateway, LIVE_ACCOUNT).endswith("PORT=4001 PLAN=A1 REAL MONEY=YES")
     assert LIVE_ACCOUNT not in startup_banner(live, LIVE_ACCOUNT)
     paper = Config(broker="ibkr", mode="paper", broker_account="DU999001")
     assert startup_banner(paper, "DU999001") == \
-        "BROKER=ibkr MODE=paper ACCOUNT=9001 PORT=7497 REAL MONEY=NO"
+        "BROKER=ibkr MODE=paper ACCOUNT=9001 PORT=7497 PLAN=A1 REAL MONEY=NO"
     for mode in ("dry", "alerts"):
         cfg = Config(broker="ibkr", mode=mode, broker_account="DU999001")
         assert startup_banner(cfg, "DU999001").endswith("REAL MONEY=NO")
     tasty = Config(broker="tasty", mode="live", broker_account="705")
     assert startup_banner(tasty, "705").endswith("REAL MONEY=NO")
+
+
+def test_the_banner_names_the_resolved_plan_and_not_the_config_key_blindly():
+    """``PLAN=`` is the validated config plan, so a log says which plan is armed."""
+    for given, want in ((None, "A1"), ("A1", "A1"), ("  a1 ", "A1"), ("B", "B"), ("b", "B")):
+        cfg = Config(broker="ibkr", mode="paper", broker_account="DU999001") if given is None \
+            else Config(broker="ibkr", mode="paper", broker_account="DU999001", plan=given)
+        cfg.validate()
+        assert f"PLAN={want} " in startup_banner(cfg, "DU999001")
+        assert startup_banner(cfg, "DU999001") == (
+            f"BROKER=ibkr MODE=paper ACCOUNT=9001 PORT=7497 PLAN={want} REAL MONEY=NO")
 
 
 def test_ibkr_order_log_lines_carry_the_flag_and_other_brokers_do_not(monkeypatch, caplog):

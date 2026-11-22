@@ -472,7 +472,9 @@ def test_the_position_path_pins_the_legs_and_calls_ensure_options_once(tmp_path)
 
 
 def test_a_session_pins_the_working_entry_and_clears_the_pins_when_flat(tmp_path):
-    cfg = Config(broker="sim", mode="paper", base_dir=str(tmp_path),
+    # version B explicitly: ``today_call_bars()`` has a 10:15 break, which A1
+    # (the default) skips, and this test is about the pins on a day that trades.
+    cfg = Config(broker="sim", mode="paper", base_dir=str(tmp_path), plan="B",
                  loop_interval_s=60, decision_grace_s=90)
     bars = levels()[0] + today_call_bars()
     broker = _Pinning(datetime(2026, 10, 28, 11, 50, tzinfo=ET), bars, _quotes("target"), spot=7000)
@@ -534,7 +536,7 @@ def test_a_restart_pins_a_working_entry_and_subscribes_the_legs_on_the_fill(tmp_
 
 
 def test_an_entry_that_never_fills_clears_the_pins(tmp_path):
-    cfg = Config(broker="sim", mode="paper", base_dir=str(tmp_path),
+    cfg = Config(broker="sim", mode="paper", base_dir=str(tmp_path), plan="B",
                  loop_interval_s=60, decision_grace_s=90)
     bars = levels()[0] + today_call_bars()
 

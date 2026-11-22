@@ -255,20 +255,32 @@ def test_the_workers_list_of_variables_is_closed(tmp_path):
 
 def test_the_trading_plan_comes_off_the_disk_and_is_not_a_worker_variable(tmp_path):
     """``plan`` is a file key. The worker's list of variables stays the six it has."""
-    base = _disk(tmp_path / "a1", mode="dry", plan="a1")
+    base = _disk(tmp_path / "b", mode="dry", plan="b")
     cfg = service.build_config(base / "config.json", _env(base))
-    assert cfg.plan == "A1"                                  # it survives build_config
+    assert cfg.plan == "B"                                  # it survives build_config
     published = service.publish_config(cfg, cfg.state_dir / service.SERVICE_CONFIG)
-    assert json.loads(published.read_text())["plan"] == "A1"  # and is published
-    assert load_config(published).plan == "A1"
-    # a PLAN variable is not an override: the disk file is the only switch
-    flat = _disk(tmp_path / "b", mode="dry")
-    env = _env(flat, PLAN="A1")
-    assert service.build_config(flat / "config.json", env).plan == "B"
+    assert json.loads(published.read_text())["plan"] == "B"  # and is published
+    assert load_config(published).plan == "B"
+    # a PLAN variable is not an override: the disk file, or the default, is the switch
+    flat = _disk(tmp_path / "a1", mode="dry")
+    env = _env(flat, PLAN="B")
+    assert service.build_config(flat / "config.json", env).plan == "A1"
     assert sorted(service.env_overrides(env)) == ["base_dir", "broker", "mode"]
-    with pytest.raises(SafetyError, match="plan must be B or A1"):
+    with pytest.raises(SafetyError, match="plan must be A1 or B"):
         service.build_config(_disk(tmp_path / "bad", mode="dry", plan="A") / "config.json",
                              _env(tmp_path / "bad"))
+
+
+def test_an_explicit_version_b_on_the_disk_survives_a_restart(tmp_path):
+    """The seed says A1 now, and nothing rewrites an operator's ``"plan": "B"``."""
+    base = _disk(tmp_path, broker="tasty", mode="dry", plan="B")
+    disk = base / "config.json"
+    for _boot in range(2):
+        assert service.seed_config(disk) is False           # the file is already there
+        cfg = service.build_config(disk, _env(base))
+        assert cfg.plan == "B"
+        service.publish_config(cfg, cfg.state_dir / service.SERVICE_CONFIG)
+    assert json.loads(disk.read_text())["plan"] == "B"      # still the operator's value
 
 
 def test_load_config_reads_no_config_field_from_the_environment(monkeypatch, tmp_path):
@@ -449,6 +461,9 @@ def test_the_boot_line_names_the_hosts_and_the_real_money_rule_and_no_secret(
 
     line = boot()
     assert "broker=tasty mode=live" in line and f"home={tmp_path}" in line
+    # the disk was empty, so the seed was copied: its plan is on the boot line
+    assert "plan=A1" in line
+    assert json.loads((tmp_path / "config.json").read_text())["plan"] == "A1"
     assert "DATA=api.tastyworks.com ORDERS=api.cert.tastyworks.com REAL MONEY=NO" in line
     assert "5WX12345" not in line                     # the account is not in a boot line
     for name in ("SPX_NOON_", "BROKER_ACCOUNT", "TASTY_ORDERS", "TASTY_DATA", "BROKER=",
