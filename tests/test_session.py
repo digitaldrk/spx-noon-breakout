@@ -152,7 +152,7 @@ def test_dry_and_alerts_never_reach_the_order_adapter(tmp_path, mode):
 
 
 def _live_cfg(tmp, **extra):
-    data = dict(broker="ibkr", mode="live", port=7496, account=LIVE_ACCOUNT,
+    data = dict(broker="ibkr", mode="live", ibkr_port=7496, broker_account=LIVE_ACCOUNT,
                 base_dir=str(tmp), loop_interval_s=60, decision_grace_s=90)
     data.update(extra)
     return Config(**data)
@@ -209,7 +209,7 @@ def test_a_live_session_banner_prints_on_a_day_that_will_not_trade(tmp_path, mon
     start = datetime(2026, 11, 26, 11, 50, tzinfo=ET)  # Thanksgiving
     bars = [Bar(datetime(2026, 11, 25, 10, 0, tzinfo=ET), 1, 2, 1, 1)]
     broker = SimBroker(start, bars, _quotes("target"), spot=7000, account=LIVE_ACCOUNT)
-    assert run_session(_live_cfg(tmp_path, port=4001), broker) == 0
+    assert run_session(_live_cfg(tmp_path, ibkr_port=4001), broker) == 0
     assert broker.placed == []
     printed = capsys.readouterr().out
     assert "BROKER=ibkr MODE=live ACCOUNT=4321 PORT=4001 REAL MONEY=YES" in printed
@@ -276,7 +276,7 @@ def test_a_live_restart_manages_the_open_live_spread(tmp_path, monkeypatch):
 
 
 def _wrap_config(tmp_path, **keys):
-    data = {"broker": "ibkr", "port": 7497, "mode": "dry", "base_dir": str(tmp_path)}
+    data = {"broker": "ibkr", "ibkr_port": 7497, "mode": "dry", "base_dir": str(tmp_path)}
     data.update(keys)
     path = tmp_path / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -303,7 +303,7 @@ def test_the_paper_and_live_wraps_never_see_each_other_s_rows(tmp_path):
 
 
 def test_wrap_with_no_book_follows_a_live_config(tmp_path):
-    path = _wrap_config(tmp_path, mode="live", port=7496, account=LIVE_ACCOUNT)
+    path = _wrap_config(tmp_path, mode="live", ibkr_port=7496, broker_account=LIVE_ACCOUNT)
     today = datetime.now(ET).date()
     Outputs(tmp_path / "state", book="live").append_trade(
         {"date": today, "direction": "PUT", "exit_reason": "time", "mode": "live"})

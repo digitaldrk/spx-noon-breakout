@@ -42,7 +42,7 @@ def test_the_machines_tastytrade_variables_are_not_visible(isolate_machine):
         "TASTYTRADE_SANDBOX_CLIENT_SECRET", "TASTYTRADE_SANDBOX_REFRESH_TOKEN",
     ):
         assert os.environ.get(name) is None
-    for name in ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "TASTY_ACCOUNT",
+    for name in ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "BROKER_ACCOUNT",
                  "SPX_SHEETS_CREDENTIALS_JSON"):
         assert name not in os.environ, name
 
@@ -85,8 +85,8 @@ def test_load_config_does_not_read_the_machines_config_json(isolate_machine):
     assert cfg.mode == "dry" and cfg.dry_run is True
     assert cfg.home == isolate_machine.spx_home
     assert cfg.home != Path(__file__).resolve().parent.parent
-    assert cfg.account == ""                          # no account id from the machine
-    assert cfg.port == 7497 and cfg.sends_orders() is False
+    assert cfg.broker_account == ""                   # no account id from the machine
+    assert cfg.ibkr_port == 7497 and cfg.sends_orders() is False
     # with no file there is no broker to read, and auto is still not a broker
     with pytest.raises(SafetyError) as caught:
         load_config()

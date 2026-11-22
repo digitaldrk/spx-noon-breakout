@@ -5,7 +5,7 @@
 #   ./run.sh paper    one-shot override: send to TWS paper
 #   ./run.sh dry      one-shot override: force dry for this launch
 #   ./run.sh live     one-shot override: REAL MONEY on IBKR. It still needs
-#                     config port 7496/4001, a non-D account, and TWS logged
+#                     config ibkr_port 7496/4001, a non-D account, and TWS logged
 #                     into that live session, or the bot refuses to start.
 set -euo pipefail
 BASE="${SPX_NOON_HOME:-$HOME/Documents/spx-noon-breakout}"

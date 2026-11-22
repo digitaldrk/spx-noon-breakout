@@ -50,10 +50,10 @@ def paper_send_allowed(cfg, account: str, order_ref: str) -> None:
         raise SafetyError("IBKR orders are the Mac paper path")
     if not cfg.paper:
         raise SafetyError("refusing: Mac sends orders only in paper mode")
-    if int(cfg.port) != PAPER_PORT:
-        raise SafetyError(f"refusing: port {cfg.port} is not {PAPER_PORT}")
-    if cfg.host not in LOCALHOSTS:
-        raise SafetyError(f"refusing: host {cfg.host!r} is not localhost")
+    if int(cfg.ibkr_port) != PAPER_PORT:
+        raise SafetyError(f"refusing: port {cfg.ibkr_port} is not {PAPER_PORT}")
+    if cfg.ibkr_host not in LOCALHOSTS:
+        raise SafetyError(f"refusing: host {cfg.ibkr_host!r} is not localhost")
     if not str(account).startswith("D"):
         raise SafetyError(f"refusing: account ...{account_tail(account)} is not an IBKR paper account")
     if not str(order_ref or "").startswith(ORDER_PREFIX):
@@ -66,16 +66,16 @@ def live_send_allowed(cfg, account: str, order_ref: str) -> None:
         raise SafetyError("IBKR orders are the Mac path")
     if not cfg.ibkr_live:
         raise SafetyError("refusing: this config is not IBKR live")
-    if int(cfg.port) not in LIVE_PORTS:
-        raise SafetyError(f"refusing: port {cfg.port} is not an IBKR live port {LIVE_PORTS}")
-    if cfg.host not in LOCALHOSTS:
-        raise SafetyError(f"refusing: host {cfg.host!r} is not localhost")
+    if int(cfg.ibkr_port) not in LIVE_PORTS:
+        raise SafetyError(f"refusing: port {cfg.ibkr_port} is not an IBKR live port {LIVE_PORTS}")
+    if cfg.ibkr_host not in LOCALHOSTS:
+        raise SafetyError(f"refusing: host {cfg.ibkr_host!r} is not localhost")
     acct = str(account)
     if not acct.strip():
         raise SafetyError("refusing: a live order needs the configured live account")
     if acct.startswith("D"):
         raise SafetyError("refusing: a live order must not go to a paper (D...) account")
-    if acct != str(cfg.account):
+    if acct != str(cfg.broker_account):
         raise SafetyError("refusing: the order account is not the configured live account")
     if not str(order_ref or "").startswith(ORDER_PREFIX):
         raise SafetyError(f"every Noon order must carry an {ORDER_PREFIX} orderRef")
@@ -102,12 +102,12 @@ def check_accounts(cfg, accounts) -> str:
     reported = [str(acct) for acct in (accounts or [])]
     if not reported:
         raise SafetyError("TWS reported no account")
-    want = str(getattr(cfg, "account", "") or "")
+    want = str(getattr(cfg, "broker_account", "") or "")
     if getattr(cfg, "mode", "") == "live":
         if not cfg.ibkr_live:
             raise SafetyError("refusing: this config is not IBKR live")
         if not want.strip():
-            raise SafetyError("refusing: live mode needs account set to the live account id")
+            raise SafetyError("refusing: live mode needs broker_account set to the live account id")
         if want.startswith("D"):
             raise SafetyError("refusing: live mode will not use a paper (D...) account")
         if want not in reported:
@@ -133,7 +133,7 @@ def check_accounts(cfg, accounts) -> str:
 
 def _dial_port(cfg) -> int:
     """The port this config may dial. ``validate()`` has already run."""
-    port = int(cfg.port)
+    port = int(cfg.ibkr_port)
     if cfg.mode == "live":
         if port not in LIVE_PORTS:
             raise SafetyError(f"Refusing to connect: port {port} is not an IBKR live port {LIVE_PORTS}")
@@ -170,10 +170,10 @@ class IBBroker(Broker):
     def connect(self):
         cfg = self.cfg
         port = _dial_port(cfg)
-        redact_account(cfg.account)
+        redact_account(cfg.broker_account)
         self.ib.connect(
-            cfg.host, port, clientId=cfg.client_id, timeout=cfg.connect_timeout_s,
-            readonly=bool(cfg.dry_run), account=cfg.account or "")
+            cfg.ibkr_host, port, clientId=cfg.ibkr_client_id, timeout=cfg.connect_timeout_s,
+            readonly=bool(cfg.dry_run), account=cfg.broker_account or "")
         self.verified_account = self.verify_accounts()
         redact_account(self.verified_account)
         self.ib.reqMarketDataType(1)
@@ -259,7 +259,7 @@ class IBBroker(Broker):
         if value is None:
             bid, ask = _f(ticker.bid), _f(ticker.ask)
             value = (bid + ask) / 2 if (bid and ask) else None
-        return Px(value, to_et(ticker.time, self.cfg.tws_naive_tz), ticker.marketDataType, _f(ticker.high))
+        return Px(value, to_et(ticker.time, self.cfg.ibkr_tws_naive_tz), ticker.marketDataType, _f(ticker.high))
 
     def spx_px(self):
         return self._px(getattr(self, "_spx_t", None))
@@ -271,7 +271,7 @@ class IBBroker(Broker):
             whatToShow="TRADES", useRTH=True, formatDate=2, timeout=60)
         out = []
         for bar in bars or []:
-            start = to_et(bar.date, self.cfg.tws_naive_tz)
+            start = to_et(bar.date, self.cfg.ibkr_tws_naive_tz)
             if start is None:
                 continue
             out.append(Bar(start, bar.open, bar.high, bar.low, bar.close, getattr(bar, "volume", 0) or 0))
@@ -335,7 +335,7 @@ class IBBroker(Broker):
                 iv=_f(greeks.impliedVol) if greeks else None,
                 delta=_f(greeks.delta) if greeks else None,
                 volume=_f(ticker.volume),
-                time=to_et(ticker.time, self.cfg.tws_naive_tz),
+                time=to_et(ticker.time, self.cfg.ibkr_tws_naive_tz),
                 mdtype=ticker.marketDataType,
                 con_id=ticker.contract.conId)
         return out
@@ -369,7 +369,7 @@ class IBBroker(Broker):
         if not self._is_own(trade):
             return False
         client = int(getattr(order, "clientId", 0) or 0)
-        if client and client != int(self.cfg.client_id):
+        if client and client != int(self.cfg.ibkr_client_id):
             return False
         return True
 

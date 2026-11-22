@@ -22,10 +22,10 @@ ROOT = Path(__file__).resolve().parent.parent
 ET = ZoneInfo("America/New_York")
 
 #: The worker's own settings. Plain names, no bot prefix, the same set on every bot.
-WORKER_ENV = ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "TASTY_ACCOUNT")
+WORKER_ENV = ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "BROKER_ACCOUNT")
 #: Pasted in the dashboard: the account to trade, and what tasty.load_creds reads.
 SECRET_NAMES = (
-    "TASTY_ACCOUNT",
+    "BROKER_ACCOUNT",
     "TASTYTRADE_PROD_CLIENT_SECRET",
     "TASTYTRADE_PROD_REFRESH_TOKEN",
     "TASTYTRADE_SANDBOX_CLIENT_SECRET",
@@ -111,7 +111,7 @@ def test_the_defaults_are_the_disk_live_mode_and_sandbox_orders(tmp_path):
     cfg = service.build_config(base / "config.json", _env(base))
     assert cfg.broker == "tasty" and cfg.mode == "live" and cfg.dry_run is False
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
-    assert cfg.account == "" and cfg.home == base
+    assert cfg.broker_account == "" and cfg.home == base
     assert service.real_money(cfg) is False
     assert cfg.live is True and cfg.sends_orders() is True
     # DATA is the disk, and /data when it is unset or blank
@@ -125,7 +125,7 @@ def test_the_defaults_are_the_disk_live_mode_and_sandbox_orders(tmp_path):
 
 
 def test_every_accepted_value_is_taken_and_nothing_else_is(tmp_path):
-    base = _disk(tmp_path, broker="tasty", mode="dry", account="file-account")
+    base = _disk(tmp_path, broker="tasty", mode="dry", broker_account="file-account")
 
     def cfg(**env):
         return service.build_config(base / "config.json", _env(base, **env))
@@ -156,17 +156,47 @@ def test_every_accepted_value_is_taken_and_nothing_else_is(tmp_path):
             cfg(TASTY_ORDERS=bad)
 
 
-def test_tasty_account_is_the_key_being_there_not_its_value(tmp_path):
-    base = _disk(tmp_path, mode="dry", account="file-account")
+def test_broker_account_is_the_key_being_there_not_its_value(tmp_path):
+    base = _disk(tmp_path, mode="dry", broker_account="file-account")
 
     def cfg(**env):
         return service.build_config(base / "config.json", _env(base, **env))
 
-    assert cfg().account == "file-account"             # the key is absent: the file stands
-    assert cfg(TASTY_ACCOUNT="5WX12345").account == "5WX12345"
-    assert cfg(TASTY_ACCOUNT="  5WX12345  ").account == "5WX12345"
-    assert cfg(TASTY_ACCOUNT="").account == ""         # present and blank: the first account
-    assert "account" not in service.env_overrides(_env(base))
+    assert cfg().broker_account == "file-account"      # the key is absent: the file stands
+    assert cfg(BROKER_ACCOUNT="5WX12345").broker_account == "5WX12345"
+    assert cfg(BROKER_ACCOUNT="  5WX12345  ").broker_account == "5WX12345"
+    assert cfg(BROKER_ACCOUNT="").broker_account == ""  # present and blank: the first account
+    assert "broker_account" not in service.env_overrides(_env(base))
+
+
+def test_the_old_broker_key_names_are_gone_and_not_read_as_a_fallback(tmp_path):
+    """The rename is the rename: no compatibility read of the names it replaced.
+
+    ``load_config`` keeps only ``Config`` field names, so a file still written
+    with ``account``/``host``/``port``/``client_id`` populates nothing — and a
+    ``port`` of 7496 that was honoured would make this dry IBKR config refuse to
+    validate. ``TASTY_ACCOUNT`` is likewise no longer one of the worker's six.
+    """
+    stale = _write(tmp_path, "config.json", {
+        "broker": "ibkr", "mode": "dry",
+        "account": "U7654321", "host": "10.0.0.5", "port": 7496, "client_id": 99,
+        "check_client_id": 199, "wrap_client_id": 299, "tws_naive_tz": "UTC",
+    })
+    cfg = load_config(stale)
+    assert cfg.broker_account == ""                      # the old key set nothing
+    assert cfg.ibkr_host == "127.0.0.1" and cfg.ibkr_port == 7497
+    assert cfg.ibkr_client_id == 41 and cfg.ibkr_check_client_id == 141
+    assert cfg.ibkr_wrap_client_id == 142 and cfg.ibkr_tws_naive_tz == "US/Central"
+    for gone in ("account", "host", "port", "client_id", "check_client_id",
+                 "wrap_client_id", "tws_naive_tz"):
+        assert not hasattr(cfg, gone), gone
+        assert gone not in cfg.to_dict(), gone
+
+    base = _disk(tmp_path / "disk", mode="dry", broker_account="file-account")
+    assert "broker_account" not in service.env_overrides(
+        _env(base, TASTY_ACCOUNT="5WX12345"))             # the old variable is not read
+    assert "broker_account" not in service.env_overrides(_env(base))   # absent: the file stands
+    assert service.env_overrides(_env(base, BROKER_ACCOUNT=""))["broker_account"] == ""
 
 
 def test_real_money_needs_production_data_production_orders_and_live_mode(tmp_path):
@@ -193,12 +223,12 @@ def test_the_launcher_names_are_not_worker_settings(tmp_path):
     """SPX_NOON_* belongs to the Mac launchers. The worker does not read it."""
     base = _disk(tmp_path, mode="dry")
     env = _env(base, BROKER="tasty", MODE="live", TASTY_DATA="production",
-               TASTY_ORDERS="sandbox", TASTY_ACCOUNT="mine",
+               TASTY_ORDERS="sandbox", BROKER_ACCOUNT="mine",
                SPX_NOON_HOME="/nowhere")
     cfg = service.build_config(base / "config.json", env)
     assert cfg.broker == "tasty" and cfg.mode == "live" and cfg.home == base
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
-    assert cfg.account == "mine" and service.real_money(cfg) is False
+    assert cfg.broker_account == "mine" and service.real_money(cfg) is False
 
 
 def test_the_workers_list_of_variables_is_closed(tmp_path):
@@ -214,8 +244,8 @@ def test_the_workers_list_of_variables_is_closed(tmp_path):
     env = {**noise, **_env(base)}
     cfg = service.build_config(base / "config.json", env)
     assert cfg.tasty_orders == "sandbox" and service.real_money(cfg) is False
-    assert cfg.port == 7497 and cfg.host == "127.0.0.1"
-    assert cfg.account == "" and cfg.home == base
+    assert cfg.ibkr_port == 7497 and cfg.ibkr_host == "127.0.0.1"
+    assert cfg.broker_account == "" and cfg.home == base
     assert sorted(service.env_overrides(_env(base))) == ["base_dir", "broker", "mode"]
 
 
@@ -241,19 +271,20 @@ def test_load_config_reads_no_config_field_from_the_environment(monkeypatch, tmp
     """The plain names are the worker's own: the Mac process has no environment
     knobs either way."""
     monkeypatch.setattr(sys, "platform", "darwin")
-    path = _write(tmp_path, "config.json", {"mode": "paper", "port": 7497, "account": "D111"})
+    path = _write(tmp_path, "config.json",
+                  {"mode": "paper", "ibkr_port": 7497, "broker_account": "D111"})
     for name, value in (
         ("MODE", "live"),
         ("TASTY_DATA", "sandbox"),
         ("TASTY_ORDERS", "production"),
-        ("TASTY_ACCOUNT", "U7654321"),
+        ("BROKER_ACCOUNT", "U7654321"),
         ("BROKER", "tasty"),
     ):
         monkeypatch.setenv(name, value)
     cfg = load_config(path, broker="ibkr")
     with pytest.raises(SafetyError, match="broker must be set"):
         load_config(path)
-    assert cfg.broker == "ibkr" and cfg.mode == "paper" and cfg.account == "D111"
+    assert cfg.broker == "ibkr" and cfg.mode == "paper" and cfg.broker_account == "D111"
     assert cfg.tasty_data == "production" and cfg.tasty_orders == "sandbox"
     assert cfg.paper is True and cfg.real_money is False and cfg.real_money_flag == "NO"
 
@@ -307,9 +338,9 @@ def test_a_blank_disk_is_seeded_once_and_never_overwritten(tmp_path):
     target = tmp_path / "data" / "config.json"
     assert service.seed_config(target) is True
     assert json.loads(target.read_text())["tasty_orders"] == "sandbox"
-    target.write_text(json.dumps({"mode": "dry", "account": "mine"}))
+    target.write_text(json.dumps({"mode": "dry", "broker_account": "mine"}))
     assert service.seed_config(target) is False
-    assert json.loads(target.read_text()) == {"mode": "dry", "account": "mine"}
+    assert json.loads(target.read_text()) == {"mode": "dry", "broker_account": "mine"}
 
 
 def test_the_worker_reads_the_config_off_the_disk_and_ignores_the_local_variables(
@@ -344,7 +375,7 @@ def test_the_published_config_is_what_the_children_load(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA", str(tmp_path))
     monkeypatch.setenv("BROKER", "tasty")
     monkeypatch.setenv("TASTY_ORDERS", "production")
-    monkeypatch.setenv("TASTY_ACCOUNT", "5WX12345")
+    monkeypatch.setenv("BROKER_ACCOUNT", "5WX12345")
     taken = {}
     monkeypatch.setattr(service, "Supervisor", _recording(taken))
     assert service.main() == 0
@@ -355,7 +386,7 @@ def test_the_published_config_is_what_the_children_load(monkeypatch, tmp_path):
     assert taken["config_file"] == published
     child = json.loads(published.read_text())
     assert child["tasty_orders"] == "production" and child["tasty_data"] == "production"
-    assert child["mode"] == "live" and child["account"] == "5WX12345"
+    assert child["mode"] == "live" and child["broker_account"] == "5WX12345"
     assert child["base_dir"] == str(tmp_path)         # state, logs, reports stay on the disk
     assert child["broker"] == "tasty"                 # the resolved broker, for the children
     for word in ("client_secret", "refresh_token", "password"):
@@ -389,7 +420,7 @@ def test_a_refused_second_worker_cannot_rewrite_the_published_config(
     try:
         monkeypatch.setenv("MODE", "dry")
         monkeypatch.setenv("TASTY_ORDERS", "production")
-        monkeypatch.setenv("TASTY_ACCOUNT", "theirs")
+        monkeypatch.setenv("BROKER_ACCOUNT", "theirs")
         caplog.clear()
         with caplog.at_level("ERROR", logger="spx_noon.service"):
             assert service.main() == 2
@@ -404,7 +435,7 @@ def test_the_boot_line_names_the_hosts_and_the_real_money_rule_and_no_secret(
     monkeypatch.setattr(service, "Supervisor", _recording({}))
     monkeypatch.setenv("DATA", str(tmp_path))
     monkeypatch.setenv("BROKER", "tasty")
-    monkeypatch.setenv("TASTY_ACCOUNT", "5WX12345")
+    monkeypatch.setenv("BROKER_ACCOUNT", "5WX12345")
 
     def boot():
         caplog.clear()
@@ -416,7 +447,7 @@ def test_the_boot_line_names_the_hosts_and_the_real_money_rule_and_no_secret(
     assert "broker=tasty mode=live" in line and f"home={tmp_path}" in line
     assert "DATA=api.tastyworks.com ORDERS=api.cert.tastyworks.com REAL MONEY=NO" in line
     assert "5WX12345" not in line                     # the account is not in a boot line
-    for name in ("SPX_NOON_", "TASTY_ACCOUNT", "TASTY_ORDERS", "TASTY_DATA", "BROKER=",
+    for name in ("SPX_NOON_", "BROKER_ACCOUNT", "TASTY_ORDERS", "TASTY_DATA", "BROKER=",
                  "TASTYTRADE_PROD_REFRESH_TOKEN"):
         assert name not in line                       # no environment dump, no secret
 
@@ -595,7 +626,7 @@ def test_without_flock_an_existing_lock_file_is_refused(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 
 def _cfg(tmp_path, **extra):
-    data = dict(broker="tasty", mode="live", account="705", base_dir=str(tmp_path))
+    data = dict(broker="tasty", mode="live", broker_account="705", base_dir=str(tmp_path))
     data.update(extra)
     cfg = Config(**data)
     cfg.validate()
@@ -1104,7 +1135,8 @@ def test_the_image_has_no_port_no_health_check_and_copies_no_state():
     assert "tzdata" in text and "'.[tasty]'" in text
     assert "DATA=/data" in text and "PYTHONUNBUFFERED=1" in text
     assert "SPX_NOON_" not in text
-    for absent in ("MODE=", "TASTY_ORDERS=", "TASTY_DATA=", "BROKER=", "TASTY_ACCOUNT="):
+    for absent in ("MODE=", "TASTY_ORDERS=", "TASTY_DATA=", "BROKER=", "BROKER_ACCOUNT=",
+                   "TASTY_ACCOUNT="):
         assert absent not in text, absent
     copied = [line.split()[1] for line in lines if line.startswith("COPY ")]
     assert copied == ["pyproject.toml", "spx_noon", service.SEED_NAME]
@@ -1124,7 +1156,7 @@ def test_render_md_covers_the_four_operator_jobs():
         assert name in text, name
     assert "python -m spx_noon wrap --now" in text
     # a second account is a second worker: its own disk, its own account, no code change
-    for needle in ("own disk", "TASTY_ACCOUNT", "not a code change"):
+    for needle in ("own disk", "BROKER_ACCOUNT", "not a code change"):
         assert needle in text, needle
     assert "RENDER.md" in (ROOT / "README.md").read_text()
 
@@ -1133,7 +1165,7 @@ def test_the_docs_use_the_new_names_for_the_worker():
     """README names the worker's six variables and, of the SPX_NOON_ ones, only
     the two the local launchers use. The seed mentions no launcher variable."""
     readme = (ROOT / "README.md").read_text()
-    for name in ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "TASTY_ACCOUNT"):
+    for name in ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "BROKER_ACCOUNT"):
         assert f"`{name}`" in readme, name
     assert sorted({word.strip("`,.") for word in readme.split()
                    if word.strip("`,.").startswith("SPX_NOON_")}) == \

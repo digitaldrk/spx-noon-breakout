@@ -77,18 +77,18 @@ def _setup_logging(cfg) -> None:
         )
     # ib_async logs the whole order, account included, at INFO. Redact before it can.
     if cfg.broker == "ibkr":
-        redact_account(cfg.account)
+        redact_account(cfg.broker_account)
 
 
 def _resolve_account(cfg, broker) -> str:
     accounts = [str(item) for item in (broker.managed_accounts() or [])]
     if cfg.broker == "tasty":
-        return _tasty_account(cfg.account, accounts)
+        return _tasty_account(cfg.broker_account, accounts)
     if cfg.broker == "ibkr":
         from .ib import check_accounts
         return check_accounts(cfg, accounts)
-    if cfg.account:
-        return cfg.account
+    if cfg.broker_account:
+        return cfg.broker_account
     if not accounts:
         raise SafetyError("broker reported no account")
     return str(accounts[0])
@@ -101,7 +101,8 @@ def _tasty_account(want: str, accounts: list[str]) -> str:
     if not want:
         if len(accounts) == 1:
             return accounts[0]
-        raise SafetyError("tastytrade returned more than one account; set account to the one to use")
+        raise SafetyError("tastytrade returned more than one account; "
+                          "set broker_account to the one to use")
     exact = [acct for acct in accounts if acct == want]
     if len(exact) == 1:
         return exact[0]

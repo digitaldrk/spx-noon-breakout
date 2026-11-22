@@ -16,7 +16,7 @@ neither. ``DATA`` is the mounted disk, not the Unix ``HOME``.
   ``MODE``          live (default) | dry | alerts
   ``TASTY_DATA``    production (default) | sandbox
   ``TASTY_ORDERS``  sandbox (default) | production  <- real money, with production data
-  ``TASTY_ACCOUNT`` blank means the first account on the order session
+  ``BROKER_ACCOUNT`` blank means the first account on the order session
 
 Those six win over ``$DATA/config.json``, and the resolved, secret-free result is
 published to ``$DATA/state/service-config.json``, which is the file both children
@@ -122,8 +122,8 @@ def env_overrides(env=None) -> dict:
         value = (env.get(name) or "").strip().lower()
         if value:                        # blank leaves the file's value, then the default
             over[field] = value
-    if "TASTY_ACCOUNT" in env:           # present and blank means the first account
-        over["account"] = (env["TASTY_ACCOUNT"] or "").strip()
+    if "BROKER_ACCOUNT" in env:          # present and blank means the first account
+        over["broker_account"] = (env["BROKER_ACCOUNT"] or "").strip()
     return over
 
 
