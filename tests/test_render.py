@@ -962,7 +962,8 @@ def test_the_session_child_deadline_is_long_after_the_last_flat(tmp_path):
     cfg = _cfg(tmp_path)
     supervisor, _clock, launcher, _ = _supervisor(tmp_path, _at(MONDAY, 11, 45), codes=[0], cfg=cfg)
     supervisor.run_session(MONDAY)
-    # two hours after the last 13:00 decision is 15:00; the backstop is 16:20
+    # the last trading flat is the 15:50 hard flat (the latest two-hour deadline,
+    # from a 13:00 bar, is 15:00); the backstop is 16:20, half an hour later
     assert launcher.calls[0]["deadline"] == _at(MONDAY, 16, 20)
     late, _clock, launcher, _ = _supervisor(tmp_path, _at(MONDAY, 17), codes=[0], cfg=cfg)
     late.run_session(MONDAY)

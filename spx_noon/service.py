@@ -319,12 +319,15 @@ class Supervisor:
         """Run one child and wait. A crash is its exit code, not an exception.
 
         ``deadline`` is a backstop, not a trading rule. The runner loops forever
-        on a spread it has given up selling (three failed sells, then an alert),
-        and a child that never exits would cost every later trading day, not
-        just today's. The deadline is the wrap hour: an hour and twenty minutes
-        after the last possible flat and after the options close, so stopping
-        the child there cannot shorten a session or change an exit. Nothing
-        stops it inside trading hours.
+        on a spread it has given up selling (three failed sells, then an alert,
+        and the 3:50 PM ET hard flat's own three sells can end the same way), and
+        a child that never exits would cost every later trading day, not just
+        today's. The deadline is the wrap hour: half an hour after the last
+        trading flat, the 3:50 PM hard flat, and after the options close, so
+        stopping the child there cannot shorten a session or change an exit. A
+        spread that failed those sells too can still be running at 16:20, and
+        stopping the child does not sell it. Nothing stops it inside trading
+        hours.
         """
         env = dict(os.environ)
         if self.config_file is not None:

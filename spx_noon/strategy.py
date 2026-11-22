@@ -12,8 +12,10 @@ Beyond is strict.
 The day is skipped when a 15m close from 10:15 through 11:00 ET was already
 beyond PDH or PDL (:func:`morning_break`). The long leg is the strike nearest
 0.80 delta. The exit is +8 SPX points in the trade direction
-(:func:`point_exit_reached`) or the two-hour flat, whichever comes first.
-There is no premium target.
+(:func:`point_exit_reached`) or the two-hour flat, whichever comes first, and
+a spread that neither of those sold is flattened at the 3:50 PM ET hard flat
+(``pricing.hard_flat_deadline``, worked by the session). There is no premium
+target.
 
 The width, the mid limit, and the $0.20 skip are the same on every trade.
 """

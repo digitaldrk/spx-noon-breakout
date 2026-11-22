@@ -4,6 +4,7 @@ There is one strategy. A leftover ``plan`` keyword on the helpers is ignored.
 """
 import csv
 import json
+import pathlib
 import sys
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -18,6 +19,7 @@ from spx_noon.notify import Notifier
 from spx_noon.runner import (
     _State,
     _flatten,
+    _load_saved,
     _manage_position,
     _persist,
     _poll_working,
@@ -644,7 +646,7 @@ def test_a_ticket_names_the_point_exit_and_no_premium_target(tmp_path):
     ticket = (tmp_path / "logs" / "alerts.log").read_text()
     assert "plan" not in ticket.lower()
     assert "long 6925C" in ticket
-    assert "exit +8 SPX points or flat at 14:00 ET" in ticket
+    assert "exit +8 SPX points, flat at 14:00 ET, or hard flat at 15:50 ET" in ticket
     assert "target" not in ticket
 
 
@@ -869,6 +871,209 @@ def test_a_reloaded_entry_that_never_filled_does_not_block_the_day(tmp_path):
     assert float(position["long_strike"]) == 6925
     report = (cfg.state_dir / "report_2026-10-28.md").read_text()
     assert "80-delta" in report and "Version" not in report and "Plan " not in report
+
+
+# --------------------------------------------------------------------------
+# The 3:50 PM ET hard flat
+# --------------------------------------------------------------------------
+
+HARD = datetime(2026, 10, 28, 15, 50, tzinfo=ET)
+
+
+def _reloaded(cfg, broker, saved) -> _State:
+    """The restart path: today's saved spread, read back the way a restart does."""
+    state = _State()
+    _load_saved(cfg, broker, state, saved)
+    assert state.position is not None
+    return state
+
+
+class _ExitFilled(_Drift):
+    """The reloaded exit order is already filled whenever it is asked about."""
+
+    def order_state(self, handle):
+        if handle == RELOADED_ID:
+            return {"status": "Filled", "filled": 1, "remaining": 0,
+                    "avg_price": 17.8, "done": True}
+        return super().order_state(handle)
+
+
+class _ExitStuck(_Drift):
+    """The reloaded exit order never leaves the book."""
+
+    def order_state(self, handle):
+        if handle == RELOADED_ID:
+            return {"status": "Submitted", "filled": 0, "remaining": 1,
+                    "avg_price": 0.0, "done": False}
+        return super().order_state(handle)
+
+    def cancel(self, handle):
+        self.cancelled.append(handle)
+        if handle != RELOADED_ID:
+            super().cancel(handle)
+
+
+def test_a_spread_still_open_at_1550_is_flattened_as_hard_flat(tmp_path):
+    """The two-hour sells gave up; the session that reloads it still goes flat.
+
+    One runner, so this is the same path IBKR and tastytrade both run.
+    """
+    from spx_noon.resume import save
+    cfg = _cfg(tmp_path, exit_wait_s=1)
+    cfg.ensure_dirs()
+    save(cfg.state_dir, _a1_saved(exit_attempts=3, flat_gave_up=True))
+    broker = _Drift(HARD, levels()[0] + a1_call_bars(), _a1_quotes(), spot=7000)
+    assert run_session(cfg, broker) == 0
+    assert [order for order in broker.placed if order["action"] == "BUY"] == []
+    sells = [order for order in broker.placed if order["action"] == "SELL"]
+    assert len(sells) == 1 and sells[0]["tif"] == "DAY"
+    row = _rows(tmp_path)[-1]
+    assert row["exit_reason"] == "hard_flat"
+    assert row["exit_time"].startswith("2026-10-28T15:50")
+    assert float(row["exit_fill"]) == sells[0]["limit"]        # the spread bid, as always
+    report = (cfg.state_dir / "report_2026-10-28.md").read_text()
+    assert "hard_flat" in report and "15:50 ET" in report
+
+
+def test_the_1550_reset_allows_three_sells_and_not_a_fourth(tmp_path):
+    cfg = _cfg(tmp_path, exit_wait_s=1)
+    cfg.ensure_dirs()
+    broker = _NoSellDrift(HARD, [], _a1_quotes(), spot=7000)
+    state = _reloaded(cfg, broker, _a1_saved(exit_attempts=3, flat_gave_up=True))
+    pos = state.position
+    notifier = Notifier(tmp_path / "logs")
+    out = Outputs(cfg.state_dir)
+    for _ in range(6):
+        assert _manage_position(cfg, broker, notifier, out, state) is False
+    assert len([order for order in broker.placed if order["action"] == "SELL"]) == 3
+    assert pos["hard_flat_reset"] is True
+    assert pos["exit_attempts"] == 3 and pos["flat_gave_up"] is True
+    assert _rows(tmp_path) == []                   # nothing sold, so no exit row
+    assert "flatten stuck" in (tmp_path / "logs" / "alerts.log").read_text()
+    # the latch is on disk from before the first new sell went out
+    saved = json.loads((cfg.state_dir / "own_position.json").read_text())
+    assert saved["hard_flat_reset"] is True
+
+
+def test_a_restart_after_the_1550_latch_does_not_grant_another_three(tmp_path):
+    cfg = _cfg(tmp_path, exit_wait_s=1)
+    cfg.ensure_dirs()
+    broker = _NoSellDrift(HARD + timedelta(minutes=5), [], _a1_quotes(), spot=7000)
+    state = _reloaded(cfg, broker, _a1_saved(exit_attempts=3, flat_gave_up=True,
+                                             hard_flat_reset=True))
+    assert _manage_position(cfg, broker, Notifier(tmp_path / "logs"),
+                            Outputs(cfg.state_dir), state) is False
+    assert broker.placed == []
+    assert state.position["exit_attempts"] == 3
+
+
+def test_the_counter_is_not_cleared_before_1550(tmp_path):
+    """14:05 is past the two-hour deadline, and it is not the hard flat."""
+    cfg = _cfg(tmp_path, exit_wait_s=1)
+    cfg.ensure_dirs()
+    broker = _NoSellDrift(datetime(2026, 10, 28, 14, 5, tzinfo=ET), [], _a1_quotes(), spot=7000)
+    state = _reloaded(cfg, broker, _a1_saved(exit_attempts=3, flat_gave_up=True))
+    assert _manage_position(cfg, broker, Notifier(tmp_path / "logs"),
+                            Outputs(cfg.state_dir), state) is False
+    assert broker.placed == []
+    assert "hard_flat_reset" not in state.position
+    assert state.position["exit_attempts"] == 3
+
+
+def test_a_working_exit_order_is_left_working_at_1550(tmp_path):
+    """The reset does not cancel a sell that is still on the book."""
+    cfg = _cfg(tmp_path, exit_wait_s=1)
+    cfg.ensure_dirs()
+    broker = _ExitStuck(HARD, [], _a1_quotes(), spot=7000)
+    state = _reloaded(cfg, broker, _a1_saved(exit_attempts=3, flat_gave_up=True,
+                                             exit_order_id=RELOADED_ID))
+    assert _manage_position(cfg, broker, Notifier(tmp_path / "logs"),
+                            Outputs(cfg.state_dir), state) is False
+    pos = state.position
+    assert broker.placed == [] and broker.cancelled == []
+    assert pos["hard_flat_reset"] is True and pos["exit_attempts"] == 0
+    assert pos["exit_order_id"] == RELOADED_ID
+
+
+def test_an_exit_order_that_fills_at_1550_is_recorded_as_a_hard_flat(tmp_path):
+    """A sell placed earlier that fills at 15:50: the clock at record time wins."""
+    cfg = _cfg(tmp_path, exit_wait_s=1)
+    cfg.ensure_dirs()
+    broker = _ExitFilled(HARD, [], _a1_quotes(), spot=7000)
+    state = _reloaded(cfg, broker, _a1_saved(exit_attempts=1, exit_order_id=RELOADED_ID))
+    assert _manage_position(cfg, broker, Notifier(tmp_path / "logs"),
+                            Outputs(cfg.state_dir), state) is True
+    assert broker.placed == []                      # no second sell was needed
+    row = _rows(tmp_path)[-1]
+    assert row["exit_reason"] == "hard_flat"
+    assert float(row["exit_fill"]) == 17.8
+
+
+def test_the_earlier_exits_still_fire_before_the_hard_flat(tmp_path):
+    """+8 and the two-hour clock are unchanged: neither waits for 15:50."""
+    code, rows, buys, sells, _broker = _a1_run(tmp_path / "points", moves_at=ONE, moves_to=7008)
+    assert code == 0 and len(buys) == 1 and len(sells) == 1
+    assert [row["exit_reason"] for row in rows] == ["points"]
+    assert rows[-1]["exit_time"].startswith("2026-10-28T13:00")
+    # and a day the print never moves still flattens at the saved deadline
+    code, rows, buys, sells, _broker = _a1_run(tmp_path / "time")
+    assert code == 0 and len(buys) == 1 and len(sells) == 1
+    assert [row["exit_reason"] for row in rows] == ["time"]
+    assert rows[-1]["exit_time"].startswith("2026-10-28T14:00")
+
+
+class _FillsAtTheHardFlat(_Drift):
+    """A sell that sits on the book until the clock reaches 15:50, then fills."""
+
+    def _try_fill(self, handle):
+        order = self.orders.get(handle)
+        if order and order["action"] == "SELL" and self.now() < HARD:
+            return
+        super()._try_fill(handle)
+
+
+def test_a_two_hour_sell_that_fills_after_1550_is_recorded_as_a_hard_flat(tmp_path):
+    """The sell goes out at 15:49:50 as the two-hour flat and fills at 15:50.
+
+    The clock when the fill is recorded decides, and there is one reason field.
+    """
+    cfg = _cfg(tmp_path, exit_wait_s=20)
+    cfg.ensure_dirs()
+    broker = _FillsAtTheHardFlat(HARD - timedelta(seconds=10), [], _a1_quotes(), spot=7000)
+    state = _reloaded(cfg, broker, _a1_saved())
+    assert _manage_position(cfg, broker, Notifier(tmp_path / "logs"),
+                            Outputs(cfg.state_dir), state) is True
+    assert len([order for order in broker.placed if order["action"] == "SELL"]) == 1
+    assert broker.cancelled == []
+    row = _rows(tmp_path)[-1]
+    assert row["exit_reason"] == "hard_flat"
+    assert row["exit_time"].startswith("2026-10-28T15:50")
+    # the same sell one minute earlier is still the two-hour flat
+    broker = _Drift(HARD - timedelta(minutes=1), [], _a1_quotes(), spot=7000)
+    state = _reloaded(cfg, broker, _a1_saved())
+    assert _manage_position(cfg, broker, Notifier(tmp_path / "logs"),
+                            Outputs(cfg.state_dir), state) is True
+    assert _rows(tmp_path)[-1]["exit_reason"] == "time"
+
+
+def test_neither_broker_keeps_an_exit_clock_of_its_own():
+    """The hard flat is the shared session's, so one change covers both.
+
+    Both brokers hand the session an Eastern ``now()``, which is what the 15:50
+    compare reads, and neither has an exit clock or a counter of its own.
+    """
+    from spx_noon.ib import IBBroker
+    from spx_noon.tasty import TastyBroker
+    for cls in (IBBroker, TastyBroker):
+        stamp = cls.now(None)                 # now() reads the clock, not the socket
+        assert stamp.tzinfo is not None
+        assert stamp.utcoffset() == datetime.now(ET).utcoffset()
+    package = pathlib.Path(__file__).resolve().parents[1] / "spx_noon"
+    for name in ("ib.py", "tasty.py"):
+        text = (package / name).read_text()
+        for absent in ("hard_flat", "15, 50", "exit_attempts"):
+            assert absent not in text, f"{name}: {absent}"
+    assert "hard_flat" in (package / "runner.py").read_text()
 
 
 def test_holiday_does_not_trade(tmp_path):
