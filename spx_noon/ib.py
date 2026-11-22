@@ -256,9 +256,18 @@ class IBBroker(Broker):
         return meter
 
     def _count(self, kind: str, caller: str, n: int = 1) -> None:
-        """Count one reqId-taking call and log the window when it is up."""
+        """Count ``n`` reqId-taking calls and log the window when it is up."""
+        self._meter().count(kind, caller, n)
+        self._report_requests()
+
+    def _report_requests(self) -> None:
+        """Log the window once five minutes of broker time have gone by.
+
+        Called on every ``ensure_options`` as well as on every count, so a quiet
+        stretch — which is the whole point of this change — still prints its own
+        near-zero line instead of waiting for the next request.
+        """
         meter = self._meter()
-        meter.count(kind, caller, n)
         now = self.now()
         if meter.due(now):
             meter.flush(now, log)
@@ -447,17 +456,20 @@ class IBBroker(Broker):
             for strike, right in missing
         ]
         if contracts:
-            self._count("other", "qualify")
+            # qualifyContracts fans out to one reqContractDetails per contract,
+            # so the count is the batch size, not the call.
+            self._count("other", "qualify", len(contracts))
             for contract in self.ib.qualifyContracts(*contracts):
                 if contract is not None and getattr(contract, "conId", 0):
                     self._opt_contracts[(float(contract.strike), contract.right)] = contract
         known = self._opt_contracts
         now = self.now()
+        spot = _f(self.spx_px().value)
         since = self._store("_opt_since")
         cold = self._store("_opt_cold")
         selected = select_option_lines(
             [key for key in wanted if key in known],
-            spot=self.spx_px().value,
+            spot=spot,
             now=now,
             budget=self.cfg.max_option_lines,
             subscribed_at={key: since.get(key, now) for key in self._opt_tickers},
@@ -476,7 +488,10 @@ class IBBroker(Broker):
                 self.ib.cancelMktData(contract)
             del self._opt_tickers[key]
             since.pop(key, None)
-        for key in sorted(keep):
+        # Nearest first, as before: on a slow TWS the money strikes arrive first.
+        nearest = (lambda key: (abs(key[0] - spot), key[0], key[1])) if spot and spot > 0 \
+            else (lambda key: (0.0, key[0], key[1]))
+        for key in sorted(keep, key=nearest):
             if key in self._opt_tickers:
                 continue
             contract = known.get(key)
@@ -485,6 +500,7 @@ class IBBroker(Broker):
             self._count("req", "ensure_options")
             self._opt_tickers[key] = self.ib.reqMktData(contract, "", False, False)
             since[key] = now
+        self._report_requests()
 
     def option_quotes(self):
         out = {}

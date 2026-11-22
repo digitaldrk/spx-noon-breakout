@@ -794,20 +794,32 @@ class TastyBroker(Broker):
             # never in this set, so they are never unsubscribed.
             subscribed: set[str] = set()
             while not self._stop:
-                wanted = self._want_symbols()
-                pending = sorted(wanted - subscribed)
-                stale = sorted(subscribed - wanted)
-                if pending:
-                    await streamer.subscribe(Quote, pending)
-                    await streamer.subscribe(Greeks, pending)
-                    subscribed |= set(pending)
-                if stale:
-                    await streamer.unsubscribe(Quote, stale)
-                    await streamer.unsubscribe(Greeks, stale)
-                    subscribed -= set(stale)
+                await self._sync_subscriptions(streamer, Quote, Greeks, subscribed)
                 self._drain(streamer, Quote, Greeks)
                 await asyncio.sleep(0.2)
             self._streamer = None
+
+    async def _sync_subscriptions(self, streamer, quote_cls, greeks_cls, subscribed: set) -> None:
+        """Subscribe what the selector added, unsubscribe what it dropped.
+
+        Quote and Greeks move together. ``subscribed`` holds option symbols only,
+        so SPX and VIX are never unsubscribed. A line the selector is still
+        holding is not in the dropped set, so nothing goes inside the hold window.
+
+        What leaves goes first, so a swap at the line budget never has the old
+        and the new symbol streaming at the same time.
+        """
+        wanted = self._want_symbols()
+        pending = sorted(wanted - subscribed)
+        stale = sorted(subscribed - wanted)
+        if stale:
+            await streamer.unsubscribe(quote_cls, stale)
+            await streamer.unsubscribe(greeks_cls, stale)
+            subscribed -= set(stale)
+        if pending:
+            await streamer.subscribe(quote_cls, pending)
+            await streamer.subscribe(greeks_cls, pending)
+            subscribed |= set(pending)
 
     def _drain(self, streamer, quote_cls, greeks_cls):
         """Merge queued Quote and Greeks events into the option book.
@@ -816,6 +828,10 @@ class TastyBroker(Broker):
         The exchange ``bid_time`` can already be minutes old on that packet, so
         it is not the freshness clock. A price-less Quote and a Greeks-only
         update leave the stored prices and the clock alone.
+
+        Only the lines the selector wants are merged. An event that was already
+        in flight when a line was dropped is discarded, so an unsubscribed strike
+        cannot come back with a fresh stamp and a price that will never move.
         """
         quotes: dict[str, dict] = {}
         greeks = {}
@@ -840,10 +856,11 @@ class TastyBroker(Broker):
         if not quotes and not greeks:
             return
         received = self.now()
+        want = set(self._want)
         with self._quote_lock:
             for key, meta in self._book.items():
                 symbol = meta.get("streamer")
-                if not symbol:
+                if not symbol or key not in want:
                     continue
                 if symbol not in quotes and symbol not in greeks and key in self._quotes:
                     continue
