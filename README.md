@@ -7,7 +7,7 @@
 | Mac | **IBKR** TWS (`"broker": "ibkr"`). **paper** is `127.0.0.1:7497` with account ids starting with `D`. **live** is real money on `127.0.0.1:7496` (TWS) or `4001` (IB Gateway) | `dry` (default) logs the ticket. `paper` sends it to the paper account. `live` sends real orders to the configured non-`D` account. |
 | Render Linux (hosted worker) | **tastytrade** (`"broker": "tasty"`) | `dry` and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
 
-A missing or blank `broker` refuses to start. On a Mac the config file is also the one switch between paper and real money: `mode`, `ibkr_port`, and `broker_account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first noon-window close beyond the prior day's high or low, one 80-delta spread, and exits at +8 SPX points or two hours after that bar. A 10:15–11:00 break skips the day. See [Trading plan](#trading-plan). Candle's 10:00–11:00 strategy is a different repo and is not used here.
+A missing or blank `broker` refuses to start. On a Mac the config file is also the one switch between paper and real money: `mode`, `ibkr_port`, and `broker_account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first noon-window close beyond the prior day's high or low, one 80-delta spread, and exits at +8 SPX points or two hours after that bar's close. A 10:15–11:00 break skips the day. See [Trading plan](#trading-plan).
 
 **Mac:** copy `config.example.json` to `config.json`, keep TWS logged into paper on port 7497 with Read-Only API off, and use `run.sh`. `./run.sh paper` is the launch that transmits. State goes in `~/Documents/spx-noon-breakout/state`. For real money see [IBKR live mode](#ibkr-live-mode-real-money).
 
@@ -54,7 +54,13 @@ two settings of it. The switch is `config.json` plus the TWS session you are log
 | TWS | logged into paper | logged into the live account |
 
 `ibkr_host` must be `127.0.0.1`, `localhost`, or `::1` in both. If any of those fails the process
-refuses to start. There are no environment variables in this gate; tastytrade is unchanged.
+refuses to start. No environment variable takes part in this gate: `mode`, `ibkr_port`, and
+`broker_account` in `config.json` plus the TWS session you are logged into are the whole switch.
+The variables the code does read, none of them part of it, are `SPX_NOON_CONFIG` (which config
+file to load) and `SPX_NOON_HOME` (`base_dir` when the file has none) for the Mac launchers, the
+hosted worker's six — `DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `BROKER_ACCOUNT`
+([RENDER.md](RENDER.md)) — and `SPX_SHEETS_CREDENTIALS_JSON` for the 16:20 wrap's sheet row
+(see [The 16:20 sheet row](#the-1620-sheet-row)). Tastytrade is unchanged.
 
 After every connect and every reconnect the bot checks the accounts TWS reports: the configured
 account must be there, must not start with `D`, and **no** reported account may start with `D`.
@@ -191,14 +197,14 @@ Hosted tastytrade: [RENDER.md](RENDER.md).
 
 The bot trades one strategy, written up in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). Readings that the rules leave open are in [docs/AMBIGUITIES.md](docs/AMBIGUITIES.md).
 
-The 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20-per-side skip, and the flat two hours after the entry bar.
+The 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20-per-side skip, and the flat two hours after the entry bar's close.
 
 | Rule | What the bot does |
 | --- | --- |
 | Signal | the day's **first** noon-window close beyond the prior day's high (calls) or low (puts). A fresh break on the window close itself is the signal. |
 | Morning | skip the whole day when any 15-minute close from 10:15 through 11:00 ET was already beyond the prior day's high or low. Equal to the level does not skip, and a 9:45 break does not either. |
 | Long leg | nearest **0.80** delta, in the money |
-| Exit | **+8 SPX points** in the trade direction, else flat at two hours. No premium target and no stop. |
+| Exit | **+8 SPX points** in the trade direction, else flat two hours after the entry bar's close — a 12:00 bar is flat at 2:00 PM, a 12:15 bar at 2:15 PM, and never two hours after the fill timestamp. No premium target and no stop. |
 
 A skipped morning sends no order and writes one `skip_morning` row in the trade log. An exit on the points reads `points` there. The 0.80 and the 8 points are code, not config keys.
 
