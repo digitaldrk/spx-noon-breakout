@@ -1,4 +1,4 @@
-# Noon Breakout (plan v2, version B or A1)
+# Noon Breakout
 
 0DTE SPX debit vertical. `broker` in `config.json` names the broker — `ibkr` or `tasty`, and nothing else sets it:
 
@@ -7,7 +7,7 @@
 | Mac | **IBKR** TWS (`"broker": "ibkr"`). **paper** is `127.0.0.1:7497` with account ids starting with `D`. **live** is real money on `127.0.0.1:7496` (TWS) or `4001` (IB Gateway) | `dry` (default) logs the ticket. `paper` sends it to the paper account. `live` sends real orders to the configured non-`D` account. |
 | Render Linux (hosted worker) | **tastytrade** (`"broker": "tasty"`) | `dry` and `alerts` never send. `live` auto-approves and sends to `tasty_orders` (default sandbox). `tasty_orders=production` is real money. |
 
-A missing or blank `broker` refuses to start. On a Mac the config file is also the one switch between paper and real money: `mode`, `ibkr_port`, and `broker_account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first qualifying 15-minute close from noon to 1:00 PM ET, one spread, flat two hours after that bar. `plan` in `config.json` picks the rules: `B` (the default) is 75 delta with a +30% take-profit, and `A1` is 80 delta with a +8-point exit and a morning filter — see [Trading plan](#trading-plan). Candle's 10:00–11:00 strategy is a different repo and is not used here.
+A missing or blank `broker` refuses to start. On a Mac the config file is also the one switch between paper and real money: `mode`, `ibkr_port`, and `broker_account` in `config.json`, plus the TWS session you are logged into. There is one scheduled job either way. The bot takes the first noon-window close beyond the prior day's high or low, one 80-delta spread, and exits at +8 SPX points or two hours after that bar. A 10:15–11:00 break skips the day. See [Trading plan](#trading-plan). Candle's 10:00–11:00 strategy is a different repo and is not used here.
 
 **Mac:** copy `config.example.json` to `config.json`, keep TWS logged into paper on port 7497 with Read-Only API off, and use `run.sh`. `./run.sh paper` is the launch that transmits. State goes in `~/Documents/spx-noon-breakout/state`. For real money see [IBKR live mode](#ibkr-live-mode-real-money).
 
@@ -29,12 +29,11 @@ Keep the real `config.json` on the machine. `.gitignore` excludes `config.json` 
 
 `python -m spx_noon` with no `--config` uses `SPX_NOON_CONFIG` when that variable is set, otherwise `config.json` in the repo root.
 
-The delta, the width, the $0.20 skip, the +30% target, A1's 8 points, and the two-hour flat are code, not config keys. `plan` is the one trading rule that is a key. They are in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md).
+The delta, the width, the $0.20 skip, the 8 points, and the two-hour flat are code, not config keys. They are in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). A `plan` key left in an old `config.json` is ignored.
 
 | Key | In the examples | Role |
 | --- | --- | --- |
 | `broker` | `ibkr` (Mac), `tasty` (tastytrade, Render) | The broker: `ibkr` or `tasty`. Missing or blank refuses to start, and so does any other value. The Render worker's `BROKER` overrides it. |
-| `plan` | `B` | The trading plan: `B` or `A1`. A missing key is `B`. Anything else refuses to start. There is no `PLAN` environment variable, including on the Render worker. |
 | `mode` | `dry` | Mac/IBKR: `dry`, `alerts`, `paper`, or `live`. Tastytrade: `dry`, `alerts`, or `live`. `dry` and `alerts` never send. `paper` (Mac), `live` (Mac, real money), and `live` (tastytrade) can. |
 | `tasty_data` | `production` | Quote, bar, chain, and greek host. Missing production credentials fail startup. No fallback to sandbox data. |
 | `tasty_orders` | `sandbox` | Order host. `production` is real money and requires `tasty_data=production`. Startup prints `DATA=<host> ORDERS=<host> REAL MONEY=YES/NO`. |
@@ -190,27 +189,25 @@ Hosted tastytrade: [RENDER.md](RENDER.md).
 
 ## Trading plan
 
-The bot implements version B in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md), and plan A1 behind one key. Readings that the plan leaves open are in [docs/AMBIGUITIES.md](docs/AMBIGUITIES.md).
+The bot trades one strategy, written up in [docs/TRADING_PLAN.md](docs/TRADING_PLAN.md). Readings that the rules leave open are in [docs/AMBIGUITIES.md](docs/AMBIGUITIES.md).
 
-`"plan": "B"` (the default, and what a missing key means) or `"plan": "A1"`. One code base, one job; each machine picks its plan in its own `config.json`. Everything both plans share stays the same: the 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20-per-side skip, and the flat two hours after the entry bar.
+The 12:00–1:00 PM ET closes, the first qualifying bar, one fill per day, calls before puts, `W = max(10, floor(EM / 5) × 5)`, the limit at mid, the $0.20-per-side skip, and the flat two hours after the entry bar.
 
-A1 changes exactly four things:
+| Rule | What the bot does |
+| --- | --- |
+| Signal | the day's **first** noon-window close beyond the prior day's high (calls) or low (puts). A fresh break on the window close itself is the signal. |
+| Morning | skip the whole day when any 15-minute close from 10:15 through 11:00 ET was already beyond the prior day's high or low. Equal to the level does not skip, and a 9:45 break does not either. |
+| Long leg | nearest **0.80** delta, in the money |
+| Exit | **+8 SPX points** in the trade direction, else flat at two hours. No premium target and no stop. |
 
-| | B | A1 |
-| --- | --- | --- |
-| Signal | a 15-minute close from 9:45 on beyond the level is the trigger; the window close must still be beyond the level and beyond that trigger bar's low (calls) or high (puts) | the day's **first** noon-window close beyond the prior day's high (calls) or low (puts). No trigger bar: a fresh break on the window close itself is the signal. |
-| Morning | no filter | skip the whole day when any 15-minute close from 10:15 through 11:00 ET was already beyond the prior day's high or low. Equal to the level does not skip, and a 9:45 break does not either. |
-| Long leg | nearest **0.75** delta, in the money | nearest **0.80** delta, in the money |
-| Exit | GTC at debit × 1.30, else flat at two hours | **+8 SPX points** in the trade direction, else flat at two hours. No premium target and no stop. |
-
-A skipped morning sends no order and writes one `skip_morning` row in the trade log. An A1 exit on the points reads `points` there. The 0.75, the 0.80, and the 8 points are code; `plan` is the only key.
+A skipped morning sends no order and writes one `skip_morning` row in the trade log. An exit on the points reads `points` there. The 0.80 and the 8 points are code, not config keys.
 
 ## Files
 
 | Path | What it does |
 | --- | --- |
-| `spx_noon/strategy.py`, `pricing.py` | Breakout, the 75- or 80-delta vertical, slippage skip, +30%, A1's morning filter and +8 points, two-hour clock |
-| `spx_noon/runner.py` | The session: one fill, the plan's exit (GTC target or +8 points), hard flat, trade log |
+| `spx_noon/strategy.py`, `pricing.py` | Breakout, the 80-delta vertical, slippage skip, the morning filter, +8 points, two-hour clock |
+| `spx_noon/runner.py` | The session: one fill, the +8 point exit, hard flat, trade log |
 | `spx_noon/ib.py` | Mac broker. `ib_async` against TWS paper (7497) or live (7496/4001) |
 | `spx_noon/tasty.py`, `check_tasty.py` | tastytrade broker, used by the hosted Render Linux worker and by a local `tasty` config. Production data session, sandbox orders unless configured. Auto-approves. |
 | `spx_noon/guard.py` | In-process ticket guard. Refuses a live order with no approved ticket, a price over the cap, or more than 10 requests a minute |

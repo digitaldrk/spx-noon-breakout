@@ -486,7 +486,7 @@ def test_a_session_pins_the_working_entry_and_clears_the_pins_when_flat(tmp_path
     assert any(len(call[2]) > 2 for call in ensured)
     assert any(call[2] == [6950.0, 6980.0] for call in ensured)
     with (tmp_path / "state" / "trades.csv").open() as fh:
-        assert list(csv.DictReader(fh))[-1]["exit_reason"] == "target"
+        assert list(csv.DictReader(fh))[-1]["exit_reason"] == "time"
 
 
 def test_a_restart_pins_a_working_entry_and_subscribes_the_legs_on_the_fill(tmp_path):
@@ -494,7 +494,7 @@ def test_a_restart_pins_a_working_entry_and_subscribes_the_legs_on_the_fill(tmp_
     cfg = Config(broker="sim", mode="paper", base_dir=str(tmp_path))
     cfg.ensure_dirs()
     saved = {
-        "date": "2026-10-28", "status": "working", "plan": "B", "direction": "CALL", "right": "C",
+        "date": "2026-10-28", "status": "working", "direction": "CALL", "right": "C",
         "spx": 7000, "pdh": 7010, "pdl": 6890, "em": 30, "width": 30,
         "long_strike": 6950, "short_strike": 6980, "long_delta": 0.74, "short_delta": 0.40,
         "mid": 12.0, "limit": 12.0, "fill_price": None,
@@ -520,7 +520,7 @@ def test_a_restart_pins_a_working_entry_and_subscribes_the_legs_on_the_fill(tmp_
 
     bars = levels()[0] + today_call_bars()
     broker = _RestartEntry(datetime(2026, 10, 28, 13, 0, tzinfo=ET), bars, _quotes("dip"), spot=7000)
-    state = _State(plan="B")
+    state = _State()
     _load_saved(cfg, broker, state, saved)
     assert state.working is not None
     assert broker.calls == [("pin", "20261028", [(6950.0, "C"), (6980.0, "C")])]

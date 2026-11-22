@@ -1,4 +1,4 @@
-# Noon Breakout (plan v2, version B) — Python 3.11+
+# Noon Breakout — Python 3.11+
 # Mac uses IBKR paper (ib_async). The Render Linux worker uses tastytrade:
 #   pip install "tastytrade>=13.2,<14"
 # or: pip install -e ".[tasty]"

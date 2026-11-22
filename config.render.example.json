@@ -2,7 +2,6 @@
   "_comment": "Seed for the hosted tastytrade worker (see RENDER.md). The worker copies this to $DATA/config.json once, only when that file is missing, and never overwrites it. There are no credentials here and none belong here: the six secrets are env vars pasted in the Render dashboard. broker names the broker, tasty here, and the dashboard's BROKER overrides it. There is no base_dir, so DATA (/data, the mounted disk) is the home directory. The worker's six variables, listed in RENDER.md, win over the values below.",
   "broker": "tasty",
   "mode": "live",
-  "plan": "B",
   "tasty_data": "production",
   "tasty_orders": "sandbox",
   "broker_account": "",
@@ -13,8 +12,7 @@
   "loop_interval_s": 5,
   "chain_band_pts": 150,
   "_orders": "mode live is what transmits; dry and alerts never send. tasty_orders sandbox sends to api.cert.tastyworks.com and the startup banner says REAL MONEY=NO. Real money needs tasty_data AND tasty_orders at production, and tasty_orders=production with sandbox data refuses to start.",
-  "_rules": "Shared by both plans: 15m closes 12:00-1:00 PM ET, first qualifying bar, 1 spread. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. Flat 2 hours after the entry bar. No stop.",
-  "_plan": "plan is the only trading rule that is a config key: B (the default, and what a missing key means) or A1. B: long nearest 75 delta, GTC close at debit x 1.30. A1: skip the day if any 15m close from 10:15 through 11:00 ET was already beyond the prior day's high or low, long nearest 80 delta, and exit at +8 SPX points in the trade direction or the 2-hour flat, whichever comes first - no premium target. It is a key in this file only: the worker's six variables do not include PLAN.",
+  "_rules": "15m closes 12:00-1:00 PM ET, the first close beyond the prior day's high or low, 1 spread. Skip the day if any 15m close from 10:15 through 11:00 ET was already beyond those levels. Long nearest 80 delta. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. Exit at +8 SPX points or flat 2 hours after the entry bar, whichever comes first. No premium target and no stop. None of this is a config key. A leftover plan key in an existing /data/config.json is ignored.",
   "_wrap": "The worker runs python -m spx_noon wrap --now once at 16:20 ET. It sends no orders; it writes reports/wrap-<date>.md from state/trades.csv and then upserts one High Noon row on the shared Google Sheet. See _sheets.",
   "_sheets": "One daily row for Boi 'High Noon' on the sheet Candle and Fly already share, keyed on (Date, Boi), so a second wrap on the same date replaces it. sheets_spreadsheet_id is the document id and is not a secret; a disk seeded before this key existed is never rewritten, and the same id is the code default when the key is absent. sheets_credentials is a path to a key file and stays blank on Render: this worker has no key file. The Google service-account json is one of the dashboard secrets named in RENDER.md, read from the environment by spx_noon/sheetsink.py and nothing else - do not paste it into this file or into $DATA/config.json, where it would be copied to state/service-config.json. The row goes on the Derek Comp tab, the same one the Mac writes. There is no tab setting. With no credential the wrap still writes its report, records one status line, and exits 0."
 }

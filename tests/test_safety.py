@@ -166,33 +166,27 @@ def test_check_fails_closed_without_a_broker_or_on_a_live_port(tmp_path, capsys)
 EXAMPLES = ("config.example.json", "config.tasty.example.json", "config.render.example.json")
 
 
-def test_every_example_config_stays_on_plan_b():
-    """A copied template trades version B. Switching is the operator's edit."""
+def test_example_configs_have_no_plan_key():
+    """The rules are code. A template does not name a plan."""
     for name in EXAMPLES:
-        assert json.loads((ROOT / name).read_text())["plan"] == "B", name
+        data = json.loads((ROOT / name).read_text())
+        assert "plan" not in data, name
+        assert "_plan" not in data, name
 
 
-def test_the_trading_plan_is_b_or_a1_and_is_never_an_environment_knob(monkeypatch, tmp_path):
+def test_a_leftover_plan_key_is_ignored(monkeypatch, tmp_path):
     def cfg(plan=None):
         keys = '{"mode": "dry", "ibkr_port": 7497'
         keys += "}" if plan is None else f', "plan": {plan}}}'
         return load_config(_write(tmp_path, "plan.json", keys), broker="ibkr")
 
-    assert cfg().plan == "B"                       # a missing key is version B
-    for given, want in (('"B"', "B"), ('"b"', "B"), ('"A1"', "A1"),
-                        ('"a1"', "A1"), ('"  a1  "', "A1")):
-        assert cfg(given).plan == want
-    for bad in ('""', '"   "', '"A"', '"B1"', '"a2"', '"version B"', "null", "0", "true"):
-        with pytest.raises(SafetyError, match="plan must be B or A1"):
-            cfg(bad)
-    # the field is not read from the environment on any platform
+    assert not hasattr(cfg(), "plan")
+    for given in ('"A1"', '"B"', '"b"', '""', '"version B"', "null"):
+        assert not hasattr(cfg(given), "plan")
     for name in ("PLAN", "SPX_NOON_PLAN", "TASTY_PLAN"):
-        monkeypatch.setenv(name, "A1")
-    assert cfg().plan == "B"
-    assert cfg('"A1"').plan == "A1"                # the file is the only switch
-    # and Config itself refuses it, so no caller can skip the gate by hand
-    with pytest.raises(SafetyError, match="plan must be B or A1"):
-        Config(broker="sim", mode="dry", plan="A2").validate()
+        monkeypatch.setenv(name, "B")
+    assert not hasattr(cfg(), "plan")
+    assert not hasattr(Config(broker="sim", mode="dry"), "plan")
 
 
 def test_mac_refuses_live_and_a_non_paper_port():
@@ -315,6 +309,14 @@ def test_banner_says_real_money_only_for_ibkr_live(monkeypatch):
         assert startup_banner(cfg, "DU999001").endswith("REAL MONEY=NO")
     tasty = Config(broker="tasty", mode="live", broker_account="705")
     assert startup_banner(tasty, "705").endswith("REAL MONEY=NO")
+
+
+def test_the_banner_names_no_plan():
+    cfg = Config(broker="ibkr", mode="paper", broker_account="DU999001")
+    cfg.validate()
+    assert startup_banner(cfg, "DU999001") == (
+        "BROKER=ibkr MODE=paper ACCOUNT=9001 PORT=7497 REAL MONEY=NO")
+    assert "PLAN=" not in startup_banner(cfg, "DU999001")
 
 
 def test_ibkr_order_log_lines_carry_the_flag_and_other_brokers_do_not(monkeypatch, caplog):

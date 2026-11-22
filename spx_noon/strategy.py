@@ -1,33 +1,21 @@
-"""Noon breakout, plan v2. Version B is the default; A1 is the config key ``plan``.
+"""Noon breakout.
 
 Window: 15-minute bars that close at 12:00, 12:15, 12:30, 12:45, and 1:00 PM ET.
 The first bar that qualifies is the candidate. At most one fill per day.
 
 Calls are checked before puts. There is no moving-average gate.
 
-On version B, a call bar qualifies when all three are true:
-  * some earlier 15m close today, from the 9:45 close on, was above PDH
-    (the first such bar is the trigger)
-  * this close is still above PDH
-  * this close is above the trigger bar's low
+The signal is the day's first window close beyond PDH (calls) or PDL (puts).
+No earlier close is read, and a fresh break on the window bar itself qualifies.
+Beyond is strict.
 
-Puts mirror that with PDL and the trigger bar's high.
+The day is skipped when a 15m close from 10:15 through 11:00 ET was already
+beyond PDH or PDL (:func:`morning_break`). The long leg is the strike nearest
+0.80 delta. The exit is +8 SPX points in the trade direction
+(:func:`point_exit_reached`) or the two-hour flat, whichever comes first.
+There is no premium target.
 
-On plan ``A1`` the signal is the day's first window close beyond PDH (calls) or
-PDL (puts). There is no trigger: no earlier close is read, and a fresh break on
-the window bar itself qualifies. Beyond is strict on both plans, and both check
-calls before puts.
-
-Both plans share the window, the width, the mid limit, the $0.20 skip, and the
-two-hour flat. Plan ``A1`` changes four things:
-
-  * the signal is the first window close beyond PDH/PDL, with no trigger bar
-    (:func:`qualifies`)
-  * the day is skipped when a 15m close from 10:15 through 11:00 ET was already
-    beyond PDH or PDL (:func:`morning_break`)
-  * the long leg is the strike nearest 0.80 delta, not 0.75
-  * the exit is +8 SPX points in the trade direction (:func:`point_exit_reached`)
-    or the two-hour flat, whichever comes first. No premium target.
+The width, the mid limit, and the $0.20 skip are the same on every trade.
 """
 from __future__ import annotations
 
@@ -44,23 +32,17 @@ from .pricing import (
 )
 
 BAR_MINUTES = 15
-TRIGGER_FROM = time(9, 45)
 WINDOW_CLOSES = (time(12, 0), time(12, 15), time(12, 30), time(12, 45), time(13, 0))
-TARGET_DELTA = 0.75
+TARGET_DELTA = 0.80
 STRIKE_STEP = 5.0
 RTH_OPEN = time(9, 30)
 RTH_LAST_START = time(16, 0)
 
-#: The two trading plans. ``B`` is the default and is what a missing key means.
-#: The operator picks one in their own ``config.json``; nothing else selects it.
-PLANS = ("B", "A1")
-#: Plan A1's long leg. Plan B's is :data:`TARGET_DELTA`.
-A1_TARGET_DELTA = 0.80
-#: Plan A1's morning skip: these four closes only. A 9:45 close (bar start 9:30)
+#: Morning skip: these four closes only. A 9:45 close (bar start 9:30)
 #: and an 11:15 close (bar start 11:00) are outside the window.
-A1_MORNING_CLOSES = (time(10, 15), time(10, 30), time(10, 45), time(11, 0))
-#: Plan A1's point exit, in SPX points from the entry print. Not a config key.
-A1_EXIT_POINTS = 8.0
+MORNING_CLOSES = (time(10, 15), time(10, 30), time(10, 45), time(11, 0))
+#: Point exit, in SPX points from the entry print. Not a config key.
+EXIT_POINTS = 8.0
 
 
 @dataclass
@@ -98,8 +80,8 @@ class Breakout:
     direction: str  # CALL or PUT
     right: str      # C or P
     entry: Bar
-    #: Version B's trigger bar. On A1, which has no trigger rule, this is the
-    #: break bar itself, so the stored note still names a real bar.
+    #: The break bar. The signal has no earlier bar, so this is the entry bar,
+    #: and the stored note names it.
     trigger: Bar
     pdh: float
     pdl: float
@@ -185,81 +167,41 @@ def decision_closes(day: date, tz) -> list[datetime]:
     return [datetime.combine(day, stamp, tz) for stamp in WINDOW_CLOSES]
 
 
-def _prior_closes(today_bars: list[Bar], entry: Bar) -> list[Bar]:
-    entry_close = close_time(entry)
-    prior = [
-        b for b in today_bars
-        if b.t.date() == entry.t.date()
-        and close_time(b) < entry_close
-        and close_time(b).time() >= TRIGGER_FROM
-        and is_rth(b)
-    ]
-    return sorted(prior, key=lambda b: b.t)
+def qualifies(entry: Bar, today_bars: list[Bar], pdh: float, pdl: float) -> Breakout | None:
+    """Return the breakout on this bar, or None.
 
-
-def qualifies(entry: Bar, today_bars: list[Bar], pdh: float, pdl: float,
-              plan: str = "B") -> Breakout | None:
-    """Return the breakout on this bar, or None. ``plan`` picks the signal.
-
-    Version B, the default and what a missing plan means: the trigger is the
-    first earlier close from 9:45 on beyond the level, not this bar and not a
-    later retest, and this close must also be beyond that bar's low (calls) or
-    high (puts).
-
-    Plan A1: this close beyond the level is the whole signal. No earlier close
-    is read. The break bar is its own :attr:`Breakout.trigger`, which is only
-    what the position note names; A1 has no trigger rule.
-
-    Calls first on both plans. Beyond is strict on both.
+    This close beyond the level is the whole signal. No earlier close is read.
+    The break bar is its own :attr:`Breakout.trigger`, which is only what the
+    position note names. Calls first. Beyond is strict. ``today_bars`` is
+    unused; the scanner passes the day so a caller cannot disagree with the
+    session.
     """
+    del today_bars
     if not is_window_bar(entry):
         return None
-    if _is_a1(plan):
-        if entry.c > pdh:
-            return Breakout("CALL", "C", entry, entry, pdh, pdl)
-        if entry.c < pdl:
-            return Breakout("PUT", "P", entry, entry, pdh, pdl)
-        return None
-    prior = _prior_closes(today_bars, entry)
-    call_triggers = [b for b in prior if b.c > pdh]
-    if call_triggers and entry.c > pdh and entry.c > call_triggers[0].l:
-        return Breakout("CALL", "C", entry, call_triggers[0], pdh, pdl)
-    put_triggers = [b for b in prior if b.c < pdl]
-    if put_triggers and entry.c < pdl and entry.c < put_triggers[0].h:
-        return Breakout("PUT", "P", entry, put_triggers[0], pdh, pdl)
+    if entry.c > pdh:
+        return Breakout("CALL", "C", entry, entry, pdh, pdl)
+    if entry.c < pdl:
+        return Breakout("PUT", "P", entry, entry, pdh, pdl)
     return None
 
 
 def first_breakout(today_bars: list[Bar], pdh: float, pdl: float,
-                   up_to: datetime | None = None, plan: str = "B") -> Breakout | None:
-    """First qualifying window bar whose close is at or before ``up_to``.
-
-    ``plan`` is forwarded to :func:`qualifies`, so this cannot disagree with the
-    signal the session takes.
-    """
+                   up_to: datetime | None = None) -> Breakout | None:
+    """First qualifying window bar whose close is at or before ``up_to``."""
     windows = [b for b in today_bars if is_window_bar(b)]
     windows.sort(key=lambda b: b.t)
     for bar in windows:
         if up_to is not None and close_time(bar) > up_to:
             break
-        found = qualifies(bar, today_bars, pdh, pdl, plan)
+        found = qualifies(bar, today_bars, pdh, pdl)
         if found is not None:
             return found
     return None
 
 
-def _is_a1(plan: str) -> bool:
-    """Is this the A1 plan? Whitespace and case are forgiven; anything else is B."""
-    return str(plan).strip().upper() == "A1"
-
-
-def plan_target_delta(plan: str = "B") -> float:
-    """The long leg's delta for this plan: 0.80 on A1, 0.75 on B."""
-    return A1_TARGET_DELTA if _is_a1(plan) else TARGET_DELTA
-
-
 def morning_break(today_bars: list[Bar], pdh: float, pdl: float) -> Bar | None:
-    """Plan A1's morning skip. The first 10:15–11:00 close beyond PDH/PDL, or None.
+    """The first 10:15–11:00 close beyond PDH/PDL, or None.
 
     ``today_bars`` are today's RTH bars. Timestamps are bar starts, so the
     window is the bars starting 10:00, 10:15, 10:30, and 10:45. Beyond is
@@ -268,7 +210,7 @@ def morning_break(today_bars: list[Bar], pdh: float, pdl: float) -> Bar | None:
     """
     pdh, pdl = float(pdh), float(pdl)
     for bar in sorted((b for b in today_bars if is_rth(b)), key=lambda b: b.t):
-        if close_time(bar).time() not in A1_MORNING_CLOSES:
+        if close_time(bar).time() not in MORNING_CLOSES:
             continue
         if bar.c > pdh or bar.c < pdl:
             return bar
@@ -276,8 +218,8 @@ def morning_break(today_bars: list[Bar], pdh: float, pdl: float) -> Bar | None:
 
 
 def point_exit_reached(right: str, entry_print, live_print,
-                       points: float = A1_EXIT_POINTS) -> bool:
-    """Plan A1's point exit: is the live SPX print ``points`` through the entry print?
+                       points: float = EXIT_POINTS) -> bool:
+    """Is the live SPX print ``points`` through the entry print?
 
     ``entry_print`` is the live print at the entry decision, the ``spx`` stored
     on the position. Calls need ``live >= entry + points``, puts
@@ -387,12 +329,11 @@ def _norm_quotes(quotes: dict) -> dict:
     return out
 
 
-def build_order_plan(breakout: Breakout, quotes: dict, spot: float,
-                     plan: str = "B") -> tuple[OrderPlan | None, str]:
+def build_order_plan(breakout: Breakout, quotes: dict, spot: float) -> tuple[OrderPlan | None, str]:
     """Turn a qualified bar into a 1-lot debit vertical, or a reason string.
 
-    ``plan`` picks the long leg only: 0.75 delta on B, 0.80 on A1. The width,
-    the short strike, the mid limit, and the $0.20 skip are the same on both.
+    The long leg is the strike nearest :data:`TARGET_DELTA`. The width, the
+    short strike, the mid limit, and the $0.20 skip follow from the chain.
     """
     if spot is None:
         return None, "no spot"
@@ -407,7 +348,7 @@ def build_order_plan(breakout: Breakout, quotes: dict, spot: float,
         return None, "no atm straddle"
     atm, em = em_pair
     width = vertical_width(em)
-    target = plan_target_delta(plan)
+    target = TARGET_DELTA
     picked = select_long_strike(quotes, breakout.right, spot_f, target)
     if picked is None:
         return None, f"no {round(target * 100)}-delta strike"
@@ -429,7 +370,7 @@ def build_order_plan(breakout: Breakout, quotes: dict, spot: float,
     if limit <= 0:
         return None, "limit not positive"
     short_delta = getattr(short_q, "delta", None)
-    plan = OrderPlan(
+    order = OrderPlan(
         direction=breakout.direction,
         right=breakout.right,
         long_strike=long_strike,
@@ -456,4 +397,4 @@ def build_order_plan(breakout: Breakout, quotes: dict, spot: float,
         trigger_low=breakout.trigger.l,
         trigger_high=breakout.trigger.h,
     )
-    return plan, plan.skip_reason
+    return order, order.skip_reason

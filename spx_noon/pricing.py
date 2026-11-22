@@ -1,13 +1,10 @@
-"""Debit-spread prices for plan v2.
+"""Debit-spread prices.
 
 One spread. Entry limit is the mid, rounded down to the nickel, so the order
 never bids through the mid. The trade is skipped when the marketable debit is
-more than $0.20 per side worse than that mid. Both plans share all of that and
-the two-hour flat (:func:`time_exit_deadline`).
-
-Take-profit is debit × 1.30 on version B only. Plan A1 has no premium target:
-its exit is +8 SPX points (``strategy.point_exit_reached``) or the same
-two-hour flat, so ``take_profit_limit`` and ``target_reached`` are not on its path.
+more than $0.20 per side worse than that mid. The flat is two hours after the
+entry bar (:func:`time_exit_deadline`). There is no premium target: the exit
+is +8 SPX points (``strategy.point_exit_reached``) or that same flat.
 """
 from __future__ import annotations
 
@@ -15,7 +12,6 @@ import math
 from datetime import datetime, timedelta
 
 TICK = 0.05
-TP_MULTIPLE = 1.30
 MAX_SLIPPAGE_PER_SIDE = 0.20
 FEE_PER_CONTRACT = 0.65
 N_LEGS = 2
@@ -30,23 +26,6 @@ def floor_tick(price: float, tick: float = TICK) -> float:
 def limit_at_mid(mid: float, tick: float = TICK) -> float:
     """Buy limit at the mid, never above it."""
     return floor_tick(mid, tick)
-
-
-def take_profit_limit(fill_debit: float, multiple: float = TP_MULTIPLE, tick: float = TICK) -> float:
-    """Resting sell. Floored so a bid at debit × multiple can fill the order."""
-    return floor_tick(float(fill_debit) * multiple, tick)
-
-
-def target_reached(spread_bid: float | None, fill_debit: float, multiple: float = TP_MULTIPLE) -> bool:
-    if spread_bid is None:
-        return False
-    try:
-        bid = float(spread_bid)
-    except (TypeError, ValueError):
-        return False
-    if not math.isfinite(bid):
-        return False
-    return bid + 1e-9 >= float(fill_debit) * multiple
 
 
 def time_exit_deadline(entry_bar_close: datetime) -> datetime:

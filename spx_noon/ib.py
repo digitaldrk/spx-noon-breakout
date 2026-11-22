@@ -6,7 +6,7 @@ does not start with D, and TWS has to report that same account. mode ``dry``
 and ``alerts`` connect read-only on 7497 and never send.
 
 Orders carry orderRef SPXNOON-. The bot never modifies an order that does not.
-Entry orders are DAY. The take-profit is GTC, as the plan specifies.
+Entry orders are DAY. Exits are DAY sells at the spread bid.
 
 Every call that takes a reqId is counted by caller and summarised every five
 minutes, so a paper log shows the market-data request rate without any account

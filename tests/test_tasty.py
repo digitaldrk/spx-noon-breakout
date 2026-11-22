@@ -273,6 +273,22 @@ def test_sandbox_orders_load_sandbox_creds_only(monkeypatch, tmp_path):
     assert text  # creds stayed in the factory log, not the banner
 
 
+def test_the_session_announce_is_the_banner(tmp_path, capsys):
+    """The announce line is the two hosts and the real-money flag."""
+    banner = f"DATA={PROD_HOST} ORDERS={CERT_HOST} REAL MONEY=NO"
+    cfg = Config(broker="tasty", mode="live", base_dir=str(tmp_path), max_orders_per_min=10)
+    cfg.validate()
+    cfg.ensure_dirs()
+    data_s, order_s = _pair()
+    broker = TastyBroker(cfg, data_session=data_s, order_session=order_s,
+                         transport=Transport(), clock=Clock())
+    broker.connect()
+    printed = capsys.readouterr().out
+    assert broker.safety_banner() == banner
+    assert printed.strip() == banner
+    assert "PLAN" not in printed
+
+
 def test_identical_creds_cannot_drive_sandbox_orders(monkeypatch, tmp_path):
     monkeypatch.setenv("TASTYTRADE_PROD_CLIENT_SECRET", "same-secret")
     monkeypatch.setenv("TASTYTRADE_PROD_REFRESH_TOKEN", "same-refresh")
