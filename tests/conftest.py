@@ -27,9 +27,13 @@ PREFIXES = ("TASTYTRADE_", "SPX_NOON_")
 #: exact name: ``DATA`` and ``MODE`` are too common to clear by prefix.
 WORKER_NAMES = ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "BROKER_ACCOUNT")
 
-#: Not read anywhere in this repo. Unset anyway, so a machine that exports it
-#: cannot start feeding it to something later.
-OTHER_NAMES = ("SPX_SHEETS_CREDENTIALS_JSON",)
+#: The Google Sheets credential, in the three forms :mod:`spx_noon.sheetsink`
+#: looks for. A developer shell that exports any of them would otherwise let a
+#: wrap test read the operator's real service-account key and dial Google, so
+#: all three are cleared: the blob, the repo's own path variable, and the
+#: library-wide one.
+OTHER_NAMES = ("SPX_SHEETS_CREDENTIALS_JSON", "SPX_SHEETS_CREDENTIALS",
+               "GOOGLE_APPLICATION_CREDENTIALS")
 
 #: The three names the fixture replaces instead of removing: a machine whose
 #: shell exports one of them (``run.sh`` exports ``SPX_NOON_HOME``) still has it

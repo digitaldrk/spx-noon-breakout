@@ -11,7 +11,7 @@ A missing or blank `broker` refuses to start. On a Mac the config file is also t
 
 **Mac:** copy `config.example.json` to `config.json`, keep TWS logged into paper on port 7497 with Read-Only API off, and use `run.sh`. `./run.sh paper` is the launch that transmits. State goes in `~/Documents/spx-noon-breakout/state`. For real money see [IBKR live mode](#ibkr-live-mode-real-money).
 
-**Hosted (no computer left on):** see [RENDER.md](RENDER.md). One private Render background worker runs tastytrade from a container: real quotes, sandbox orders by default, state on a disk at `/data`. Its settings are plain variable names, the same set every bot uses on Render — `DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `BROKER_ACCOUNT` — plus the four `TASTYTRADE_*` secrets. It changes nothing on this Mac.
+**Hosted (no computer left on):** see [RENDER.md](RENDER.md). One private Render background worker runs tastytrade from a container: real quotes, sandbox orders by default, state on a disk at `/data`. Its settings are plain variable names, the same set every bot uses on Render — `DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `BROKER_ACCOUNT` — plus the four `TASTYTRADE_*` secrets and `SPX_SHEETS_CREDENTIALS_JSON`. It changes nothing on this Mac.
 
 **tastytrade by hand:** copy `config.tasty.example.json` to `config.json` and run `python -m spx_noon`. The copy stays `dry`; `"mode": "live"` is the send mode, and tastytrade auto-approves. The price cap and 10 orders per minute still apply. There is no scheduled local tastytrade job — the hosted worker is the always-on path.
 
@@ -108,6 +108,54 @@ IBKR live config writes the live wrap, everything else writes the paper wrap. `r
 and `python -m spx_noon wrap --book live` are the same thing by hand — they read the live book
 only, send nothing, and work from any config, including a dry one.
 
+The two markdown files stay separate. The sheet row below does not: it is one row per date for
+this bot, so a later wrap of the other book on the same date replaces it.
+
+### The 16:20 sheet row
+
+After the markdown report is on disk, the wrap upserts **one** daily row for Boi `High Noon` on
+the Google Sheet Candle (`spx-breakout`) and Fly (`spx-fly`) already share,
+`sheets_spreadsheet_id`, default `1tnMlDTidwCYG3_H2Z-lBcIUG5KOX4tgbe8AiRopATsU`. The columns are
+theirs and are not extended here:
+
+| Column | What this bot writes |
+| --- | --- |
+| `Date` | the session date, the same one in the report's filename |
+| `Boi` | `High Noon`, always |
+| `Traded` | `yes` when the selected book has a filled or closed row that date, else `no` |
+| `P&L after fees` | that row's `pnl`, which is already net of fees. Several closed rows are summed; a blank `pnl` leaves the cell blank rather than claiming a zero |
+| `Worst` | empty. The trade log has no worst or drawdown column yet |
+| `What happened` | direction, both strikes, entry fill, exit fill, fees, and exit reason. A `skip_no_fill` or `skip_morning` day says so; a day with no rows says `No rows for today.` |
+
+The key is `(Date, Boi)`, so a second wrap on the same date replaces that row and never
+duplicates it, and Candle's and Fly's rows on the tab are left exactly as they are. The
+row goes on the `Derek Comp` tab, on this Mac and on the Render worker. There is no tab
+setting.
+
+The key is a Google service-account json. The first of these that is set wins:
+
+| Where | Notes |
+| --- | --- |
+| `SPX_SHEETS_CREDENTIALS_JSON` | the whole json, outer braces included. Used in memory, never written to disk, never logged or printed. This is how the Render worker gets it ([RENDER.md](RENDER.md)) |
+| `sheets_credentials` in `config.json` | a path to the key file. Blank means the default below |
+| `SPX_SHEETS_CREDENTIALS` | a path to the key file |
+| `GOOGLE_APPLICATION_CREDENTIALS` | a path to the key file |
+| `<home>/state/sheets-service-account.json` | the default path. Gitignored by name and by `state/` |
+
+The key itself is never a `config.json` field, and nothing copies it into
+`state/service-config.json`. Share the sheet with the service account's `client_email`, and
+install the client libraries where the wrap runs:
+
+```bash
+.venv/bin/pip install -e ".[sheets]"
+```
+
+A sheet problem is quiet by design: a missing key, a json blob that will not parse, the Google
+packages not installed, or an API error each leave the markdown report in place, append one
+status line to it, print that line, and **exit 0**. No status line quotes the json, a
+`private_key`, or a key file's contents. The 16:20 job always tries the sheet; there is no flag
+to skip it.
+
 ### launchd
 
 `./deploy/install_launchd.sh` takes **no arguments** and installs exactly two labels,
@@ -136,7 +184,7 @@ The tests ignore this machine's broker setup: they read no `TASTYTRADE_*` creden
 
 `python -m spx_noon check` follows `config.json`: an `ibkr` file is a read-only paper check on 7497, and a `tasty` file checks tastytrade. It never dials 7496 or 4001, so a live IBKR `config.json` makes it refuse.
 
-`./deploy/install_launchd.sh` schedules weekdays at 11:45 AM local (Eastern on this Mac) and a read-only wrap at 4:20 PM. Both follow `config.json`. The wrap does not connect and does not send orders; it writes `reports/wrap-<date>.md` from `state/trades.csv`, or `reports/wrap-live-<date>.md` from `state/trades-live.csv` when the config is IBKR live.
+`./deploy/install_launchd.sh` schedules weekdays at 11:45 AM local (Eastern on this Mac) and a read-only wrap at 4:20 PM. Both follow `config.json`. The wrap places no orders; it writes `reports/wrap-<date>.md` from `state/trades.csv`, or `reports/wrap-live-<date>.md` from `state/trades-live.csv` when the config is IBKR live, and then upserts one `High Noon` row on the shared Google Sheet (see [The 16:20 sheet row](#the-1620-sheet-row)). Without a service-account key it records that the sheet was not updated and still exits 0.
 
 Hosted tastytrade: [RENDER.md](RENDER.md).
 
@@ -168,6 +216,7 @@ A skipped morning sends no order and writes one `skip_morning` row in the trade 
 | `spx_noon/guard.py` | In-process ticket guard. Refuses a live order with no approved ticket, a price over the cap, or more than 10 requests a minute |
 | `spx_noon/config.py` | The file's broker, the mode gate, the IBKR live port/account gate, and the real-money banner |
 | `run_wrap.sh`, `spx_noon/wrap_run.py` | 16:20 read-only note. `--book paper` or `--book live` |
+| `spx_noon/sheetsink.py` | The 16:20 wrap's one `High Noon` row on the shared sheet: the row, the tab rule, the `(Date, Boi)` upsert, and the credential order. Never raises; a sheet failure is one status line |
 | `config.example.json` | Mac IBKR template |
 | `config.tasty.example.json` | tastytrade template |
 | `spx_noon/service.py` | Hosted worker supervisor: reads `DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `BROKER_ACCOUNT`, waits for 11:45, spawns the session, restarts a crash, runs the 16:20 wrap. [RENDER.md](RENDER.md) |

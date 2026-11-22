@@ -23,13 +23,17 @@ ET = ZoneInfo("America/New_York")
 
 #: The worker's own settings. Plain names, no bot prefix, the same set on every bot.
 WORKER_ENV = ("DATA", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS", "BROKER_ACCOUNT")
-#: Pasted in the dashboard: the account to trade, and what tasty.load_creds reads.
+#: Pasted in the dashboard: the account to trade, what tasty.load_creds reads,
+#: and the Google service-account json the 16:20 wrap's sheet row needs. The
+#: sheets blob is not one of the six worker settings: no code in
+#: :mod:`spx_noon.service` reads it, and the wrap child inherits it.
 SECRET_NAMES = (
     "BROKER_ACCOUNT",
     "TASTYTRADE_PROD_CLIENT_SECRET",
     "TASTYTRADE_PROD_REFRESH_TOKEN",
     "TASTYTRADE_SANDBOX_CLIENT_SECRET",
     "TASTYTRADE_SANDBOX_REFRESH_TOKEN",
+    "SPX_SHEETS_CREDENTIALS_JSON",
 )
 PLAIN_NAMES = ("DATA", "PYTHONUNBUFFERED", "BROKER", "MODE", "TASTY_DATA", "TASTY_ORDERS")
 
@@ -1105,7 +1109,7 @@ def test_the_blueprint_is_one_starter_worker_with_a_disk_and_no_port():
         assert forbidden not in text
 
 
-def test_the_blueprint_sets_the_plain_env_and_leaves_the_five_secrets_blank():
+def test_the_blueprint_sets_the_plain_env_and_leaves_the_six_secrets_blank():
     worker = _worker()
     env = {item["key"]: item for item in worker["envVars"]}
     assert set(env) == set(PLAIN_NAMES) | set(SECRET_NAMES)
@@ -1132,7 +1136,8 @@ def test_the_image_has_no_port_no_health_check_and_copies_no_state():
     assert lines[0] == "FROM python:3.11-slim"
     assert not any(line.upper().startswith(("EXPOSE", "HEALTHCHECK")) for line in lines)
     assert 'CMD ["python", "-m", "spx_noon.service"]' in text
-    assert "tzdata" in text and "'.[tasty]'" in text
+    # the image carries the sheets extra too, so the wrap can write its row
+    assert "tzdata" in text and "'.[tasty,sheets]'" in text
     assert "DATA=/data" in text and "PYTHONUNBUFFERED=1" in text
     assert "SPX_NOON_" not in text
     for absent in ("MODE=", "TASTY_ORDERS=", "TASTY_DATA=", "BROKER=", "BROKER_ACCOUNT=",

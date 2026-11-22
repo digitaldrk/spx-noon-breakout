@@ -8,6 +8,14 @@ else uses paper.
 
 It does not connect to a broker and it does not place, change, or cancel
 orders, so ``--book live`` reads the live book from any loaded config.
+
+After the markdown report is on disk it upserts one ``High Noon`` row for the
+same date and the same book onto the Google Sheet Candle and Fly already share
+(:mod:`spx_noon.sheetsink`). The report is written first and the sheet is never
+allowed to take it down: a missing key, a bad credential, the Google packages
+not being installed, and an API error are each one status line appended to the
+report, printed, and an exit of 0. There is no flag to skip the sheet — the
+16:20 job always tries it.
 """
 from __future__ import annotations
 
@@ -17,6 +25,7 @@ from zoneinfo import ZoneInfo
 
 from .config import SafetyError, load_config
 from .logbook import Outputs
+from .sheetsink import machine_tab, push_sheet, sheet_row
 
 ET = ZoneInfo("America/New_York")
 
@@ -62,4 +71,11 @@ def main(argv=None) -> int:
     path = cfg.reports_dir / name
     path.write_text("\n".join(lines) + "\n")
     print(f"wrote {path}")
+    # The sheet comes after the report, and only ever adds to it. The row is this
+    # book's day; the status line describes the sheet alone and repeats no trade.
+    tab = machine_tab()
+    status = push_sheet(cfg, tab, [sheet_row(now.date(), rows)])
+    with path.open("a") as fh:
+        fh.write(f"Sheet: {status}\n")
+    print(status)
     return 0

@@ -50,3 +50,10 @@ services:
         sync: false
       - key: TASTYTRADE_SANDBOX_REFRESH_TOKEN
         sync: false
+      # The whole Google service-account json for the one row the 16:20 wrap
+      # upserts on the shared sheet. Pasted in the dashboard, inherited by the
+      # wrap child, never in the repo or in /data/config.json. Not one of the
+      # six worker settings. Unset means the wrap records that the sheet was
+      # not updated and still exits 0.
+      - key: SPX_SHEETS_CREDENTIALS_JSON
+        sync: false

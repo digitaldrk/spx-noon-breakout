@@ -20,7 +20,9 @@ COPY pyproject.toml ./
 COPY spx_noon ./spx_noon
 COPY config.render.example.json ./
 
-# ib_async comes in with the core dependencies; the tasty extra is what Linux runs on.
-RUN pip install --no-cache-dir '.[tasty]'
+# ib_async comes in with the core dependencies; the tasty extra is what Linux runs
+# on. The sheets extra is the 16:20 wrap's row on the shared Google Sheet: the
+# worker can write it once SPX_SHEETS_CREDENTIALS_JSON is pasted in the dashboard.
+RUN pip install --no-cache-dir '.[tasty,sheets]'
 
 CMD ["python", "-m", "spx_noon.service"]

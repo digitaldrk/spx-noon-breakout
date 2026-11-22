@@ -12,6 +12,10 @@ dependencies = ["ib_async>=2.1.0", "tzdata"]
 [project.optional-dependencies]
 test = ["pytest"]
 tasty = ["tastytrade>=13.2,<14"]
+# Only the 16:20 wrap's sheet row needs these, and only on a machine that has a
+# service-account key. The imports live inside spx_noon.sheetsink's push path,
+# so the suite and a plain install run without them.
+sheets = ["google-api-python-client>=2.0", "google-auth>=2.0"]
 
 [tool.setuptools]
 packages = ["spx_noon"]

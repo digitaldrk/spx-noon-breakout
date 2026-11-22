@@ -10,11 +10,14 @@
   "ibkr_wrap_client_id": 142,
   "broker_account": "",
   "base_dir": "~/Documents/spx-noon-breakout",
+  "sheets_spreadsheet_id": "1tnMlDTidwCYG3_H2Z-lBcIUG5KOX4tgbe8AiRopATsU",
+  "sheets_credentials": "",
   "start_not_before": "11:45:00",
   "decision_grace_s": 90,
   "loop_interval_s": 5,
   "chain_band_pts": 150,
   "_rules": "Shared by both plans: 15m closes 12:00–1:00 PM ET, first qualifying bar, 1 spread. Width max(10, floor(EM/5)*5) where EM is the ATM straddle mid. Limit at mid. Skip if the marketable debit is more than $0.20 per side worse than mid. Flat 2 hours after the entry bar. No stop.",
   "_plan": "plan is the only trading rule that is a config key: B (the default, and what a missing key means) or A1. B: long nearest 75 delta, GTC close at debit x 1.30. A1: skip the day if any 15m close from 10:15 through 11:00 ET was already beyond the prior day's high or low, long nearest 80 delta, and exit at +8 SPX points in the trade direction or the 2-hour flat, whichever comes first - no premium target. Nothing else differs, and there is no PLAN environment variable.",
-  "_wrap": "Read-only log summary at 16:20 ET: python -m spx_noon wrap with no --book follows this file's mode, so an IBKR live config reads state/trades-live.csv and everything else reads state/trades.csv. --book paper and --book live pick one by hand. Neither sends orders. Client id 142 is reserved and unused by that job."
+  "_wrap": "Read-only log summary at 16:20 ET: python -m spx_noon wrap with no --book follows this file's mode, so an IBKR live config reads state/trades-live.csv and everything else reads state/trades.csv. --book paper and --book live pick one by hand. Neither sends orders. Client id 142 is reserved and unused by that job. After the markdown report it upserts one High Noon row on the shared Google Sheet; see _sheets.",
+  "_sheets": "The 16:20 wrap's one daily row for Boi 'High Noon' on the sheet Candle and Fly already share. Columns, in order: Date, Boi, Traded, P&L after fees, Worst (always empty), What happened. The key is (Date, Boi), so a second wrap on the same date replaces the row. sheets_spreadsheet_id is the document id above and is not a secret. sheets_credentials is a path to the Google service-account key file; blank means <base_dir>/state/sheets-service-account.json. The key is never a key in this file: set SPX_SHEETS_CREDENTIALS_JSON (the whole json, kept in memory only), or SPX_SHEETS_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS to a path. Order: the json, then sheets_credentials, then those two variables, then the default path. The row goes on the Derek Comp tab, on this Mac and on Render. There is no tab setting. Install the client with pip install -e '.[sheets]'. A missing key or any sheet error leaves the markdown report in place, adds one status line, and still exits 0."
 }

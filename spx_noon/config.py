@@ -25,6 +25,13 @@ what a missing key means) or ``A1``. It is read from the file, never from the
 environment, and each operator picks it in their own ``config.json``. Everything
 else about both plans (75 or 80 delta, +30%, $0.20/side, 2h flat, A1's morning
 skip and +8 points, 1 spread) lives in strategy.py and is not a config key.
+
+``sheets_spreadsheet_id`` and ``sheets_credentials`` belong to the 16:20 wrap's
+row on the shared Google Sheet (:mod:`spx_noon.sheetsink`). Neither is a secret:
+the first is a document id and the second is a path to a key file. The key
+itself is never a config field — ``SPX_SHEETS_CREDENTIALS_JSON`` is read from
+the environment by that module alone, so it cannot reach
+``state/service-config.json``.
 """
 from __future__ import annotations
 
@@ -172,6 +179,16 @@ class Config:
     ibkr_check_client_id: int = 141
     ibkr_wrap_client_id: int = 142
     ibkr_tws_naive_tz: str = "US/Central"
+
+    #: The spreadsheet Candle and Fly already share. The 16:20 wrap upserts one
+    #: ``High Noon`` row on it. Not a secret: it is the document id, and the
+    #: sheet is reachable only by the service account it is shared with.
+    sheets_spreadsheet_id: str = "1tnMlDTidwCYG3_H2Z-lBcIUG5KOX4tgbe8AiRopATsU"
+
+    #: A path to the service-account key file, when it is not the default
+    #: ``state/sheets-service-account.json``. Blank is the default path. The key
+    #: itself never belongs in this file; see :mod:`spx_noon.sheetsink`.
+    sheets_credentials: str = ""
 
     max_orders_per_min: int = 10
     min_replace_secs: float = 15.0
