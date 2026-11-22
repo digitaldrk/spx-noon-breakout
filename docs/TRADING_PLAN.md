@@ -1,11 +1,11 @@
 # Noon Breakout Plan v2 — 2026-10-28
 
-The bot trades one strategy: the first noon-window close beyond the prior day's high or low, an 80-delta debit, a skip when 10:15–11:00 already broke those levels, and an exit at +8 SPX points or two hours after the entry bar's close, whichever comes first. Section 10 is that strategy. Sections 1 through 8 are the October 2026 research note on a 75-delta debit with a 30% premium target. That study is not a second strategy and the bot does not trade it. Candle Boy is a different repo.
+The bot trades one strategy: the first noon-window close beyond the prior day's high or low, an 80-delta debit, a skip when 10:15–11:00 already broke those levels, and an exit at +8 SPX points or two hours after the entry bar's close, whichever comes first. Section 9 is that strategy. Sections 1 through 6 are the October 2026 research note on a 75-delta debit with a 30% premium target. That study is not a second strategy and the bot does not trade it.
 
 
 *Sources: `filter-backtests-2026-10-28.md`, `filter-bt/stress/stress_out.md`, `filter-bt/noon_B_trades_k0.6.csv` and `filter-bt/noon_B_trades_k0.42.csv`. Sample: 181 SPX sessions, 2026-02-09 to 2026-10-27, 118 trades. Two pricing levels: **fair** = 0.42× VIX (**the default scenario used throughout**) and **rich** = 0.6× VIX (secondary reference). Read-only research. No bot code was changed.*
 
-> **Bottom line of this 2026-10-28 research note:** it studied a 75-delta vertical with a +30% premium target, flat 2h after entry, and no stop. At fair pricing: 118 trades, 69% win rate, net **+$7,492** (PF 1.41, about $63 per trade), or **about +75% on $10k** before real slippage. It passed every stress test until slippage reached $0.30 a side. The bot does not trade that study. Section 10 is what it trades.
+> **Bottom line of this 2026-10-28 research note:** it studied a 75-delta vertical with a +30% premium target, flat 2h after entry, and no stop. At fair pricing: 118 trades, 69% win rate, net **+$7,492** (PF 1.41, about $63 per trade), or **about +75% on $10k** before real slippage. It passed every stress test until slippage reached $0.30 a side. The bot does not trade that study. Section 9 is what it trades.
 
 ---
 
@@ -96,13 +96,7 @@ On a $10,000 account that is **about +75% at fair pricing** (headline), versus a
 
 ---
 
-## 7. Candle Boy
-
-Candle Boy keeps trading his 9:45–12:45 ET bars. **He is a different repo and is not part of this plan.**
-
----
-
-## 8. Implementation checklist
+## 7. Implementation checklist
 
 *What the bot trades. Times are ET. The October research note's 75-delta and +30% premium target are not in this checklist.*
 
@@ -129,7 +123,7 @@ Candle Boy keeps trading his 9:45–12:45 ET bars. **He is a different repo and 
 
 ---
 
-## 9. Going live on IBKR (Mac)
+## 8. Going live on IBKR (Mac)
 
 Mac mode `live` is real money. There is one scheduled process and one config file; paper and
 live are two settings of it. The operator switch is `config.json` plus the TWS session that is
@@ -168,7 +162,7 @@ six (`DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `BROKER_ACCOUNT`), 
    `BROKER=ibkr MODE=<mode> ACCOUNT=<last 4> PORT=<port> REAL MONEY=YES/NO`. Only
    the last four characters of the verified account appear. `REAL MONEY=YES` means IBKR
    mode `live`; paper, dry, and alerts say `NO`. Every IBKR order log line carries the same flag.
-3. It trades section 10. Live does **not** take the tastytrade preview path, and the
+3. It trades section 9. Live does **not** take the tastytrade preview path, and the
    thresholds, windows, delta, slippage cap, exit, and flat time are identical to a paper run.
 4. It tracks only its own `SPXNOON-` orders and its own spread
    (`state/own_position-live.json`), writes fills to `state/trades-live.csv`, and writes the
@@ -180,7 +174,7 @@ six (`DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `BROKER_ACCOUNT`), 
 
 ---
 
-## 10. The strategy
+## 9. The strategy
 
 This is what High Noon runs. It is not a config key. A `plan` key left in an old
 `config.json` is ignored.
@@ -211,7 +205,7 @@ did not return is not a break.
 
 **Long leg.** Absolute delta nearest 0.80, in the money only. A tie goes to the
 strike closer to spot, then the lower strike. The width, the short strike, the
-mid limit, and the $0.20-per-side skip are in section 8.
+mid limit, and the $0.20-per-side skip are in section 7.
 
 **Calendar gate.** Two sources, and either one saying closed or early close stops
 the day. The hard-coded NYSE list in `spx_noon/calendar.py` covers **2026 and 2027
