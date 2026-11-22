@@ -22,7 +22,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import guard
-from .broker import Broker, select_option_lines
+from .broker import Broker
 from .config import ORDER_PREFIX, SafetyError
 from .pricing import floor_tick
 from .strategy import Bar, OptQuote, Px
@@ -306,13 +306,6 @@ class TastyBroker(Broker):
         self._quotes: dict[tuple, OptQuote] = {}
         self._quote_lock = threading.Lock()
         self._want: set = set()
-        #: When each wanted line was first wanted, and when a held line left the
-        #: wanted set. Both feed :func:`select_option_lines`, the same way the
-        #: IBKR path does: subscribe once, hold, and never drop a pinned leg.
-        self._line_since: dict = {}
-        self._line_cold: dict = {}
-        self._opt_pins: set = set()
-        self._opt_pin_expiry = ""
         self._expiry: str | None = None
         self._feed_started = False
         self._stop = False
@@ -686,30 +679,7 @@ class TastyBroker(Broker):
         found = sorted(strikes) or None
         return found, book
 
-    def pin_options(self, expiry, legs):
-        """Hold these legs until the pins are cleared. ``legs`` is ``None`` to clear.
-
-        Same rule as the IBKR path, and pins belong to one expiry.
-        """
-        self._opt_pin_expiry = str(expiry or "")
-        self._opt_pins = {(round(float(strike), 2), str(right)) for strike, right in (legs or ())}
-        forward = getattr(self.transport, "pin_options", None) if self.transport is not None else None
-        if callable(forward):
-            forward(expiry, legs)
-
-    def _pins_for(self, expiry) -> set:
-        if str(expiry or "") != str(self._opt_pin_expiry or ""):
-            return set()
-        return set(self._opt_pins)
-
     def ensure_options(self, expiry, strikes):
-        """Pick the lines to stream. The feed subscribes and unsubscribes the difference.
-
-        One line is one ``(strike, right)``, and the budget is
-        ``max_option_lines`` lines. A line is streamed once and held: a smaller
-        strike list, or a spot that moved a little, does not drop it, and a
-        pinned leg is never dropped.
-        """
         self._expiry = str(expiry)
         if self.transport is not None:
             ensure = getattr(self.transport, "ensure_options", None)
@@ -718,48 +688,16 @@ class TastyBroker(Broker):
             return
         if expiry not in self._strikes:
             self.chain_strikes(expiry)
+        spot = None
         cached = self._index.get(INDEX)
-        spot = None if cached is None else cached.value
-        pins = self._pins_for(expiry)
-        candidates = [
-            key
-            for key in ((round(float(strike), 2), right)
-                        for strike in strikes for right in ("C", "P"))
-            if (self._book.get(key) or {}).get("streamer")
-        ]
-        now = self.now()
-        held = dict(self._line_since)
-        selected = select_option_lines(
-            candidates,
-            spot=spot,
-            now=now,
-            budget=self.cfg.max_option_lines,
-            subscribed_at=held,
-            pinned={key for key in pins
-                    if (self._book.get(key) or {}).get("streamer") or key in held},
-            hold_s=self.cfg.option_line_hold_s,
-            undesired_since=self._line_cold,
-        )
-        dropped = set(held) - selected.keep
-        self._want = set(selected.keep)
-        self._line_cold = dict(selected.undesired_since)
-        self._line_since = {key: held.get(key, now) for key in self._want}
-        if dropped:
-            # Those symbols stop arriving, so their last prices are not a quote
-            # any more.
-            with self._quote_lock:
-                for key in dropped:
-                    self._quotes.pop(key, None)
+        if cached is not None:
+            spot = cached.value
+        want = {round(float(strike), 2) for strike in strikes}
+        budget = max(1, int(self.cfg.max_option_lines) // 2)
+        if spot and len(want) > budget:
+            want = set(sorted(want, key=lambda strike: abs(strike - spot))[:budget])
+        self._want = {(strike, right) for strike in want for right in ("C", "P")}
         self.start_streams()
-
-    def _want_symbols(self) -> set[str]:
-        """The streamer symbols for the lines the selector kept. Never SPX or VIX."""
-        out = set()
-        for key in list(self._want):
-            symbol = (self._book.get(key) or {}).get("streamer")
-            if symbol and symbol not in (INDEX, VIX):
-                out.add(symbol)
-        return out
 
     def start_streams(self):
         if self.transport is not None:
@@ -790,36 +728,21 @@ class TastyBroker(Broker):
         async with DXLinkStreamer(self.data_session) as streamer:
             self._streamer = streamer
             await streamer.subscribe(Quote, [INDEX, VIX])
-            # Option symbols only: SPX and VIX are subscribed once above and are
-            # never in this set, so they are never unsubscribed.
             subscribed: set[str] = set()
             while not self._stop:
-                await self._sync_subscriptions(streamer, Quote, Greeks, subscribed)
+                pending = []
+                for key in list(self._want):
+                    meta = self._book.get(key) or {}
+                    symbol = meta.get("streamer")
+                    if symbol and symbol not in subscribed:
+                        pending.append(symbol)
+                        subscribed.add(symbol)
+                if pending:
+                    await streamer.subscribe(Quote, pending)
+                    await streamer.subscribe(Greeks, pending)
                 self._drain(streamer, Quote, Greeks)
                 await asyncio.sleep(0.2)
             self._streamer = None
-
-    async def _sync_subscriptions(self, streamer, quote_cls, greeks_cls, subscribed: set) -> None:
-        """Subscribe what the selector added, unsubscribe what it dropped.
-
-        Quote and Greeks move together. ``subscribed`` holds option symbols only,
-        so SPX and VIX are never unsubscribed. A line the selector is still
-        holding is not in the dropped set, so nothing goes inside the hold window.
-
-        What leaves goes first, so a swap at the line budget never has the old
-        and the new symbol streaming at the same time.
-        """
-        wanted = self._want_symbols()
-        pending = sorted(wanted - subscribed)
-        stale = sorted(subscribed - wanted)
-        if stale:
-            await streamer.unsubscribe(quote_cls, stale)
-            await streamer.unsubscribe(greeks_cls, stale)
-            subscribed -= set(stale)
-        if pending:
-            await streamer.subscribe(quote_cls, pending)
-            await streamer.subscribe(greeks_cls, pending)
-            subscribed |= set(pending)
 
     def _drain(self, streamer, quote_cls, greeks_cls):
         """Merge queued Quote and Greeks events into the option book.
@@ -828,10 +751,6 @@ class TastyBroker(Broker):
         The exchange ``bid_time`` can already be minutes old on that packet, so
         it is not the freshness clock. A price-less Quote and a Greeks-only
         update leave the stored prices and the clock alone.
-
-        Only the lines the selector wants are merged. An event that was already
-        in flight when a line was dropped is discarded, so an unsubscribed strike
-        cannot come back with a fresh stamp and a price that will never move.
         """
         quotes: dict[str, dict] = {}
         greeks = {}
@@ -856,11 +775,10 @@ class TastyBroker(Broker):
         if not quotes and not greeks:
             return
         received = self.now()
-        want = set(self._want)
         with self._quote_lock:
             for key, meta in self._book.items():
                 symbol = meta.get("streamer")
-                if not symbol or key not in want:
+                if not symbol:
                     continue
                 if symbol not in quotes and symbol not in greeks and key in self._quotes:
                     continue

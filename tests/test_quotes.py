@@ -4,17 +4,12 @@ The 2026-11-17 IBKR paper session opened about 67,700 request ids in an hour
 (~1,100 a minute) with one PUT 7360/7325 open: the position loop asked for the
 whole band and then asked again for the two legs, five seconds apart, so every
 line was cancelled and re-requested on the next pass. These tests hold that shut
-at the shared selector, at the IBKR adapter, on the runner's position path, and
-on the tastytrade feed.
+on the IBKR selector, the IBKR adapter, and the runner's position path.
 
-Nothing here opens a socket, sleeps out the hold window, or needs tastytrade
-credentials. The clock is a callable the broker reads in place of ``now()``, so
-the hold is driven by moving that clock, and the tastytrade streamer is a double
-that records what it was asked to subscribe and unsubscribe. The real call it
-stands in for is ``DXLinkStreamer.unsubscribe(event_class, symbols)``, which is
-what tastytrade 13.2.3 — inside this project's ``tastytrade>=13.2,<14`` — has.
+Nothing here opens a socket or sleeps out the hold window. The clock is a
+callable the broker reads in place of ``now()``, so the hold is driven by
+moving that clock.
 """
-import asyncio
 import csv
 import re
 from collections import Counter
@@ -22,9 +17,9 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from spx_noon.broker import OPTION_LINE_HOLD_S, SimBroker, select_option_lines
+from spx_noon.broker import SimBroker
 from spx_noon.config import Config
-from spx_noon.ib import IBBroker, _ReqMeter
+from spx_noon.ib import IBBroker, OPTION_LINE_HOLD_S, _ReqMeter, select_option_lines
 from spx_noon.logbook import Outputs
 from spx_noon.notify import Notifier
 from spx_noon.runner import (
@@ -35,11 +30,9 @@ from spx_noon.runner import (
     run_session,
 )
 from spx_noon.strategy import Px
-from spx_noon.tasty import INDEX, VIX, TastyBroker
 
 from test_rules import levels, today_call_bars
 from test_session import _quotes
-from test_tasty import Clock, _GreeksEv, _pair, _QuoteEv, _Streamer
 
 ET = ZoneInfo("America/New_York")
 T0 = datetime(2026, 11, 17, 12, 0, tzinfo=ET)
@@ -556,209 +549,3 @@ def test_an_entry_that_never_fills_clears_the_pins(tmp_path):
     assert pins[0][2] == [(6950.0, "C"), (6980.0, "C")]
     assert pins[-1] == ("pin", "", None)
 
-
-# --------------------------------------------------------------------------
-# Tastytrade: the same rules, Quote and Greeks together
-# --------------------------------------------------------------------------
-
-class _Quote:
-    pass
-
-
-class _Greeks:
-    pass
-
-
-class _FakeStreamer:
-    """Records what it was asked to subscribe and unsubscribe. No network."""
-
-    def __init__(self):
-        self.subscribed: list = []
-        self.unsubscribed: list = []
-
-    async def subscribe(self, event_class, symbols):
-        self.subscribed.append((event_class, sorted(symbols)))
-
-    async def unsubscribe(self, event_class, symbols):
-        self.unsubscribed.append((event_class, sorted(symbols)))
-
-
-class _LiveStreamer(_FakeStreamer):
-    """Also tracks what is really streaming, and the most that ever was at once."""
-
-    def __init__(self):
-        super().__init__()
-        self.live: set = set()
-        self.peak = 0
-
-    async def subscribe(self, event_class, symbols):
-        await super().subscribe(event_class, symbols)
-        self.live |= set(symbols)
-        self.peak = max(self.peak, len(self.live))
-
-    async def unsubscribe(self, event_class, symbols):
-        await super().unsubscribe(event_class, symbols)
-        self.live -= set(symbols)
-
-
-def _symbol(strike, right):
-    return f".SPXW261117{right}{int(strike)}"
-
-
-def _tasty(tmp_path, *, strikes=None, lines=120, hold_s=OPTION_LINE_HOLD_S, spot=7000.0):
-    """A data broker with a chain in its book and no feed thread of its own."""
-    strikes = BAND + [7325.0, 7360.0] if strikes is None else strikes
-    cfg = Config(broker="tasty", mode="dry", base_dir=str(tmp_path),
-                 max_option_lines=lines, option_line_hold_s=hold_s)
-    cfg.ensure_dirs()
-    data_s, order_s = _pair()
-    broker = TastyBroker(cfg, data_session=data_s, order_session=order_s, clock=Clock())
-    market = _Market(spot=spot)
-    broker.now = market.now
-    # The feed is driven by hand below, so start_streams must not spawn one.
-    broker._feed_started = True
-    broker._strikes[EXPIRY] = list(strikes)
-    broker._book = {
-        (float(strike), right): {"occ": f"SPXW  261117{right}{int(strike):05d}000",
-                                 "streamer": _symbol(strike, right)}
-        for strike in strikes for right in ("C", "P")
-    }
-    broker._index[INDEX] = Px(spot, market.t, 1, None)
-    return broker, market
-
-
-def _sync(broker, streamer, subscribed):
-    asyncio.run(broker._sync_subscriptions(streamer, _Quote, _Greeks, subscribed))
-    return subscribed
-
-
-def test_the_tasty_feed_subscribes_quote_and_greeks_once_and_holds_them(tmp_path):
-    broker, market = _tasty(tmp_path, strikes=[6995.0, 7000.0, 7005.0], lines=4)
-    streamer, subscribed = _FakeStreamer(), set()
-    broker.ensure_options(EXPIRY, [6995.0, 7000.0, 7005.0])
-    assert len(broker._want) == 4
-    _sync(broker, streamer, subscribed)
-    assert [cls for cls, _syms in streamer.subscribed] == [_Quote, _Greeks]
-    assert streamer.subscribed[0][1] == streamer.subscribed[1][1]
-    assert subscribed == {_symbol(6995, "C"), _symbol(6995, "P"),
-                          _symbol(7000, "C"), _symbol(7000, "P")}
-    # A second, smaller call inside the hold window unsubscribes nothing.
-    market.tick(5)
-    streamer.subscribed.clear()
-    broker.ensure_options(EXPIRY, [7000.0])
-    _sync(broker, streamer, subscribed)
-    assert streamer.unsubscribed == [] and streamer.subscribed == []
-    assert len(subscribed) == 4
-
-
-def test_the_tasty_feed_unsubscribes_after_the_hold_and_only_then(tmp_path):
-    broker, market = _tasty(tmp_path, strikes=[6995.0, 7000.0, 7005.0], lines=4)
-    streamer, subscribed = _FakeStreamer(), set()
-    broker.ensure_options(EXPIRY, [6995.0, 7000.0, 7005.0])
-    _sync(broker, streamer, subscribed)
-    market.tick(5)
-    broker.ensure_options(EXPIRY, [7000.0])        # the hold starts here
-    _sync(broker, streamer, subscribed)
-    assert streamer.unsubscribed == []
-    market.tick(60)
-    broker.ensure_options(EXPIRY, [7000.0])
-    _sync(broker, streamer, subscribed)
-    dropped = sorted({_symbol(6995, "C"), _symbol(6995, "P")})
-    assert streamer.unsubscribed == [(_Quote, dropped), (_Greeks, dropped)]
-    assert subscribed == {_symbol(7000, "C"), _symbol(7000, "P")}
-    # Once, not every loop, and the dropped lines stop answering as quotes.
-    streamer.unsubscribed.clear()
-    streamer.subscribed.clear()
-    for _ in range(5):
-        market.tick(5)
-        broker.ensure_options(EXPIRY, [7000.0])
-        _sync(broker, streamer, subscribed)
-    assert streamer.unsubscribed == [] and streamer.subscribed == []
-    assert not [key for key in broker.option_quotes() if key[0] == 6995.0]
-    # SPX and VIX are subscribed by the feed itself and are never in this set.
-    for _cls, symbols in streamer.unsubscribed + streamer.subscribed:
-        assert INDEX not in symbols and VIX not in symbols
-
-
-def test_the_tasty_path_never_unsubscribes_a_pinned_leg(tmp_path):
-    broker, market = _tasty(tmp_path, lines=8)
-    legs = [(7360.0, "P"), (7325.0, "P")]
-    streamer, subscribed = _FakeStreamer(), set()
-    broker.pin_options(EXPIRY, legs)
-    broker.ensure_options(EXPIRY, [7325.0, 7360.0])
-    _sync(broker, streamer, subscribed)
-    pinned = {_symbol(7360, "P"), _symbol(7325, "P")}
-    assert pinned <= subscribed
-    for _ in range(40):                            # 200 seconds, past the hold
-        market.tick(5)
-        broker.ensure_options(EXPIRY, BAND)
-        _sync(broker, streamer, subscribed)
-    assert pinned <= subscribed
-    assert len(subscribed) <= 8 and len(broker._want) <= 8
-    assert not [sym for _cls, symbols in streamer.unsubscribed for sym in symbols
-                if sym in pinned]
-    assert INDEX not in subscribed and VIX not in subscribed
-
-
-def test_the_tasty_budget_counts_lines_and_a_missing_spot_cancels_nothing(tmp_path):
-    broker, market = _tasty(tmp_path, lines=6)
-    streamer, subscribed = _FakeStreamer(), set()
-    broker.ensure_options(EXPIRY, BAND)
-    _sync(broker, streamer, subscribed)
-    assert len(subscribed) == 6                     # lines, not strikes
-    held = set(subscribed)
-    broker._index[INDEX] = Px(None, market.t, 1, None)
-    market.tick(600)
-    broker.ensure_options(EXPIRY, [6850.0])
-    _sync(broker, streamer, subscribed)
-    assert subscribed == held and streamer.unsubscribed == []
-    assert not [sym for sym in subscribed if "6850" in sym]
-
-
-def test_a_swap_at_the_line_budget_never_streams_both_sides_at_once(tmp_path):
-    broker, market = _tasty(tmp_path, strikes=[6995.0, 7000.0, 7005.0], lines=4)
-    streamer, subscribed = _LiveStreamer(), set()
-    broker.ensure_options(EXPIRY, [6995.0, 7000.0, 7005.0])
-    _sync(broker, streamer, subscribed)
-    assert streamer.peak == 4
-    broker._index[INDEX] = Px(7008.0, market.t, 1, None)       # the book re-ranks
-    market.tick(5)
-    broker.ensure_options(EXPIRY, [6995.0, 7000.0, 7005.0])    # the hold starts
-    _sync(broker, streamer, subscribed)
-    market.tick(60)
-    broker.ensure_options(EXPIRY, [6995.0, 7000.0, 7005.0])    # 6995 out, 7005 in
-    _sync(broker, streamer, subscribed)
-    assert subscribed == {_symbol(7000, "C"), _symbol(7000, "P"),
-                          _symbol(7005, "C"), _symbol(7005, "P")}
-    assert streamer.live == subscribed
-    assert streamer.peak == 4                                  # never 5, never 6
-    assert streamer.unsubscribed[0][1] == sorted({_symbol(6995, "C"), _symbol(6995, "P")})
-
-
-def test_an_event_already_in_flight_cannot_bring_a_dropped_line_back(tmp_path):
-    broker, market = _tasty(tmp_path, strikes=[6995.0, 7000.0, 7005.0], lines=4)
-    streamer, subscribed = _FakeStreamer(), set()
-    broker.ensure_options(EXPIRY, [6995.0, 7000.0, 7005.0])
-    _sync(broker, streamer, subscribed)
-    broker._drain(_Streamer([_QuoteEv(_symbol(6995, "C"), bid_price=4.0, ask_price=4.2)]),
-                  _QuoteEv, _GreeksEv)
-    assert broker.option_quotes()[(6995.0, "C")].bid == 4.0
-    market.tick(5)
-    broker.ensure_options(EXPIRY, [7000.0])
-    market.tick(60)
-    broker.ensure_options(EXPIRY, [7000.0])                    # 6995 is dropped
-    _sync(broker, streamer, subscribed)
-    assert (6995.0, "C") not in broker.option_quotes()
-    # A Quote the streamer had already queued does not put the line back.
-    broker._drain(_Streamer([_QuoteEv(_symbol(6995, "C"), bid_price=9.0, ask_price=9.2),
-                             _QuoteEv(_symbol(7000, "C"), bid_price=5.0, ask_price=5.2)]),
-                  _QuoteEv, _GreeksEv)
-    assert (6995.0, "C") not in broker.option_quotes()
-    assert broker.option_quotes()[(7000.0, "C")].bid == 5.0
-
-
-def test_a_streamer_symbol_named_like_the_index_is_never_a_wanted_line(tmp_path):
-    broker, _market = _tasty(tmp_path, strikes=[7000.0], lines=4)
-    broker._book[(7000.0, "C")] = {"occ": "x", "streamer": INDEX}
-    broker.ensure_options(EXPIRY, [7000.0])
-    assert broker._want_symbols() == {_symbol(7000, "P")}

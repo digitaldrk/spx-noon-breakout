@@ -441,9 +441,6 @@ def _data_broker(tmp_path):
 def _drained(tmp_path, quotes=(), greeks=(), seed=None):
     broker = _data_broker(tmp_path)
     broker._book = {KEY: {"occ": OCC, "streamer": SYMBOL}}
-    # Events are merged for the lines the selector wants, so this is a line the
-    # feed is streaming. A dropped line is covered in ``tests/test_quotes.py``.
-    broker._want = {KEY}
     if seed is not None:
         broker._quotes[KEY] = seed
     broker._drain(_Streamer(quotes, greeks), _QuoteEv, _GreeksEv)

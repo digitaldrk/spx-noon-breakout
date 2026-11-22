@@ -2,125 +2,17 @@
 
 Timestamps handed back to the bot are tz-aware America/New_York.
 Legs are (con_id, ratio). Ratio +1 is the long leg, −1 is the short leg.
-
-:func:`select_option_lines` is the one place that decides which option
-market-data lines a broker holds. Both live brokers call it, so IBKR and
-tastytrade subscribe once, hold a line through a small spot move, and keep the
-legs of an open spread whatever the band asks for.
 """
 from __future__ import annotations
 
 import math
 from datetime import date, datetime, time, timedelta
-from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from .pricing import TICK
 from .strategy import Bar, Px
 
 ET = ZoneInfo("America/New_York")
-
-#: Seconds a line stays subscribed after it leaves the wanted set. The brokers
-#: pass ``Config.option_line_hold_s``, which defaults to this.
-OPTION_LINE_HOLD_S = 60.0
-
-
-class Selection(NamedTuple):
-    """What :func:`select_option_lines` decided.
-
-    ``keep`` is the set of lines that should be subscribed once the call is
-    applied; the broker diffs it against what it holds and cancels or requests
-    only the difference. ``undesired_since`` is the hold clock to carry into the
-    next call: one entry per kept line that is outside the wanted set, stamped
-    when it left it.
-    """
-
-    keep: frozenset
-    undesired_since: dict
-
-
-def _spot_or_none(spot):
-    """A spot that may be ranked against, or ``None``. Zero is not a spot."""
-    try:
-        value = float(spot)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(value) or value <= 0:
-        return None
-    return value
-
-
-def _keys(items):
-    return {(float(strike), str(right)) for strike, right in (items or ())}
-
-
-def select_option_lines(candidates, *, spot, now, budget, subscribed_at=(), pinned=(),
-                        hold_s: float = OPTION_LINE_HOLD_S, undesired_since=None) -> Selection:
-    """Decide which option lines should be subscribed. One line is one ``(strike, right)``.
-
-    Pure: it reads no broker and mutates nothing it is handed, so both brokers
-    share it and the tests drive it with fixed datetimes.
-
-    ``candidates`` are the lines the caller would like. ``subscribed_at`` is what
-    is subscribed now, as the broker's mapping of key to the time that
-    subscription started; only the keys matter here, because what ages a line out
-    is how long it has been unwanted, not when it was requested. ``pinned`` lines
-    are the legs of an open spread or a working entry: they are kept whatever the
-    spot does and are subscribed ahead of any unpinned line.
-
-    With a usable spot the wanted lines are every pin plus the nearest unpinned
-    candidates, ranked by ``(distance, strike, right)`` so ties do not follow the
-    caller's order, up to ``budget`` lines. A line that leaves the wanted set
-    stays for ``hold_s`` seconds, so a small spot move does not cancel and
-    re-request the edge of the book; while it holds its slot no new unpinned line
-    is requested over ``budget``. After the hold it is dropped once, and the call
-    that drops it may fill the slot with a wanted line.
-
-    With no usable spot — missing, non-finite, or ``<= 0`` — nothing is ranked
-    against 0: every held line stays, and only a missing pin is added, and only
-    while the budget has room.
-    """
-    budget = max(0, int(budget))
-    hold_s = max(0.0, float(hold_s))
-    held = {(float(strike), str(right)) for strike, right in (subscribed_at or ())}
-    pins = _keys(pinned)
-    wanted_pool = _keys(candidates) | pins
-    stamps = dict(undesired_since or {})
-    usable = _spot_or_none(spot)
-    if usable is None:
-        # No ranking without a spot, so nothing is cancelled. A pin that is not
-        # up yet is still worth having, as long as it fits.
-        keep = set(held)
-        for key in sorted(pins - held):
-            if len(keep) >= budget:
-                break
-            keep.add(key)
-        return Selection(frozenset(keep), {k: v for k, v in stamps.items() if k in keep})
-
-    def rank(key):
-        return (abs(key[0] - usable), key[0], key[1])
-
-    pins_ranked = sorted(pins, key=rank)
-    # Every pin first, then the nearest unpinned candidates fill the budget.
-    wanted = set(pins_ranked[:budget])
-    for key in sorted(wanted_pool - pins, key=rank):
-        if len(wanted) >= budget:
-            break
-        wanted.add(key)
-    cold = {key: stamps.get(key, now) for key in held - wanted}
-    holding = {key for key, since in cold.items() if (now - since).total_seconds() < hold_s}
-    keep = set(pins_ranked[:budget])
-    # What is already subscribed keeps its slot ahead of a line that is not: a
-    # line inside its hold window blocks a new unpinned request, not the reverse.
-    for key in sorted((held & wanted) | holding, key=rank):
-        if len(keep) >= budget:
-            break
-        keep.add(key)
-    for key in sorted(wanted - keep, key=rank):
-        if len(keep) >= budget:
-            break
-        keep.add(key)
-    return Selection(frozenset(keep), {key: since for key, since in cold.items() if key in keep})
 
 
 class Broker:
@@ -138,11 +30,11 @@ class Broker:
     def chain_strikes(self, expiry: str) -> list[float] | None: ...
     def ensure_options(self, expiry: str, strikes: list[float]): ...
     def pin_options(self, expiry: str, legs):
-        """Keep these ``(strike, right)`` lines subscribed until the pins are cleared.
+        """IBKR keeps these ``(strike, right)`` lines until the pins are cleared.
 
-        ``legs`` is ``None`` to clear. A no-op here, so ``SimBroker`` and the test
-        doubles need nothing; the live brokers store the pins and honour them on
-        the next ``ensure_options``.
+        ``legs`` is ``None`` to clear. This default does nothing, so tastytrade
+        and ``SimBroker`` keep their own quote behavior. The runner calls it for
+        every broker; ``IBBroker`` is what stores the pins.
         """
     def option_quotes(self) -> dict: ...
     def preview_combo(self, legs, action, qty, limit, tif="DAY") -> dict:
