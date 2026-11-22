@@ -96,10 +96,10 @@ Render refuses a deploy by the clock.
 
 | Time (ET) | What happens |
 | --- | --- |
-| overnight | `waiting` for the next session. Weekends, NYSE holidays, early closes, and any year past the hard-coded 2026–2027 list log `skip` and trade nothing. |
+| overnight | `waiting` for the next session. Weekends, and the NYSE holidays and early closes on the hard-coded list, log `skip` and start no child. That list covers **2026 and 2027 only**, and a weekday after it is not a skipped year: the worker logs `waiting` that the day is outside the list, starts the session at 11:45 anyway, and the broker's own session hours decide. Regular hours that close at 16:00 or later may trade; tastytrade saying the session is closed, a close before 16:00, or no hours at all means no trade that day, and the 16:20 wrap runs either way. |
 | 11:45 | starts the session as a child process: `python -m spx_noon` |
 | 12:00–13:00 | the five 15-minute closes. At most one spread, long option nearest 80 delta, limit at the mid. The day is skipped when a 10:15–11:00 close already broke the prior day's high or low. |
-| up to 15:00 | an open spread is managed to +8 SPX points, or flat two hours after the entry bar. Nothing is closed at 14:00. |
+| up to 15:00 | an open spread is managed to +8 SPX points, or flat two hours after the entry bar's close. Nothing is closed at 14:00. |
 | 15:10 | with nothing open, the session stops looking and exits. |
 | 16:20 | `python -m spx_noon wrap --now` once. Read-only: it places no order, and writes `reports/wrap-<date>.md`, then upserts one `High Noon` row on the shared sheet (below). |
 

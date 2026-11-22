@@ -12,17 +12,21 @@ mode "live" is real money on 127.0.0.1:7496 (TWS) or 4001 (IB Gateway) with a
 The hosted Render Linux worker is tastytrade. ``tasty_data`` (default
 production) and ``tasty_orders`` (default sandbox) choose the hosts.
 ``tasty_orders=production`` is real money and requires ``tasty_data=production``.
-No field here is an environment knob. ``SPX_NOON_HOME`` fills ``base_dir`` when
-the file has none and ``SPX_NOON_CONFIG`` names the default file; both belong to
-the local Mac launchers. The hosted worker reads its own plain variables in
-:mod:`spx_noon.service`, resolves them there, and hands its children the
-resolved file.
+This module reads exactly two environment variables, both of them the local Mac
+launchers': ``SPX_NOON_CONFIG`` names the default file when no path is passed,
+and ``SPX_NOON_HOME`` fills ``base_dir`` when the file has none. Nothing else
+here comes from the environment — ``broker``, ``mode``, ``tasty_data``,
+``tasty_orders``, and ``broker_account`` come from the file or from a keyword,
+and no variable picks IBKR paper or live. The hosted worker reads its own six
+plain variables (``DATA``, ``BROKER``, ``MODE``, ``TASTY_DATA``,
+``TASTY_ORDERS``, ``BROKER_ACCOUNT``) in :mod:`spx_noon.service`, resolves them
+there, and hands its children the resolved file.
 Tastytrade orders auto-approve: no console prompt takes part. mode "dry" (the
 default) and "alerts" never transmit.
 
-The trading rules (0.80 delta, the morning skip, +8 points, $0.20/side, the
-two-hour flat, one spread) live in strategy.py and are not config keys. A
-``plan`` key left in an old file is ignored.
+The trading rules (0.80 delta, the morning skip, +8 points, $0.20/side, the flat
+two hours after the entry bar's close, one spread) live in strategy.py and are
+not config keys. A ``plan`` key left in an old file is ignored.
 
 ``sheets_spreadsheet_id`` and ``sheets_credentials`` belong to the 16:20 wrap's
 row on the shared Google Sheet (:mod:`spx_noon.sheetsink`). Neither is a secret:
@@ -355,9 +359,12 @@ def load_config(path: str | os.PathLike | None = None, **overrides) -> Config:
     :class:`SafetyError`.
     A ``dry_run`` key inside the file is ignored. ``mode`` sets that flag.
     A leftover ``plan`` key is ignored with every other unknown key.
-    No config field is read from the environment, ``BROKER`` included. ``mode``,
-    ``tasty_data``, ``tasty_orders``, and ``broker_account`` come from the file
-    or from a keyword, and the hosted worker resolves its own plain variables in
+    Two environment variables are read here and no others: ``SPX_NOON_CONFIG``
+    is the file when ``path`` is ``None``, and ``SPX_NOON_HOME`` fills
+    ``base_dir`` when the file has no ``base_dir`` key. ``broker`` (``BROKER``
+    included), ``mode``, ``tasty_data``, ``tasty_orders``, and ``broker_account``
+    are never read from the environment: they come from the file or from a
+    keyword, and the hosted worker resolves its own six plain variables in
     :mod:`spx_noon.service` before its children ever call this.
     """
     data: dict = {}

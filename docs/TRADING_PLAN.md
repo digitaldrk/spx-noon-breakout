@@ -1,6 +1,6 @@
 # Noon Breakout Plan v2 — 2026-10-28
 
-The bot trades one strategy: the first noon-window close beyond the prior day's high or low, an 80-delta debit, a skip when 10:15–11:00 already broke those levels, and an exit at +8 SPX points or two hours, whichever comes first. Section 10 is that strategy. Sections 1 through 8 are the October 2026 research note on a 75-delta debit with a 30% premium target. That study is not a second strategy and the bot does not trade it. Candle Boy is a different repo.
+The bot trades one strategy: the first noon-window close beyond the prior day's high or low, an 80-delta debit, a skip when 10:15–11:00 already broke those levels, and an exit at +8 SPX points or two hours after the entry bar's close, whichever comes first. Section 10 is that strategy. Sections 1 through 8 are the October 2026 research note on a 75-delta debit with a 30% premium target. That study is not a second strategy and the bot does not trade it. Candle Boy is a different repo.
 
 
 *Sources: `filter-backtests-2026-10-28.md`, `filter-bt/stress/stress_out.md`, `filter-bt/noon_B_trades_k0.6.csv` and `filter-bt/noon_B_trades_k0.42.csv`. Sample: 181 SPX sessions, 2026-02-09 to 2026-10-27, 118 trades. Two pricing levels: **fair** = 0.42× VIX (**the default scenario used throughout**) and **rich** = 0.6× VIX (secondary reference). Read-only research. No bot code was changed.*
@@ -98,7 +98,7 @@ On a $10,000 account that is **about +75% at fair pricing** (headline), versus a
 
 ## 7. Candle Boy
 
-Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.**
+Candle Boy keeps trading his 9:45–12:45 ET bars. **He is a different repo and is not part of this plan.**
 
 ---
 
@@ -111,7 +111,7 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
     - Prior day's RTH high (PDH) and low (PDL): the max high and min low of yesterday's 15m RTH bars.
     - 0DTE SPX option chain with bid, ask, mid and delta.
     - VIX (live) or the 0DTE ATM straddle, for the expected move. The backtest used EM = the price of the ATM straddle (strike = spot rounded to 5) at entry.
-2. **Entry window.** Check the 15m bars that close at **12:00, 12:15, 12:30, 12:45 and 1:00 PM**. Take the first bar that qualifies. Most entries (100/118) came on the 12:00 close; the rest came on the later closes. If the NYSE list or the broker hours say the day is closed or an early close, do not trade. A 1:00 PM early close runs into this window.
+2. **Entry window.** Check the 15m bars that close at **12:00, 12:15, 12:30, 12:45 and 1:00 PM**. Take the first bar that qualifies. Most entries (100/118) came on the 12:00 close; the rest came on the later closes. If the NYSE list or the broker hours say the day is closed or an early close, do not trade. A 1:00 PM early close runs into this window. That hard-coded NYSE list (`NYSE_HOLIDAYS` and `NYSE_EARLY_CLOSES` in `spx_noon/calendar.py`) covers **2026 and 2027 only**. A weekday after it is not skipped for the year: the broker's own session hours decide it. Regular hours that close at 16:00 or later may trade; a broker that says closed, a close before 16:00, or no hours at all means no trade that day.
 3. **Breakout rule.** Check calls first, then puts. A bar qualifies for **calls** when its close is above PDH, and for **puts** when its close is below PDL. That close is the whole signal. No earlier bar is required. A fresh break on the window bar itself qualifies. Beyond is strict: a close equal to the level does not qualify.
     - *No moving-average check.* The backtest's 20-period EMA gate was tested on vs. off: identical 118 trades, same days, same results (PF 1.48 rich / 1.41 fair, same drawdowns). Only 4 closes ever failed it and none changed an entry. Dropped to simplify the code.
     - **Morning skip.** If any 15-minute close from 10:15 through 11:00 ET was already beyond PDH or PDL, skip the day. A 9:45 break does not, by itself, skip the day.
@@ -121,7 +121,7 @@ Candle Boy keeps trading his 10:00–11:00 bars. **He is not part of this plan.*
 7. **Size:** 1 spread on a $10,000 account.
 8. **Order:** a limit order for the debit spread at **mid**. If the fill would be **more than $0.20 per side worse than mid**, skip the trade. Do not chase. (The backtest breaks at $0.30 a side.)
 9. **Point exit:** sell when the live SPX print is **8 points** through the entry print in the trade direction. There is no premium target and no resting close.
-10. **Hard time exit:** close at market or near bid **2 hours after entry**. The backtest exits on the close of the 15m bar that ends at entry + 2h (12:00 entry → 2:00 PM). There is **no stop loss**.
+10. **Hard time exit:** close at market or near bid **two hours after the entry bar's close**, not two hours after the fill timestamp. The backtest exits on the close of the 15m bar that ends at the entry bar's close + 2h (12:00 entry bar → 2:00 PM; a 12:15 entry bar → 2:15 PM). There is **no stop loss**.
 11. **Paper mode first.** For every trade, log: date, timestamp, direction, SPX at entry, PDH/PDL, expected move, W, both strikes, both deltas, spread mid, fill price, **slippage versus mid**, exit time, exit reason (`points` or `time`), exit fill, slippage on the exit, and P&L after $0.65 per contract per leg.
 12. **Slippage benchmark:** typical 0DTE fills come in $0.05–$0.15 off mid. Track the average per side. Anything at $0.20 or more erodes the edge, and $0.30 breaks it.
 13. **Review after 30–60 paper sessions** before going live: win rate, profit factor, and average slippage against the backtest (PF 1.41 at fair pricing; 1.48 rich).
@@ -140,7 +140,12 @@ logged in. The code will not start unless every one of these holds:
 - TWS (or IB Gateway) is logged into that live account, and reports it after connect.
 
 Paper is the same job with `mode` `paper`, port 7497, an account id starting with `D`, and TWS
-logged into paper. No environment variable takes part in either. Tastytrade is unchanged.
+logged into paper. No environment variable picks paper or live: the switch is `mode`,
+`ibkr_port`, and `broker_account` in `config.json` plus the TWS session. Variables the code
+does read, none of them part of this gate: `SPX_NOON_CONFIG` (which config file) and
+`SPX_NOON_HOME` (`base_dir` when the file has none) for the Mac launchers, the hosted worker's
+six (`DATA`, `BROKER`, `MODE`, `TASTY_DATA`, `TASTY_ORDERS`, `BROKER_ACCOUNT`), and
+`SPX_SHEETS_CREDENTIALS_JSON` for the 16:20 wrap's sheet row. Tastytrade is unchanged.
 
 **Operator checklist**
 
@@ -185,7 +190,7 @@ This is what High Noon runs. It is not a config key. A `plan` key left in an old
 | Signal | the day's **first** window close beyond PDH (calls) or PDL (puts) |
 | Morning | **skip the day** when any 15-minute close from 10:15 through 11:00 ET was already beyond PDH or PDL |
 | Long leg | nearest **0.80** delta |
-| Exit | **+8 SPX points** in the trade direction, else the two-hour flat |
+| Exit | **+8 SPX points** in the trade direction, else the flat two hours after the entry bar's close |
 
 **Signal.** The candidate is the day's first 15-minute close, among the five
 window closes at 12:00, 12:15, 12:30, 12:45, and 1:00, that is beyond PDH for
@@ -208,9 +213,21 @@ did not return is not a break.
 strike closer to spot, then the lower strike. The width, the short strike, the
 mid limit, and the $0.20-per-side skip are in section 8.
 
+**Calendar gate.** Two sources, and either one saying closed or early close stops
+the day. The hard-coded NYSE list in `spx_noon/calendar.py` covers **2026 and 2027
+only**: weekends in any year, and the 2026–2027 holidays and early closes, are
+skipped without asking a broker. A weekday after 2027 is not a quiet year-long
+skip — the session asks the broker for today's SPX hours and those decide. Regular
+hours that close at 16:00 or later may trade. A broker that says the session is
+closed, a close before 16:00, or no hours at all means no trade that day. On the
+Mac the 11:45 job always reaches that check; on the hosted worker the supervisor
+starts the day and the session child makes the call (see [RENDER.md](../RENDER.md)).
+
 **Exit.** The spread leaves when the live SPX print is 8.0 or more points through
 the entry print in the trade direction — calls at entry + 8, puts at entry − 8,
-exactly 8 counts — or at the same two-hour flat, whichever comes first. The
+exactly 8 counts — or at the flat two hours after the entry bar's close (a 12:00
+bar is flat at 2:00 PM, a 12:15 bar at 2:15 PM; never two hours after the fill
+timestamp), whichever comes first. The
 reference is the live print at the entry decision, the `spx` column in the trade
 log. Nothing rests, and the spread bid reaching a premium multiple is not an
 exit. There is no stop. The point exit reads `points` in `exit_reason`, and

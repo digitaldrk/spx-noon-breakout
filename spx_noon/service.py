@@ -4,8 +4,10 @@
 itself. It seeds a blank disk with the committed example config, waits for the
 next session, spawns ``python -m spx_noon`` at 11:45 ET, restarts that child a
 bounded number of times if it dies badly, and runs the read-only
-``python -m spx_noon wrap --now`` once at 16:20 ET. Weekends, NYSE holidays,
-early closes, and years with no holiday list are skipped.
+``python -m spx_noon wrap --now`` once at 16:20 ET. Weekends, and the NYSE
+holidays and early closes on the hard-coded 2026–2027 list, are skipped: no
+child starts. A weekday after that list is not skipped — the day runs and the
+session child asks the broker for today's hours, which decide whether it trades.
 
 Plain variable names, no bot prefix, the same set every bot uses on Render. The
 Mac launchers keep ``SPX_NOON_HOME`` and ``SPX_NOON_CONFIG``; this process reads
@@ -503,7 +505,13 @@ class Supervisor:
         return datetime.combine(when.date() + timedelta(days=1), time(0, 0, 30), ET)
 
     def run(self, max_days: int | None = None) -> int:
-        """Loop until SIGTERM. ``max_days`` is for tests."""
+        """Loop until SIGTERM. ``max_days`` is for tests.
+
+        ``UNKNOWN`` is a weekday past the hard-coded 2026–2027 NYSE list, not a
+        closed day: the day runs and the session child's own ``spx_hours`` call
+        decides it, the same way the Mac session already does. Nothing here opens
+        a broker connection. Every other non-``OPEN`` status still skips.
+        """
         days = 0
         while not self.stopping and (max_days is None or days < max_days):
             days += 1
@@ -511,7 +519,11 @@ class Supervisor:
             day = now.date()
             status, reason = fallback_status(day)
             try:
-                if status == "OPEN":
+                if status == "UNKNOWN":
+                    self.say("waiting", f"{day} is outside the hard-coded 2026–2027 NYSE "
+                                        f"list ({reason}); the broker's session hours decide")
+                    self.day(day)
+                elif status == "OPEN":
                     self.day(day)
                 else:
                     self.say("skip", f"{day} is {status}: {reason}")

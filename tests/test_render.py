@@ -723,11 +723,16 @@ def _save_open(cfg, day, status="open"):
 
 
 def test_a_day_the_market_is_closed_never_starts_a_session(tmp_path):
+    """A weekend, and the 2026–2027 holidays and early closes, launch nothing.
+
+    A weekday the hard-coded list does not cover is not one of these: it is
+    ``test_a_weekday_past_the_hard_coded_list_...`` below, where the day runs and
+    the broker's hours decide it.
+    """
     days = (
         (date(2026, 11, 14), "weekend"),
         (date(2026, 11, 26), "NYSE holiday"),
         (date(2026, 11, 27), "early close"),
-        (date(2028, 6, 5), "no hard-coded holiday list"),
     )
     for day, why in days:
         supervisor, clock, launcher, _cfg_ = _supervisor(tmp_path / day.isoformat(), _at(day, 8))
@@ -736,6 +741,30 @@ def test_a_day_the_market_is_closed_never_starts_a_session(tmp_path):
         assert launcher.calls == []
         assert any(line.startswith("skip") and why in line for line in said), said
         assert clock.now().date() == day + timedelta(days=1)   # it waited for the next day
+
+
+def test_a_weekday_past_the_hard_coded_list_starts_the_session_and_asks_the_broker(tmp_path):
+    """2028 is past ``NYSE_HOLIDAYS``, and that is not a year-long skip.
+
+    The supervisor starts the day and says so with ``waiting``, never ``skip``.
+    The session child's own ``spx_hours`` call is the whole broker decision —
+    nothing here opens a connection — and the 16:20 wrap runs as it does on any
+    other day.
+    """
+    unlisted = date(2028, 6, 5)                      # a Monday, the year after the list
+    cfg = _cfg(tmp_path)
+    supervisor, clock, launcher, _ = _supervisor(
+        tmp_path, _at(unlisted, 8), codes=[0, 0], cfg=cfg)
+    said = _watch(supervisor)
+    assert supervisor.run(max_days=1) == 0
+    assert launcher.argvs() == [list(service.SESSION_ARGV), list(service.WRAP_ARGV)]
+    assert launcher.calls[0]["started"] == _at(unlisted, 11, 45)
+    assert supervisor.wrap_path(unlisted).exists()
+    assert not any(line.startswith("skip") for line in said), said
+    notice = [line for line in said if line.startswith("waiting") and "2026–2027" in line]
+    assert notice and "hours decide" in notice[0], said
+    assert "2028" in notice[0]
+    assert clock.now().date() == unlisted + timedelta(days=1)
 
 
 def test_a_trading_day_starts_at_1145_runs_past_1400_and_wraps_once(tmp_path):
